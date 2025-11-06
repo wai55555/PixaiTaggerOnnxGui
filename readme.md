@@ -1,6 +1,6 @@
 # PixAI Tagger ONNX GUI
-|![](https://raw.githubusercontent.com/wiki/wai55555/PixaiTaggerOnnxGui/Sample/main_window_01.png)|![](https://raw.githubusercontent.com/wiki/wai55555/PixaiTaggerOnnxGui/Sample/main_window_02.png)|
-(https://raw.githubusercontent.com/wiki/wai55555/PixaiTaggerOnnxGui/Sample/gridview_01.jpg)
+|![](https://raw.githubusercontent.com/wai55555/PixaiTaggerOnnxGui/refs/heads/main/sample/main_window_01.png)|![](https://raw.githubusercontent.com/wai55555/PixaiTaggerOnnxGui/refs/heads/main/sample/main_window_02.jpg)|
+![](https://raw.githubusercontent.com/wai55555/PixaiTaggerOnnxGui/refs/heads/main/sample/gridview_01.jpg)
 
 ## 概要 (Overview)
 
