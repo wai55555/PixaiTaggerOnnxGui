@@ -11,19 +11,21 @@ from dataclasses import dataclass, field
 from enum import IntEnum
 from typing import Mapping, Sequence, Any, Callable, TYPE_CHECKING
 from time import perf_counter
-from datetime import datetime
 
 if TYPE_CHECKING:
     import numpy as np
+    from numpy.typing import NDArray
     from PIL import Image
-    import onnxruntime as ort
+    import onnxruntime as ort # type: ignore
 else:
     try:
         import numpy as np
+        from numpy.typing import NDArray
         from PIL import Image
-        import onnxruntime as ort
+        import onnxruntime as ort # type: ignore
     except ImportError:
         np = None
+        NDArray = None
         Image = None
         ort = None
 
@@ -31,11 +33,11 @@ BASE_DIR = Path(sys.executable).parent if getattr(sys, 'frozen', False) else Pat
 LOG_FILE_PATH = BASE_DIR / "debug_log.txt"
 CONFIG_PATH = BASE_DIR / "config.ini"
 
-from utils import write_debug_log, log_dbg, nowtag
-from settings_model import AppSettings, Paths, Thresholds, Limits, Behavior, Window
+from utils import log_dbg, GetString
+from settings_model import AppSettings
 from config_utils import load_settings
 
-_get_string = lambda section, key, **kwargs: key # Temporary definition for early checks
+_get_string: GetString = lambda section, key, **kwargs: str(key)
 
 if not TYPE_CHECKING:
     if np is None or Image is None or ort is None:
@@ -82,8 +84,8 @@ _CATEGORY_LOOKUP: dict[str, int] = {
 def load_selected_tags(tags_csv: str | Path) -> list[TagMeta]:
     tags_path = Path(tags_csv)
     if not tags_path.is_file():
-        log_dbg(_get_string("TaggerCore", "Tag_CSV_File_Not_Found", tags_csv=tags_csv))
-        raise FileNotFoundError(_get_string("TaggerCore", "Tag_CSV_File_Not_Found", tags_csv=tags_csv))
+        log_dbg(_get_string("TaggerCore", "Tag_CSV_File_Not_Found", tags_csv=str(tags_csv)))
+        raise FileNotFoundError(_get_string("TaggerCore", "Tag_CSV_File_Not_Found", tags_csv=str(tags_csv)))
     labels: list[TagMeta] = []
     with tags_path.open(encoding="utf-8", newline="") as fp:
         reader = csv.reader(fp)
@@ -111,7 +113,7 @@ def load_selected_tags(tags_csv: str | Path) -> list[TagMeta]:
                 try:
                     parsed = json.loads(ips_json)
                     if isinstance(parsed, list):
-                        ips = tuple(parsed)
+                        ips = tuple(str(item) for item in parsed)
                 except json.JSONDecodeError:
                     pass
             labels.append(TagMeta(name=tag_name, category=category, count=count, ips=ips))
@@ -136,10 +138,10 @@ def discover_labels_csv(model_dir: Path, tags_csv: str | Path | None) -> Path | 
             return candidate
     return None
 
-def _sigmoid(x: np.ndarray) -> np.ndarray:
+def _sigmoid(x: NDArray[np.float_]) -> NDArray[np.float_]:
     return 1 / (1 + np.exp(-x))
 
-def _normalize_np_chw(x: np.ndarray, mean, std) -> np.ndarray:
+def _normalize_np_chw(x: NDArray[np.float32], mean: NDArray[np.float_], std: NDArray[np.float_]) -> NDArray[np.float32]:
     x = x.astype(np.float32, copy=False)
     for c in range(3):
         x[c] = (x[c] - mean[c]) / std[c]
@@ -147,15 +149,21 @@ def _normalize_np_chw(x: np.ndarray, mean, std) -> np.ndarray:
 
 class OnnxTagger:
     INPUT_SIZE = 448
-    MODEL_MEAN = np.array([0.485, 0.456, 0.406])
-    MODEL_STD = np.array([0.229, 0.224, 0.225])
+    MODEL_MEAN: NDArray[np.float_] = np.array([0.485, 0.456, 0.406])
+    MODEL_STD: NDArray[np.float_] = np.array([0.229, 0.224, 0.225])
+    input_name: str
+    output_name: str
+    tags: list[TagMeta]
+    tag_meta_lookup: dict[str, TagMeta]
+    session: ort.InferenceSession
+    get_string: GetString
 
-    def __init__(self, model_path: Path, tags_csv: Path | None = None, get_string: Callable[[str, str, Any], str] | None = None):
-        self.get_string = get_string if get_string else lambda section, key, **kwargs: key # Store get_string
+    def __init__(self, model_path: Path, tags_csv: Path | None = None, get_string: GetString | None = None):
+        self.get_string = get_string if get_string else _get_string
 
         if not model_path.is_file():
-            log_dbg(self.get_string("TaggerCore", "Model_File_Not_Found", model_path=model_path))
-            raise FileNotFoundError(self.get_string("TaggerCore", "Model_File_Not_Found", model_path=model_path))
+            log_dbg(self.get_string("TaggerCore", "Model_File_Not_Found", model_path=str(model_path)))
+            raise FileNotFoundError(self.get_string("TaggerCore", "Model_File_Not_Found", model_path=str(model_path)))
         if ort is None:
             log_dbg(self.get_string("TaggerCore", "Onnxruntime_Not_Installed"))
             raise ImportError(self.get_string("TaggerCore", "Onnxruntime_Not_Installed"))
@@ -165,24 +173,29 @@ class OnnxTagger:
         model_dir = model_path.parent
         tags_path = discover_labels_csv(model_dir, tags_csv)
         if not tags_path or not tags_path.is_file():
-            log_dbg(self.get_string("TaggerCore", "Tag_CSV_File_Not_Found_Check_Dir", model_dir=model_dir))
-            raise FileNotFoundError(self.get_string("TaggerCore", "Tag_CSV_File_Not_Found_Check_Dir", model_dir=model_dir))
+            log_dbg(self.get_string("TaggerCore", "Tag_CSV_File_Not_Found_Check_Dir", model_dir=str(model_dir)))
+            raise FileNotFoundError(self.get_string("TaggerCore", "Tag_CSV_File_Not_Found_Check_Dir", model_dir=str(model_dir)))
         self.tags = load_selected_tags(tags_path)
-        self.tag_meta_lookup: dict[str, TagMeta] = {tag.name: tag for tag in self.tags}
+        self.tag_meta_lookup = {tag.name: tag for tag in self.tags}
         log_dbg(self.get_string("TaggerCore", "Loaded_Tags_Count", count=len(self.tags), tags_path=tags_path.name))
-        self.input_name = self.session.get_inputs()[0].name
-        output_names = [output.name for output in self.session.get_outputs()]
+        
+        inputs: list[Any] = list(self.session.get_inputs()) # type: ignore
+        self.input_name = inputs[0].name
+        
+        outputs: list[Any] = list(self.session.get_outputs()) # type: ignore
+        output_names: list[str] = [output.name for output in outputs]
+
         preferred_order = ("prediction", "logits")
         for name in preferred_order:
             if name in output_names:
                 self.output_name = name
                 break
         else:
-            log_dbg(self.get_string("TaggerCore", "ONNX_Prediction_Tensor_NotFound", output_names=output_names))
-            raise RuntimeError(self.get_string("TaggerCore", "ONNX_Prediction_Tensor_NotFound", output_names=output_names))
+            log_dbg(self.get_string("TaggerCore", "ONNX_Prediction_Tensor_NotFound", output_names=str(output_names)))
+            raise RuntimeError(self.get_string("TaggerCore", "ONNX_Prediction_Tensor_NotFound", output_names=str(output_names)))
 
-    def prepare_batch_from_rgb_np(self, images: Sequence[np.ndarray]) -> np.ndarray:
-        preprocessed_images: list[np.ndarray] = []
+    def prepare_batch_from_rgb_np(self, images: Sequence[NDArray[np.uint8]]) -> NDArray[np.float32]:
+        preprocessed_images: list[NDArray[np.float32]] = []
         target_size = self.INPUT_SIZE
         for img_array in images:
             image_pil = Image.fromarray(img_array)
@@ -203,15 +216,18 @@ class OnnxTagger:
             return np.empty((0, 3, target_size, target_size), dtype=np.float32)
         return np.stack(preprocessed_images, axis=0)
 
-    def infer_batch_prepared(self, batch: np.ndarray, *, thresholds: Mapping[Any, float] | None = None, max_tags: Mapping[Any, int] | None = None) -> list[TagResult]:
+    def infer_batch_prepared(self, batch: NDArray[np.float32], *, thresholds: Mapping[TagCategory, float] | None = None, max_tags: Mapping[TagCategory, int] | None = None) -> list[TagResult]:
         if batch.size == 0:
             return []
         input_feed = {self.input_name: batch}
-        output = self.session.run([self.output_name], input_feed)[0]
-        scores_batch = _sigmoid(output)
+        outputs = self.session.run([self.output_name], input_feed) # type: ignore
+        output_array = np.asarray(outputs[0], dtype=np.float_)
+        scores_batch = _sigmoid(output_array)
         results: list[TagResult] = []
-        cat_thresholds = thresholds if thresholds else {}
-        cat_limits = max_tags if max_tags else {}
+        
+        cat_thresholds: Mapping[TagCategory, float] = thresholds if thresholds is not None else {}
+        cat_limits: Mapping[TagCategory, int] = max_tags if max_tags is not None else {}
+
         if not self.tags:
              return [TagResult() for _ in scores_batch]
         hard_cap = sum(cat_limits.values()) if cat_limits else 100
@@ -249,7 +265,7 @@ class OnnxTagger:
             results.append(TagResult(tags=taken))
         return results
 
-    def infer_batch(self, images: Sequence[Image.Image], *, thresholds: Mapping[Any, float] | None = None, max_tags: Mapping[Any, int] | None = None) -> list[TagResult]:
+    def infer_batch(self, images: Sequence[Image.Image], *, thresholds: Mapping[TagCategory, float] | None = None, max_tags: Mapping[TagCategory, int] | None = None) -> list[TagResult]:
         rgb_arrays = [np.asarray(image.convert("RGB"), dtype=np.uint8) for image in images]
         batch = self.prepare_batch_from_rgb_np(rgb_arrays)
         return self.infer_batch_prepared(batch, thresholds=thresholds, max_tags=max_tags)
@@ -289,10 +305,11 @@ def format_tags(tag_results: TagResult, convert_underscore: bool) -> str:
         output_tags.append(tag_name)
     return ", ".join(output_tags)
 
-def setup_tagger_from_settings(app_settings: AppSettings, get_string: Callable[[str, str, Any], str] | None) -> tuple[OnnxTagger | None, dict[str, Any]]:
+def setup_tagger_from_settings(app_settings: AppSettings, get_string: GetString | None) -> tuple[OnnxTagger | None, dict[str, Any]]:
     """Initializes the tagger and extracts settings from the AppSettings object."""
+    _get_string_internal = get_string if get_string else _get_string
     try:
-        settings_dict = {
+        settings_dict: dict[str, Any] = {
             'INPUT_DIR': Path(app_settings.paths.input_dir),
             'MODEL_PATH': BASE_DIR / app_settings.paths.model_dir / app_settings.paths.model_filename,
             'TAG_THRESHOLDS': {
@@ -306,7 +323,7 @@ def setup_tagger_from_settings(app_settings: AppSettings, get_string: Callable[[
             'ENABLE_SOLO_LIMIT': app_settings.behavior.enable_solo_character_limit,
             'CONVERT_UNDERSCORE': app_settings.behavior.convert_underscore_to_space,
         }
-        tagger = OnnxTagger(model_path=settings_dict['MODEL_PATH'], get_string=get_string)
+        tagger = OnnxTagger(model_path=settings_dict['MODEL_PATH'], get_string=_get_string_internal)
         return tagger, settings_dict
     except Exception as e:
         log_dbg(f"Error during Tagger initialization: {type(e).__name__}: {e}")
@@ -321,28 +338,41 @@ def process_image_loop(
     overwrite_checker: Callable[[Path], bool] | None,
     log_gui: Callable[[str, str], None] | None,
     stop_checker: Callable[[], bool] | None,
-    get_string: Callable[[str, str, Any], str] | None
+    get_string: GetString | None
 ):
     """Processes a list of images, applying tags based on the provided settings."""
-    core_log_gui = lambda message, color="black": log_gui(message, color) if log_gui else None
-    _get_string = get_string if get_string else lambda section, key, **kwargs: key
+    
+    def core_log_gui(message: str, color: str = "black") -> None:
+        if log_gui:
+            log_gui(message, color)
+
+    _get_string_internal = get_string if get_string else _get_string
 
     for i, image_path in enumerate(image_paths):
         if stop_checker and stop_checker():
-            core_log_gui(_get_string("TaggerCore", "Tagging_Process_Aborted_By_User"), "red")
-            log_dbg(_get_string("TaggerCore", "Tagging_Process_Aborted_By_User_Debug"))
+            core_log_gui(_get_string_internal("TaggerCore", "Tagging_Process_Aborted_By_User"), "red")
+            log_dbg(_get_string_internal("TaggerCore", "Tagging_Process_Aborted_By_User_Debug"))
             break
 
+        # First, check if the output file exists and should be skipped.
+        base_name, _ = os.path.splitext(str(image_path))
+        output_path = Path(base_name + ".txt")
         relative_path = image_path.relative_to(settings['INPUT_DIR'])
         current_index_str = f"[{i+1}/{len(image_paths)}]"
-        core_log_gui(_get_string("TaggerCore", "Processing_Image", current_index_str=current_index_str, relative_path=relative_path), "black")
+
+        if output_path.is_file() and overwrite_checker and not overwrite_checker(output_path):
+            log_dbg(_get_string_internal("TaggerCore", "Tag_Output_Skipped_Existing_File", current_index_str=current_index_str, relative_path=str(relative_path)))
+            core_log_gui(_get_string_internal("TaggerCore", "Tag_Skipped_Existing_File_Short", current_index_str=current_index_str, output_path_name=output_path.name), "orange")
+            continue
+
+        core_log_gui(_get_string_internal("TaggerCore", "Processing_Image", current_index_str=current_index_str, relative_path=str(relative_path)), "black")
         
         try:
             with open(image_path, 'rb') as f:
                 image = Image.open(f).convert("RGB")
         except Exception as e:
-            log_dbg(_get_string("TaggerCore", "Image_Load_Failed", current_index_str=current_index_str, relative_path=relative_path, type_e_name=type(e).__name__, e=e))
-            core_log_gui(_get_string("TaggerCore", "Image_Load_Failed_Short", current_index_str=current_index_str, relative_path_name=relative_path.name), "red")
+            log_dbg(_get_string_internal("TaggerCore", "Image_Load_Failed", current_index_str=current_index_str, relative_path=str(relative_path), type_e_name=type(e).__name__, e=str(e)))
+            core_log_gui(_get_string_internal("TaggerCore", "Image_Load_Failed_Short", current_index_str=current_index_str, relative_path_name=relative_path.name), "red")
             continue
 
         try:
@@ -352,13 +382,13 @@ def process_image_loop(
                 max_tags=settings['MAX_TAGS_PER_CATEGORY'],
             )
         except Exception as e:
-            log_dbg(_get_string("TaggerCore", "Tag_Inference_Failed", current_index_str=current_index_str, relative_path=relative_path, type_e_name=type(e).__name__, e=e))
-            core_log_gui(_get_string("TaggerCore", "Tag_Inference_Failed_Short", current_index_str=current_index_str, relative_path_name=relative_path.name), "red")
+            log_dbg(_get_string_internal("TaggerCore", "Tag_Inference_Failed", current_index_str=current_index_str, relative_path=str(relative_path), type_e_name=type(e).__name__, e=str(e)))
+            core_log_gui(_get_string_internal("TaggerCore", "Tag_Inference_Failed_Short", current_index_str=current_index_str, relative_path_name=relative_path.name), "red")
             continue
 
         if not results or not results[0].tags:
-            log_dbg(_get_string("TaggerCore", "Tag_Acquisition_Failed", current_index_str=current_index_str, relative_path=relative_path))
-            core_log_gui(_get_string("TaggerCore", "Tag_Acquisition_Failed_Short", current_index_str=current_index_str, relative_path_name=relative_path.name), "orange")
+            log_dbg(_get_string_internal("TaggerCore", "Tag_Acquisition_Failed", current_index_str=current_index_str, relative_path=str(relative_path)))
+            core_log_gui(_get_string_internal("TaggerCore", "Tag_Acquisition_Failed_Short", current_index_str=current_index_str, relative_path_name=relative_path.name), "orange")
             continue
 
         tag_result = results[0]
@@ -370,28 +400,24 @@ def process_image_loop(
         tag_result.series_tags = tuple(sorted(list(all_series_tags)))
         
         formatted_tags = format_tags(tag_result, settings['CONVERT_UNDERSCORE'])
-        base_name, _ = os.path.splitext(str(image_path))
-        output_path = Path(base_name + ".txt")
-
-        if output_path.is_file() and overwrite_checker and not overwrite_checker(output_path):
-            log_dbg(_get_string("TaggerCore", "Tag_Output_Skipped_Existing_File", current_index_str=current_index_str, relative_path=relative_path))
-            
-            core_log_gui(_get_string("TaggerCore", "Tag_Skipped_Existing_File_Short", current_index_str=current_index_str, output_path_name=output_path.name), "orange")
-            continue
-
+        
+        # The check has been moved to the top, so we just write the file here.
         try:
-            long_path_str = str(output_path.resolve())
+            resolved_path = output_path.resolve()
             if sys.platform == "win32":
-                long_path_str = "\\\\?\\" + long_path_str
+                long_path_str = f"\\\\?\\{resolved_path}"
+            else:
+                long_path_str = str(resolved_path)
+
             with open(long_path_str, 'w', encoding='utf-8') as f:
                 f.write(formatted_tags)
 
-            core_log_gui(_get_string("TaggerCore", "Tag_Output_Success", current_index_str=current_index_str, output_path_name=output_path.name), "green")
-            log_dbg(_get_string("TaggerCore", "Tagging_Result_Output", current_index_str=current_index_str, output_path_name=output_path.name))
+            core_log_gui(_get_string_internal("TaggerCore", "Tag_Output_Success", current_index_str=current_index_str, output_path_name=output_path.name), "green")
+            log_dbg(_get_string_internal("TaggerCore", "Tagging_Result_Output", current_index_str=current_index_str, output_path_name=output_path.name))
         except Exception as e:
-            log_dbg(_get_string("TaggerCore", "Save_Failed", current_index_str=current_index_str, relative_path=relative_path, type_e_name=type(e).__name__, e=e))
+            log_dbg(_get_string_internal("TaggerCore", "Save_Failed", current_index_str=current_index_str, relative_path=str(relative_path), type_e_name=type(e).__name__, e=str(e)))
             
-            core_log_gui(_get_string("TaggerCore", "Save_Failed_Short", current_index_str=current_index_str, output_path_name=output_path.name), "red")
+            core_log_gui(_get_string_internal("TaggerCore", "Save_Failed_Short", current_index_str=current_index_str, output_path_name=output_path.name), "red")
 
 def filter_tags_by_solo_rule(
     tag_result: TagResult,
@@ -407,6 +433,7 @@ def filter_tags_by_solo_rule(
     character_tags = [pred for pred in tag_result.tags if pred.category == TagCategory.CHARACTER]
     solo_tag_found = any(pred.name.lower() == "solo" for pred in general_tags)
     all_series_tags: set[str] = set()
+    final_tags: list[TagPrediction]
     
     # if solo tag is available, and a character tag exists
     if enable_solo_limit and solo_tag_found and character_tags:
@@ -431,42 +458,45 @@ def filter_tags_by_solo_rule(
     
     return final_tags, all_series_tags
 
-def main(overwrite_checker: Callable[[Path], bool] | None = None, log_gui: Callable[[str, str], None] | None = None, stop_checker: Callable[[], bool] | None = None, get_string: Callable[[str, str, Any], str] | None = None):
-    log_dbg(_get_string("TaggerCore", "Info_Tagging_Core_Main_Start"))
+def main(overwrite_checker: Callable[[Path], bool] | None = None, log_gui: Callable[[str, str], None] | None = None, stop_checker: Callable[[], bool] | None = None, get_string: GetString | None = None):
     start_time = perf_counter()
-    core_log_gui = lambda message, color="black": log_gui(message, color) if log_gui else None
-    _get_string = get_string if get_string else lambda section, key, **kwargs: key
+    
+    def core_log_gui(message: str, color: str = "black") -> None:
+        if log_gui:
+            log_gui(message, color)
+
+    _get_string_internal = get_string if get_string else _get_string
+    log_dbg(_get_string_internal("TaggerCore", "Info_Tagging_Core_Main_Start"))
 
     try:
-        assert CONFIG_PATH.is_file(), _get_string("TaggerCore", "Config_File_NotFound", CONFIG_PATH=CONFIG_PATH)
+        assert CONFIG_PATH.is_file(), _get_string_internal("TaggerCore", "Config_File_NotFound", CONFIG_PATH=str(CONFIG_PATH))
         config = configparser.ConfigParser()
         config.read(CONFIG_PATH, encoding='utf-8')
     except Exception as e:
-        log_dbg(_get_string("TaggerCore", "Fatal_Error_Config_Load_Failed", type_e_name=type(e).__name__, e=e))
-        core_log_gui(_get_string("TaggerCore", "Fatal_Error_Config_Load_Failed_GUI"), "red")
+        log_dbg(_get_string_internal("TaggerCore", "Fatal_Error_Config_Load_Failed", type_e_name=type(e).__name__, e=str(e)))
+        core_log_gui(_get_string_internal("TaggerCore", "Fatal_Error_Config_Load_Failed_GUI"), "red")
         return
 
-    # Load AppSettings from config
     app_settings = load_settings(config)
 
-    tagger, settings_dict = setup_tagger_from_settings(app_settings, _get_string)
+    tagger, settings_dict = setup_tagger_from_settings(app_settings, _get_string_internal)
     if not tagger or not settings_dict:
-        core_log_gui(_get_string("TaggerCore", "Error_Tagger_Init_Failed_GUI"), "red")
+        core_log_gui(_get_string_internal("TaggerCore", "Error_Tagger_Init_Failed_GUI"), "red")
         return
 
     image_paths = get_image_paths_recursive(settings_dict['INPUT_DIR'])
     if not image_paths:
-        log_dbg(_get_string("TaggerCore", "Warning_No_Image_Files_Found_In_Dir", INPUT_DIR=settings_dict['INPUT_DIR']))
-        core_log_gui(_get_string("TaggerCore", "Warning_No_Image_Files_Found_GUI"), "orange")
+        log_dbg(_get_string_internal("TaggerCore", "Warning_No_Image_Files_Found_In_Dir", INPUT_DIR=str(settings_dict['INPUT_DIR'])))
+        core_log_gui(_get_string_internal("TaggerCore", "Warning_No_Image_Files_Found_GUI"), "orange")
         return
 
-    core_log_gui(_get_string("TaggerCore", "Total_Image_Files_Found", count=len(image_paths)), "blue")
+    core_log_gui(_get_string_internal("TaggerCore", "Total_Image_Files_Found", count=len(image_paths)), "blue")
     
-    process_image_loop(tagger, settings_dict, image_paths, overwrite_checker, log_gui, stop_checker, _get_string)
+    process_image_loop(tagger, settings_dict, image_paths, overwrite_checker, log_gui, stop_checker, _get_string_internal)
 
     end_time = perf_counter()
-    log_dbg(_get_string("TaggerCore", "Total_Processing_Time", time=f"{end_time - start_time:.2f}"))
-    core_log_gui(_get_string("TaggerCore", "Tagging_Process_Complete"), "green")
+    log_dbg(_get_string_internal("TaggerCore", "Total_Processing_Time", time=f"{end_time - start_time:.2f}"))
+    core_log_gui(_get_string_internal("TaggerCore", "Tagging_Process_Complete"), "green")
 
 if __name__ == "__main__":
     main()

@@ -1,56 +1,80 @@
-import sys
-import os
 from pathlib import Path
-from typing import Any, Mapping, Callable
+from typing import Any, Mapping
 from datetime import datetime
-from collections import Counter
-from enum import IntFlag
 import locale
-import time
+import functools
 
 from PySide6.QtCore import (
-    Qt, QThread, QObject, Signal, Slot, QTimer, QPoint, QRect, QEvent, QMutex, QMetaObject, QEventLoop
+    Qt, QThread, QObject, Signal, Slot, QTimer, QPoint, QRect, QEvent, QEventLoop
 )
 from PySide6.QtWidgets import (
-    QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QGridLayout, QGroupBox, QLabel, QLineEdit, QPushButton,
-    QSlider, QTextEdit, QFileDialog, QSizePolicy, QMessageBox,
-    QStackedWidget, QDialog, QApplication, QSplitter, QListWidgetItem
+    QMainWindow, QWidget,
+    QGridLayout, QLabel, QLineEdit, QPushButton,
+    QSlider, QTextEdit, QFileDialog, QMessageBox,
+    QStackedWidget, QApplication, QSplitter, QListWidgetItem
 )
 from PySide6.QtGui import (
     QPixmap, QImage, QKeyEvent, QResizeEvent, QDragEnterEvent,
-    QDropEvent, QCloseEvent, QTextCursor, QWheelEvent, QMouseEvent,
-    QPalette, QColor, QIcon
+    QDropEvent, QCloseEvent, QWheelEvent,
+    QPalette
 )
 
-from utils import write_debug_log, log_dbg
-from constants import *
-from config_utils import load_config, load_settings, save_config
-from settings_model import AppSettings
+from utils import write_debug_log
+import constants
+import app_settings # Added import
+from app_settings import load_config, load_settings, save_config # Updated import
 from custom_widgets import PathLineEdit, TagListWidget
 from custom_dialogs import ClickableLabel, ImageViewerDialog
 from grid_view_widget import GridViewWidget
 from workers import DownloaderWorker, TaggerThreadWorker, TagLoader, BulkTagWorker
 from locale_manager import LocaleManager
-import resources_rc
+from ui_main_window import Ui_MainWindow
 
 # --- Main Window ---
 
 class MainWindow(QMainWindow):
     """Main application window for image tagging."""
+    # --- UI Elements ---
+    central_widget: QStackedWidget
+    main_view_widget: QWidget
+    grid_view_widget: GridViewWidget
+    splitter: QSplitter
+    image_list: TagListWidget
+    right_vertical_splitter: QSplitter
+    input_line: PathLineEdit
+    grid_view_button: QPushButton
+    image_label: ClickableLabel
+    tag_display_grid: QGridLayout
+    image_tag_prev_page_btn: QPushButton
+    image_tag_next_page_btn: QPushButton
+    add_single_tag_line: QLineEdit
+    add_single_tag_button: QPushButton
+    run_button: QPushButton
+    loading_label: QLabel
+    tag_button_grid: QGridLayout
+    prev_page_btn: QPushButton
+    next_page_btn: QPushButton
+    add_tag_line: QLineEdit
+    add_tag_button: QPushButton
+    add_tag_line_append: QLineEdit
+    add_tag_button_append: QPushButton
+    log_output: QTextEdit
+
+    # --- Signals ---
     request_overwrite_check = Signal(str, str)
     overwrite_dialog_requested = Signal(Path) 
     _overwrite_request = Signal(Path) 
+    _request_worker_stop = Signal() # Signal to request workers to stop
     
     def __init__(self):
         super().__init__()
         
         self._initialize_settings_and_locale()
         self._initialize_state()
-        self._initialize_ui()
-        self._connect_signals()
+        
+        self.ui = Ui_MainWindow()
+        self.ui.setup_ui(self)
 
-        self._check_model_status_and_update_ui(auto_start_download=True)
         write_debug_log(self.locale_manager.get_string("MainWindow", "MainWindow_Init_Complete"))
 
         QTimer.singleShot(0, self.initial_load)
@@ -61,14 +85,16 @@ class MainWindow(QMainWindow):
         self.settings = load_settings(config)
 
         if not self.settings.language_code:
-            os_lang = locale.getdefaultlocale()[0].split('_')[0] if locale.getdefaultlocale()[0] else "en"
+            default_locale = locale.getdefaultlocale()[0]
+            os_lang = default_locale.split('_')[0] if default_locale else "en"
             self.settings.language_code = os_lang
             save_config(self.settings)
 
-        self.locale_manager = LocaleManager(self.settings.language_code, BASE_DIR)
+        self.locale_manager = LocaleManager(self.settings.language_code, constants.BASE_DIR)
+        app_settings.set_get_string_func(self.locale_manager.get_string) # Add this line
         write_debug_log(self.locale_manager.get_string("MainWindow", "Application_Startup"))
 
-        self._is_dark_theme = QApplication.palette().color(QPalette.Window).lightness() < 128
+        self._is_dark_theme = QApplication.palette().color(QPalette.ColorRole.Window).lightness() < 128
         self._log_color_map = self._get_log_color_map()
         
     def _initialize_state(self):
@@ -108,294 +134,12 @@ class MainWindow(QMainWindow):
         
         self._overwrite_event_loop: QEventLoop | None = None
         self._overwrite_response: bool | None = None
+        self._worker_finished_event_loop: QEventLoop | None = None
         
         # Constants
         self._tag_button_min_width = 100
         self._tag_button_min_height = 25
 
-    def _initialize_ui(self):
-        self.setWindowTitle(MSG_WINDOW_TITLE)
-        self.setWindowIcon(QIcon(str(BASE_DIR / "app_icon.ico")))
-        try:
-            geom = self.settings.window.geometry.split('+')
-            size = geom[0].split('x')
-            self.resize(int(size[0]), int(size[1]))
-            self.move(int(geom[1]), int(geom[2]))
-        except (ValueError, IndexError):
-            self.resize(950, 720)
-            self.move(50, 50)
-        
-        self.setAcceptDrops(True)
-
-        # Central stacked widget for view switching
-        self.central_widget = QStackedWidget(self)
-        self.setCentralWidget(self.central_widget)
-
-        # Main View Setup
-        self.main_view_widget = self._create_main_view()
-        self.central_widget.addWidget(self.main_view_widget)
-
-        # Grid View Setup
-        self.grid_view_widget = GridViewWidget(self.settings, self.locale_manager)
-        self.central_widget.addWidget(self.grid_view_widget)
-
-    def _connect_signals(self):
-        """Connects all signals to their corresponding slots."""
-        self.image_list.itemClicked.connect(self.select_image_item)
-        self.input_line.editingFinished.connect(self.reload_image_list)
-        self.input_line.folder_dropped.connect(self._handle_folder_drop)
-        self.run_button.clicked.connect(self.toggle_download_or_start_tagging)
-        self.grid_view_widget.back_to_main_requested.connect(self._show_main_view)
-        self._resize_timer.timeout.connect(self._handle_resize_debounced)
-        self._overwrite_request.connect(self._handle_overwrite_request)
-
-    def _create_main_view(self) -> QWidget:
-        """Constructs the main view widget with its layout and components."""
-        main_widget = QWidget()
-        layout = QVBoxLayout(main_widget)
-        layout.setContentsMargins(0, 0, 0, 0)
-
-        self.splitter = QSplitter(Qt.Orientation.Horizontal)
-        
-        left_panel = self._create_left_panel()
-        right_panel = self._create_right_panel()
-
-        self.splitter.addWidget(left_panel)
-        self.splitter.addWidget(right_panel)
-        self.splitter.setStretchFactor(0, 1)
-        self.splitter.setStretchFactor(1, 3)
-        
-        layout.addWidget(self.splitter)
-        return main_widget
-
-    def _create_left_panel(self) -> QWidget:
-        """Creates the left panel containing the image list."""
-        left_widget = QWidget()
-        layout = QVBoxLayout(left_widget)
-        self.image_list = TagListWidget(get_string=self.locale_manager.get_string)
-        self.image_list.setMaximumWidth(500)
-        layout.addWidget(QLabel(self.locale_manager.get_string("MainWindow", "Image_File_List")))
-        layout.addWidget(self.image_list)
-        return left_widget
-
-    def _create_right_panel(self) -> QWidget:
-        """Creates the right panel with all the controls and viewers."""
-        right_widget = QWidget()
-        layout = QVBoxLayout(right_widget)
-
-        self.right_vertical_splitter = QSplitter(Qt.Orientation.Vertical)
-        
-        input_group = self._create_input_group()
-        viewer_group = self._create_viewer_group()
-        bulk_actions_group = self._create_bulk_actions_group()
-        log_group = self._create_log_group()
-
-        layout.addWidget(input_group)
-        self.right_vertical_splitter.addWidget(viewer_group)
-        self.right_vertical_splitter.addWidget(bulk_actions_group)
-        self.right_vertical_splitter.addWidget(log_group)
-        
-        self.right_vertical_splitter.setSizes([400, 200, 100])
-        self.right_vertical_splitter.setStretchFactor(0, 4)
-        self.right_vertical_splitter.setStretchFactor(1, 2)
-        self.right_vertical_splitter.setStretchFactor(2, 1)
-
-        layout.addWidget(self.right_vertical_splitter)
-        return right_widget
-
-    def _create_input_group(self) -> QGroupBox:
-        """Creates the input folder selection group box."""
-        group = QGroupBox(self.locale_manager.get_string("MainWindow", "Input_Folder"), self)
-        layout = QVBoxLayout(group)
-        controls_layout = QHBoxLayout()
-        
-        self.input_line = PathLineEdit(self, get_string=self.locale_manager.get_string)
-        self.input_line.setText(self.settings.paths.input_dir)
-        self.input_line.setPlaceholderText(self.locale_manager.get_string("MainWindow", "Drag_Drop_Folder_Placeholder"))
-        self.input_line.textChanged.connect(lambda t: setattr(self.settings.paths, 'input_dir', t))
-        
-        browse_button = QPushButton(self.locale_manager.get_string("MainWindow", "Browse_Button"))
-        browse_button.clicked.connect(self.browse_folder)
-        
-        self.grid_view_button = QPushButton("3x3 edit")
-        self.grid_view_button.setToolTip(self.locale_manager.get_string("MainWindow", "Switch_To_Grid_View"))
-        self.grid_view_button.clicked.connect(self._show_grid_view)
-        
-        controls_layout.addWidget(self.input_line)
-        controls_layout.addWidget(browse_button)
-        controls_layout.addWidget(self.grid_view_button)
-        layout.addLayout(controls_layout)
-        return group
-
-    def _create_viewer_group(self) -> QSplitter:
-        """Creates the splitter for the image viewer and tag editor."""
-        img_tag_splitter = QSplitter(Qt.Orientation.Horizontal)
-        
-        self.image_label = ClickableLabel()
-        self.image_label.doubleClicked.connect(self._show_enlarged_image)
-        self.image_label.setMinimumSize(225, 225)
-        self.image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.image_label.setToolTip(self.locale_manager.get_string("MainWindow", "ImageViewer_Tooltip"))
-        
-        tag_panel_widget = self._create_single_image_tag_panel()
-        
-        img_tag_splitter.addWidget(self.image_label)
-        img_tag_splitter.addWidget(tag_panel_widget)
-        img_tag_splitter.setSizes([200, 300])
-        img_tag_splitter.setStretchFactor(0, 1)
-        img_tag_splitter.setStretchFactor(1, 1)
-        return img_tag_splitter
-
-    def _create_single_image_tag_panel(self) -> QWidget:
-        """Creates the panel for viewing and editing tags of a single image."""
-        tag_panel_widget = QWidget()
-        tag_panel = QVBoxLayout(tag_panel_widget)
-        tag_panel.setContentsMargins(0, 0, 0, 0)
-        tag_panel.addWidget(QLabel(self.locale_manager.get_string("MainWindow", "Image_Tags_Label")))
-        
-        tag_grid_container = QWidget()
-        self.tag_display_grid = QGridLayout(tag_grid_container)
-        tag_grid_container.setLayout(self.tag_display_grid)
-        min_grid_height = self.settings.window.tag_display_rows * (self._tag_button_min_height + 5)
-        tag_grid_container.setMinimumHeight(min_grid_height)
-        tag_grid_container.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
-        tag_panel.addWidget(tag_grid_container)
-        
-        page_nav_layout = QHBoxLayout()
-        self.image_tag_prev_page_btn = QPushButton(self.locale_manager.get_string("MainWindow", "Previous_Page"))
-        self.image_tag_prev_page_btn.clicked.connect(lambda: self._change_image_tag_page(-1))
-        self.image_tag_next_page_btn = QPushButton(self.locale_manager.get_string("MainWindow", "Next_Page"))
-        self.image_tag_next_page_btn.clicked.connect(lambda: self._change_image_tag_page(1))
-        page_nav_layout.addWidget(self.image_tag_prev_page_btn)
-        page_nav_layout.addWidget(self.image_tag_next_page_btn)
-        tag_panel.addLayout(page_nav_layout)
-        
-        tag_panel.addWidget(QLabel(self.locale_manager.get_string("MainWindow", "Add_Single_Tag_Label")))
-        add_tag_layout = QHBoxLayout()
-        self.add_single_tag_line = QLineEdit()
-        self.add_single_tag_line.setPlaceholderText(self.locale_manager.get_string("MainWindow", "Tags_Comma_Separated_Placeholder"))
-        self.add_single_tag_line.setToolTip(self.locale_manager.get_string("MainWindow", "AddTag_Hover_Tooltip"))
-        self.add_single_tag_line.returnPressed.connect(self._add_single_tag)
-        self.add_single_tag_line.installEventFilter(self)
-        self.add_single_tag_button = QPushButton(self.locale_manager.get_string("MainWindow", "Add_Button"))
-        self.add_single_tag_button.clicked.connect(self._add_single_tag)
-        add_tag_layout.addWidget(self.add_single_tag_line)
-        add_tag_layout.addWidget(self.add_single_tag_button)
-        tag_panel.addLayout(add_tag_layout)
-        
-        tag_panel.addStretch(1)
-        return tag_panel_widget
-
-    def _create_bulk_actions_group(self) -> QWidget:
-        """Creates the widget containing all bulk action and settings controls."""
-        widget = QWidget()
-        layout = QVBoxLayout(widget)
-        layout.setContentsMargins(0, 0, 0, 0)
-        
-        bulk_edit_layout = QHBoxLayout()
-        bulk_delete_group = self._create_bulk_delete_group()
-        bulk_add_group = self._create_bulk_add_group()
-        bulk_edit_layout.addWidget(bulk_delete_group, 3)
-        bulk_edit_layout.addWidget(bulk_add_group, 1)
-        layout.addLayout(bulk_edit_layout)
-
-        settings_group = self._create_settings_group()
-        layout.addWidget(settings_group)
-        
-        self.run_button = QPushButton(self.locale_manager.get_string("Constants", "Tag_Button_Text"))
-        self.run_button.setStyleSheet(STYLE_BTN_GREEN)
-        layout.addWidget(self.run_button)
-        
-        return widget
-
-    def _create_bulk_delete_group(self) -> QGroupBox:
-        """Creates the group for bulk tag deletion."""
-        group = QGroupBox(self.locale_manager.get_string("MainWindow", "Bulk_Delete_Tags"))
-        layout = QVBoxLayout(group)
-        
-        self.loading_label = QLabel(self.locale_manager.get_string("Constants", "Loading_Tag_List"))
-        self.loading_label.setStyleSheet("font-weight:bold;")
-        layout.addWidget(self.loading_label)
-        
-        self.tag_button_grid = QGridLayout()
-        for i in range(4):
-            self.tag_button_grid.setColumnStretch(i, 1)
-        layout.addLayout(self.tag_button_grid)
-        
-        page_nav_layout = QHBoxLayout()
-        self.prev_page_btn = QPushButton(self.locale_manager.get_string("MainWindow", "Previous_16_Items"))
-        self.prev_page_btn.clicked.connect(lambda: self._change_tag_page(-1))
-        self.next_page_btn = QPushButton(self.locale_manager.get_string("MainWindow", "Next_16_Items"))
-        self.next_page_btn.clicked.connect(lambda: self._change_tag_page(1))
-        page_nav_layout.addWidget(self.prev_page_btn)
-        page_nav_layout.addWidget(self.next_page_btn)
-        layout.addLayout(page_nav_layout)
-        
-        return group
-
-    def _create_bulk_add_group(self) -> QGroupBox:
-        """Creates the group for bulk tag addition."""
-        group = QGroupBox(self.locale_manager.get_string("MainWindow", "Bulk_Add_Tags"))
-        layout = QVBoxLayout(group)
-        
-        layout.addWidget(QLabel(self.locale_manager.get_string("MainWindow", "Add_Tags_To_All_Files")))
-        self.add_tag_line = QLineEdit()
-        self.add_tag_line.setPlaceholderText(self.locale_manager.get_string("MainWindow", "Add_Tags_To_All_Placeholder"))
-        self.add_tag_line.setToolTip(self.locale_manager.get_string("MainWindow", "Comma_Recommended_Tooltip"))
-        self.add_tag_button = QPushButton(self.locale_manager.get_string("MainWindow", "Add_Tags_To_All_Txt_Files"))
-        self.add_tag_button.setStyleSheet(STYLE_BTN_BLUE)
-        self.add_tag_button.clicked.connect(lambda: self.add_tag_all(prepend=True))
-        self.add_tag_line.installEventFilter(self)
-        layout.addWidget(self.add_tag_line)
-        layout.addWidget(self.add_tag_button)
-
-        layout.addWidget(QLabel(self.locale_manager.get_string("MainWindow", "Add_Tags_To_All_Files_Append")))
-        self.add_tag_line_append = QLineEdit()
-        self.add_tag_line_append.setPlaceholderText(self.locale_manager.get_string("MainWindow", "Add_Tags_To_All_Placeholder"))
-        self.add_tag_line_append.setToolTip(self.locale_manager.get_string("MainWindow", "Comma_Recommended_Tooltip"))
-        self.add_tag_button_append = QPushButton(self.locale_manager.get_string("MainWindow", "Add_Tags_To_All_Txt_Files_Append"))
-        self.add_tag_button_append.setStyleSheet(STYLE_BTN_BLUE)
-        self.add_tag_button_append.clicked.connect(lambda: self.add_tag_all(prepend=False))
-        self.add_tag_line_append.installEventFilter(self)
-        layout.addWidget(self.add_tag_line_append)
-        layout.addWidget(self.add_tag_button_append)
-
-        layout.addStretch(1)
-        return group
-
-    def _create_settings_group(self) -> QWidget:
-        """Creates the widget for threshold and limit sliders."""
-        widget = QWidget()
-        layout = QHBoxLayout(widget)
-        layout.setContentsMargins(0, 0, 0, 0)
-
-        thresh_group = QGroupBox(self.locale_manager.get_string("MainWindow", "Tag_Threshold"))
-        thresh_layout = QGridLayout(thresh_group)
-        self.create_slider_group(thresh_layout, 'Thresholds', 0.0, 1.0, 0.01, {'general': 0, 'character': 1})
-        
-        limit_group = QGroupBox(self.locale_manager.get_string("MainWindow", "Max_Tags"))
-        limit_layout = QGridLayout(limit_group)
-        self.create_slider_group(limit_layout, 'Limits', 1, 150, 1, {'general': 0})
-        self.create_slider_group(limit_layout, 'Limits', 1, 10, 1, {'character': 1})
-        
-        layout.addWidget(thresh_group)
-        layout.addWidget(limit_group)
-        return widget
-
-    def _create_log_group(self) -> QGroupBox:
-        """Creates the group for the execution log."""
-        group = QGroupBox(self.locale_manager.get_string("MainWindow", "Execution_Log"), self)
-        layout = QVBoxLayout(group)
-        self.log_output = QTextEdit()
-        self.log_output.setReadOnly(True)
-        self.log_output.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        layout.addWidget(self.log_output)
-        self.log_output.setMinimumHeight(100)
-        self.log_output.setMaximumHeight(400)
-        return group
-
-
-    @Slot()
     def initial_load(self):
         """Performs the initial loading of images and tags after the main window is shown."""
         self.reload_image_list()
@@ -421,6 +165,9 @@ class MainWindow(QMainWindow):
             
         selected_item = self._populate_image_list(image_paths, auto_select_path)
             
+        if not selected_item and self.image_list.count() > 0:
+            selected_item = self.image_list.item(0)
+        
         if selected_item:
             self.image_list.setCurrentItem(selected_item)
             # Schedule the image loading to ensure the widget is sized correctly
@@ -445,8 +192,8 @@ class MainWindow(QMainWindow):
 
     def _get_image_paths(self, base_path: Path) -> list[Path]:
         """Recursively finds all image files in the given directory."""
-        paths = []
-        for ext in IMAGE_EXTENSIONS:
+        paths: list[Path] = []
+        for ext in constants.IMAGE_EXTENSIONS:
              paths.extend(base_path.rglob(f"*{ext}")) 
         return sorted(paths)
 
@@ -471,11 +218,24 @@ class MainWindow(QMainWindow):
     def reload_tags_only(self):
         """Reloads the aggregated tag list for bulk editing asynchronously."""
         if self.tag_thread and self.tag_thread.isRunning():
-            self.update_log(self.locale_manager.get_string("MainWindow", "Warning_Tag_Loading_InProgress"), "orange")
-            return
+            # Stop the existing thread gracefully
+            if self.tag_worker:
+                self.tag_worker.stop()
+            self.tag_thread.quit()
+            self.tag_thread.wait(1000) # Wait up to 1 second for the thread to finish
+            if self.tag_thread.isRunning():
+                self.tag_thread.terminate() # Force terminate if it doesn't stop
+            
+            # Clean up old thread and worker
+            if self.tag_worker:
+                self.tag_worker.deleteLater()
+            self.tag_thread.deleteLater()
+            self.tag_thread = None
+            self.tag_worker = None
         
         input_dir_path = Path(self.settings.paths.input_dir)
-        if not input_dir_path.is_dir(): return
+        if not input_dir_path.is_dir():
+            return
 
         self.loading_label.setText(self.locale_manager.get_string("Constants", "Loading_Tag_List"))
         self._set_bulk_controls_enabled(False)
@@ -510,7 +270,8 @@ class MainWindow(QMainWindow):
         
         try:
             image = QImage(str(image_path))
-            if image.isNull(): raise ValueError("Failed to load QImage")
+            if image.isNull():
+                raise ValueError("Failed to load QImage")
             
             pixmap = QPixmap.fromImage(image)
             self._original_image_pixmap = pixmap
@@ -525,7 +286,7 @@ class MainWindow(QMainWindow):
             self._load_image_tags(image_path)
             
             if self._image_viewer_dialog and self._image_viewer_dialog.isVisible():
-                self._show_enlarged_image()
+                self.show_enlarged_image()
         except Exception as e:
             write_debug_log(self.locale_manager.get_string("MainWindow", "Image_Load_Error_Debug", image_path=image_path, e=e))
             self._clear_image_display()
@@ -558,7 +319,8 @@ class MainWindow(QMainWindow):
 
     def _update_bulk_tag_buttons(self, all_tags: list[tuple[str, int]]):
         """Updates the bulk tag deletion buttons with new tag data."""
-        if self.loading_timer: self.loading_timer.stop()
+        if self.loading_timer:
+            self.loading_timer.stop()
         self._is_bulk_deleting = False
         self._all_tags = all_tags
         self._current_page = 0
@@ -571,8 +333,8 @@ class MainWindow(QMainWindow):
         self.tag_buttons.clear()
 
         total_tags = len(self._all_tags)
-        start_index = self._current_page * TAGS_PER_PAGE
-        end_index = min(start_index + TAGS_PER_PAGE, total_tags)
+        start_index = self._current_page * constants.TAGS_PER_PAGE
+        end_index = min(start_index + constants.TAGS_PER_PAGE, total_tags)
         
         if total_tags == 0:
             self.loading_label.setText(self.locale_manager.get_string("MainWindow", "Tag_File_Txt_Not_Found"))
@@ -585,7 +347,7 @@ class MainWindow(QMainWindow):
                 button.setMinimumWidth(self._tag_button_min_width)
                 button.setFixedHeight(self._tag_button_min_height)
                 button.setToolTip(self.locale_manager.get_string("MainWindow", "Tag_Button_Tooltip", tag_name=tag_name))
-                button.clicked.connect(lambda checked, t=tag_name: self.delete_tag_all(t))
+                button.clicked.connect(functools.partial(self.delete_tag_all, tag_name))
                 self.tag_button_grid.addWidget(button, i // 4, i % 4)
                 self.tag_buttons.append(button)
 
@@ -612,7 +374,7 @@ class MainWindow(QMainWindow):
             button = QPushButton(tag_name)
             button.setMinimumSize(self._tag_button_min_width, self._tag_button_min_height)
             button.setToolTip(self.locale_manager.get_string("MainWindow", "Tag_Button_Tooltip_Delete", tag_name=tag_name))
-            button.clicked.connect(lambda checked, t=tag_name: self._delete_image_tag(t))
+            button.clicked.connect(functools.partial(self._delete_image_tag, tag_name))
             self.tag_display_grid.addWidget(button, i // cols, i % cols)
             self.tag_buttons_for_image.append(button)
 
@@ -623,7 +385,7 @@ class MainWindow(QMainWindow):
     def _update_ui_for_processing(self, is_running: bool, process_type: str):
         """Updates UI elements based on whether a process is starting or stopping."""
         if is_running:
-            style = STYLE_BTN_RED
+            style = constants.STYLE_BTN_RED
             if process_type == 'tagging':
                 text = self.locale_manager.get_string("Constants", "Stop_Tagging_Process")
             else: # downloading
@@ -660,35 +422,60 @@ class MainWindow(QMainWindow):
         write_debug_log("closeEvent triggered")
         self.save_current_config()
 
-        threads_to_stop = [
+        threads_to_stop: list[tuple[QThread | None, DownloaderWorker | TaggerThreadWorker | TagLoader | BulkTagWorker | None]] = [
             (self._download_thread, self._downloader_worker),
             (self._tagger_thread, self._tagger_worker),
             (self._bulk_tag_thread, self._bulk_tag_worker),
             (self.tag_thread, self.tag_worker)
         ]
 
-        active_threads = False
         for thread, worker in threads_to_stop:
             if thread and thread.isRunning():
-                active_threads = True
-                if worker and hasattr(worker, 'stop'):
-                    # Use invokeMethod to call stop() in the worker's thread
-                    QMetaObject.invokeMethod(worker, "stop", Qt.ConnectionType.QueuedConnection)
-        
-        if active_threads:
-            write_debug_log("Waiting for threads to finish...")
-            # Give threads a moment to process the stop signal
-            QApplication.processEvents()
-            time.sleep(0.1)
+                write_debug_log(f"Requesting thread {thread} to quit.")
+                
+                if worker is not None and hasattr(worker, 'stop'):
+                    self._request_worker_stop.connect(worker.stop, Qt.ConnectionType.QueuedConnection)
+                    self._request_worker_stop.emit() # Request worker to stop
+                    QApplication.processEvents() # Allow signal to be processed
+                    self._request_worker_stop.disconnect(worker.stop) # Disconnect immediately
 
-        for thread, worker in threads_to_stop:
-            if thread and thread.isRunning():
                 thread.quit()
-                if not thread.wait(3000): # Wait for 3 seconds
+                
+                # Wait for the worker's finished signal
+                if worker is not None:
+                    signal_to_connect: Any | None = None # Changed Signal to Any to resolve Pylance reportAssignmentType
+                    if isinstance(worker, DownloaderWorker):
+                        signal_to_connect = worker.download_finished
+                    elif hasattr(worker, 'finished'):
+                        # TaggerThreadWorker, TagLoader, BulkTagWorker should have 'finished'
+                        # Type check necessary for Pylance
+                        if isinstance(worker, (TaggerThreadWorker, TagLoader, BulkTagWorker)): # type: ignore
+                            signal_to_connect = worker.finished
+                    
+                    if signal_to_connect:
+                        loop = QEventLoop()
+                        self._worker_finished_event_loop = loop
+                        signal_to_connect.connect(loop.quit) # type: ignore
+                        
+                        # Set a timeout to prevent indefinite waiting
+                        QTimer.singleShot(10000, loop.quit) # Force quit loop after 10 seconds
+
+                        write_debug_log(f"Waiting for worker {worker} to finish...")
+                        loop.exec() # Block until worker finishes or timeout
+                        write_debug_log(f"Worker {worker} finished waiting.")
+                        
+                        self._worker_finished_event_loop = None # Cleanup
+
+                if not thread.wait(100): # 短い時間だけ待機し、スレッドが完全に終了したか確認
                     write_debug_log(f"Thread {thread} did not exit gracefully, terminating.")
                     thread.terminate()
                 else:
                     write_debug_log(f"Thread {thread} finished gracefully.")
+                
+                if worker:
+                    worker.deleteLater()
+
+
 
         write_debug_log("Proceeding with application close.")
         super().closeEvent(event)
@@ -708,7 +495,7 @@ class MainWindow(QMainWindow):
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:
         """Filters events from child widgets to implement custom keyboard shortcuts."""
         # Defensively check if target widgets exist before accessing them
-        target_widgets = []
+        target_widgets: list[QObject] = []
         if hasattr(self, 'add_single_tag_line'):
             target_widgets.append(self.add_single_tag_line)
         if hasattr(self, 'add_tag_line'):
@@ -717,13 +504,12 @@ class MainWindow(QMainWindow):
             target_widgets.append(self.add_tag_line_append)
 
         if watched in target_widgets:
-            if event.type() == QEvent.Type.KeyPress:
-                key_event = QKeyEvent(event)
-                if key_event.modifiers() == Qt.KeyboardModifier.ControlModifier:
-                    if key_event.key() == Qt.Key.Key_Up:
+            if isinstance(event, QKeyEvent):
+                if event.modifiers() == Qt.KeyboardModifier.ControlModifier:
+                    if event.key() == Qt.Key.Key_Up:
                         self._navigate_image_list(-1)
                         return True # Event handled, do not process further
-                    elif key_event.key() == Qt.Key.Key_Down:
+                    elif event.key() == Qt.Key.Key_Down:
                         self._navigate_image_list(1)
                         return True # Event handled
         
@@ -736,8 +522,10 @@ class MainWindow(QMainWindow):
              return
         
         # If cursor is elsewhere, perform global navigation.
-        if event.angleDelta().y() > 0: self._navigate_image_list(-1)
-        elif event.angleDelta().y() < 0: self._navigate_image_list(1)
+        if event.angleDelta().y() > 0:
+            self._navigate_image_list(-1)
+        elif event.angleDelta().y() < 0:
+            self._navigate_image_list(1)
         event.accept()
     
     @Slot()
@@ -757,13 +545,13 @@ class MainWindow(QMainWindow):
         """Opens a dialog to select an input folder."""
         dir_path = QFileDialog.getExistingDirectory(self, self.locale_manager.get_string("MainWindow", "Select_Input_Folder"), self.input_line.text())
         if dir_path:
-            self._handle_folder_drop(dir_path)
+            self.handle_folder_drop(dir_path)
 
     def dragEnterEvent(self, event: QDragEnterEvent):
         """Handles drag enter events to accept valid file types."""
         if event.mimeData().hasUrls():
             path = Path(event.mimeData().urls()[0].toLocalFile())
-            if path.is_dir() or path.suffix.lower() in IMAGE_EXTENSIONS + ['.txt']:
+            if path.is_dir() or path.suffix.lower() in constants.IMAGE_EXTENSIONS + ['.txt']:
                 event.acceptProposedAction()
 
     def dropEvent(self, event: QDropEvent):
@@ -773,18 +561,18 @@ class MainWindow(QMainWindow):
 
         if path.is_dir():
             folder_path = str(path)
-        elif path.suffix.lower() in IMAGE_EXTENSIONS:
+        elif path.suffix.lower() in constants.IMAGE_EXTENSIONS:
             folder_path, file_to_select = str(path.parent), path.name
         elif path.suffix.lower() == '.txt':
             folder_path = str(path.parent)
-            for ext in IMAGE_EXTENSIONS:
+            for ext in constants.IMAGE_EXTENSIONS:
                 img_path = path.with_suffix(ext)
                 if img_path.is_file():
                     file_to_select = img_path.name
                     break
         
         if folder_path:
-            self._handle_folder_drop(folder_path, file_to_select)
+            self.handle_folder_drop(folder_path, file_to_select)
             event.acceptProposedAction()
 
     def resizeEvent(self, event: QResizeEvent):
@@ -832,7 +620,7 @@ class MainWindow(QMainWindow):
     def _change_tag_page(self, delta: int):
         """Changes the displayed page for bulk tags."""
         new_page = self._current_page + delta
-        total_pages = (len(self._all_tags) + TAGS_PER_PAGE - 1) // TAGS_PER_PAGE
+        total_pages = (len(self._all_tags) + constants.TAGS_PER_PAGE - 1) // constants.TAGS_PER_PAGE
         if 0 <= new_page < total_pages:
             self._current_page = new_page
             self.display_current_tag_page()
@@ -850,16 +638,20 @@ class MainWindow(QMainWindow):
     def _add_single_tag(self):
         """Adds a new tag to the currently selected image's tag file."""
         current_item = self.image_list.currentItem()
-        if not current_item: return
+        if not current_item:
+            return
 
         tags_raw = self.add_single_tag_line.text().strip()
-        if not tags_raw: return
+        if not tags_raw:
+            return
 
         # (Normalization logic for full-width chars, spaces, commas...)
         tags_processed = ' '.join(tags_raw.replace('ã€€', ' ').split())
-        while ',,' in tags_processed: tags_processed = tags_processed.replace(',,', ',')
+        while ',,' in tags_processed:
+            tags_processed = tags_processed.replace(',,', ',')
         new_tags = [t.strip() for t in tags_processed.split(',') if t.strip()]
-        if not new_tags: return
+        if not new_tags:
+            return
 
         image_path = Path(self.settings.paths.input_dir) / current_item.data(Qt.ItemDataRole.UserRole + 1)
         txt_path = image_path.with_suffix('.txt')
@@ -877,6 +669,7 @@ class MainWindow(QMainWindow):
             self.update_log(self.locale_manager.get_string("MainWindow", "Tags_Added_To_File", txt_path_name=txt_path.name), "green")
             self.add_single_tag_line.clear()
             self._load_image_tags(image_path)
+            self.reload_tags_only()
         except Exception as e:
             self.update_log(self.locale_manager.get_string("MainWindow", "Error_Adding_Tags", txt_path_name=txt_path.name, e=e), "red")
 
@@ -916,17 +709,19 @@ class MainWindow(QMainWindow):
             self.update_log(self.locale_manager.get_string("MainWindow", "Error_Deleting_Tag", tag_name=tag_to_delete, file_name=txt_path.name, e=e), "red")
 
     def add_tag_all(self, prepend: bool):
-        """Starts a bulk process to add tags to all .txt files."""
-        if self._is_bulk_deleting: return
+        if self._is_bulk_deleting:
+            return
         tags_to_add = (self.add_tag_line if prepend else self.add_tag_line_append).text().strip()
-        if not tags_to_add: return
+        if not tags_to_add:
+            return
         
         if QMessageBox.question(self, self.locale_manager.get_string("MainWindow", "Bulk_Add_Confirmation"), self.locale_manager.get_string("MainWindow", "Confirm_Bulk_Add_Tag", tags_to_add=tags_to_add)) == QMessageBox.StandardButton.Yes:
             self._start_bulk_tag_worker('add', input_dir=Path(self.settings.paths.input_dir), tags=tags_to_add, prepend=prepend)
     
     def delete_tag_all(self, tag_to_delete: str):
         """Starts a bulk process to delete a tag from all .txt files."""
-        if self._is_bulk_deleting: return
+        if self._is_bulk_deleting:
+            return
         if QMessageBox.question(self, self.locale_manager.get_string("MainWindow", "Bulk_Delete_Confirmation"), self.locale_manager.get_string("MainWindow", "Confirm_Bulk_Delete_Tag", tag_to_delete=tag_to_delete)) == QMessageBox.StandardButton.Yes:
             self._start_bulk_tag_worker('delete', input_dir=Path(self.settings.paths.input_dir), tag=tag_to_delete)
 
@@ -934,26 +729,29 @@ class MainWindow(QMainWindow):
 
     def toggle_download_or_start_tagging(self):
         """Main action button logic: starts or stops download/tagging."""
+        self.update_log(self.locale_manager.get_string("MainWindow", "Starting_Process_Generic"), "black")
+        QApplication.processEvents() # Ensure the log message is displayed immediately
         if self._is_downloading:
             self._stop_download_thread()
         elif self._tagger_thread and self._tagger_thread.isRunning():
             self._stop_tagging_thread()
         else:
-            self.save_current_config()
             if self._is_model_available():
+                self.update_log(self.locale_manager.get_string("MainWindow", "Starting_Tagging_Process"), "black")
                 self._start_tagging_thread()
             else:
+                self.update_log(self.locale_manager.get_string("MainWindow", "Starting_Model_Download"), "black")
                 self._start_download_thread()
 
     def _start_tagging_thread(self):
         """Initializes and starts the TaggerThreadWorker."""
-        if self._tagger_thread and self._tagger_thread.isRunning(): return
+        if self._tagger_thread and self._tagger_thread.isRunning():
+            return
         
         self._always_overwrite = False
         self._always_skip = False
         
         self._update_ui_for_processing(True, 'tagging')
-        self.update_log(self.locale_manager.get_string("MainWindow", "Starting_Tagging_Process"), "black")
 
         # Get selected file to prioritize it
         selected_path: Path | None = None
@@ -967,6 +765,7 @@ class MainWindow(QMainWindow):
         self._tagger_worker.moveToThread(self._tagger_thread)
         
         self._tagger_worker.log_message.connect(self.update_log)
+        self._tagger_worker.model_status_changed.connect(self._check_model_status_and_update_ui)
         self._tagger_worker.finished.connect(self._on_tagger_finished)
         self._tagger_thread.started.connect(self._tagger_worker.run_tagging)
         
@@ -979,10 +778,12 @@ class MainWindow(QMainWindow):
             self.run_button.setText(self.locale_manager.get_string("Constants", "Stopping_Process"))
             self.run_button.setEnabled(False)
             self._tagger_worker.stop()
+            QApplication.processEvents() # Ensure UI remains responsive during stop
 
     def _start_download_thread(self):
         """Initializes and starts the DownloaderWorker."""
-        if self._download_thread and self._download_thread.isRunning(): return
+        if self._download_thread and self._download_thread.isRunning():
+            return
 
         self._is_downloading = True
         self._update_ui_for_processing(True, 'downloading')
@@ -1007,22 +808,24 @@ class MainWindow(QMainWindow):
             self.run_button.setEnabled(False)
             self._downloader_worker.stop()
     
-    def _start_bulk_tag_worker(self, mode: str, **kwargs):
+    def _start_bulk_tag_worker(self, mode: str, **kwargs: Any):
         """Initializes and starts the BulkTagWorker for add/delete operations."""
         self._is_bulk_deleting = True
         self._set_bulk_controls_enabled(False)
         self.update_log(self.locale_manager.get_string("MainWindow", "Starting_Bulk_Tag_Operation", mode=mode), "blue")
 
         self._bulk_tag_thread = QThread()
-        self._bulk_tag_worker = BulkTagWorker(self.locale_manager.get_string)
-        self._bulk_tag_worker.moveToThread(self._bulk_tag_thread)
+        worker = BulkTagWorker(self.locale_manager.get_string)
+        self._bulk_tag_worker = worker
+        worker.moveToThread(self._bulk_tag_thread)
 
-        self._bulk_tag_worker.log_message.connect(self.update_log)
-        self._bulk_tag_worker.finished.connect(self._on_bulk_tag_finished)
+        worker.log_message.connect(self.update_log)
+        worker.finished.connect(self._on_bulk_tag_finished)
+        
         if mode == 'add':
-            self._bulk_tag_thread.started.connect(lambda: self._bulk_tag_worker.run_bulk_add(kwargs['input_dir'], kwargs['tags'], kwargs['prepend']))
+            self._bulk_tag_thread.started.connect(lambda: worker.run_bulk_add(kwargs['input_dir'], kwargs['tags'], kwargs['prepend']))
         else: # delete
-            self._bulk_tag_thread.started.connect(lambda: self._bulk_tag_worker.run_bulk_delete(kwargs['input_dir'], kwargs['tag']))
+            self._bulk_tag_thread.started.connect(lambda: worker.run_bulk_delete(kwargs['input_dir'], kwargs['tag']))
 
         self._bulk_tag_thread.start()
 
@@ -1031,6 +834,10 @@ class MainWindow(QMainWindow):
     @Slot()
     def _on_tagger_finished(self):
         """Cleans up after the tagging thread has finished."""
+        self.reload_tags_only()
+        # Reload settings from disk as the worker may have updated the verification status
+        config = load_config()
+        self.settings = load_settings(config)
         self._update_ui_for_processing(False, 'tagging')
         if self.image_list.count() > 0:
             self._load_and_fit_image(self.image_list.item(0))
@@ -1038,7 +845,8 @@ class MainWindow(QMainWindow):
         if self._tagger_thread:
             self._tagger_thread.quit()
             self._tagger_thread.wait()
-            self._tagger_worker.deleteLater()
+            if self._tagger_worker:
+                self._tagger_worker.deleteLater()
             self._tagger_thread.deleteLater()
             self._tagger_thread = self._tagger_worker = None
 
@@ -1062,7 +870,8 @@ class MainWindow(QMainWindow):
         if self._download_thread:
             self._download_thread.quit()
             self._download_thread.wait()
-            self._downloader_worker.deleteLater()
+            if self._downloader_worker:
+                self._downloader_worker.deleteLater()
             self._download_thread.deleteLater()
             self._download_thread = self._downloader_worker = None
 
@@ -1072,7 +881,8 @@ class MainWindow(QMainWindow):
         if self.tag_thread:
             self.tag_thread.quit()
             self.tag_thread.wait()
-            self.tag_worker.deleteLater()
+            if self.tag_worker:
+                self.tag_worker.deleteLater()
             self.tag_thread.deleteLater()
             self.tag_thread = self.tag_worker = None
 
@@ -1083,7 +893,8 @@ class MainWindow(QMainWindow):
         if self._bulk_tag_thread:
             self._bulk_tag_thread.quit()
             self._bulk_tag_thread.wait()
-            self._bulk_tag_worker.deleteLater()
+            if self._bulk_tag_worker:
+                self._bulk_tag_worker.deleteLater()
             self._bulk_tag_thread.deleteLater()
             self._bulk_tag_thread = self._bulk_tag_worker = None
 
@@ -1104,17 +915,17 @@ class MainWindow(QMainWindow):
         """Checks if the model is verified and essential files exist."""
         if not self.settings.model.verified:
             return False
-        if not MODEL_PATH.is_file():
+        if not constants.MODEL_PATH.is_file():
             return False
-        if not TAGS_CSV_PATH.is_file():
+        if not constants.TAGS_CSV_PATH.is_file():
             return False
         return True
 
     def _get_log_color_map(self) -> dict[str, str]:
         """Returns the appropriate color map based on the detected theme."""
         theme_colors = {
-            True: {"red": COLOR_LOG_ERROR_DARK, "green": COLOR_LOG_SUCCESS_DARK, "blue": COLOR_LOG_INFO_DARK, "orange": COLOR_LOG_WARN_DARK, "black": COLOR_LOG_DEFAULT_DARK},
-            False: {"red": COLOR_LOG_ERROR_LIGHT, "green": COLOR_LOG_SUCCESS_LIGHT, "blue": COLOR_LOG_INFO_LIGHT, "orange": COLOR_LOG_WARN_LIGHT, "black": COLOR_LOG_DEFAULT_LIGHT}
+            True: {"red": constants.COLOR_LOG_ERROR_DARK, "green": constants.COLOR_LOG_SUCCESS_DARK, "blue": constants.COLOR_LOG_INFO_DARK, "orange": constants.COLOR_LOG_WARN_DARK, "black": constants.COLOR_LOG_DEFAULT_DARK},
+            False: {"red": constants.COLOR_LOG_ERROR_LIGHT, "green": constants.COLOR_LOG_SUCCESS_LIGHT, "blue": constants.COLOR_LOG_INFO_LIGHT, "orange": constants.COLOR_LOG_WARN_LIGHT, "black": constants.COLOR_LOG_DEFAULT_LIGHT}
         }
         return theme_colors[self._is_dark_theme]
 
@@ -1137,7 +948,7 @@ class MainWindow(QMainWindow):
             value_label = QLabel(f"{initial_val:.2f}" if is_float else str(int(initial_val)))
             value_label.setFixedWidth(50)
 
-            def update_value(value, k=key, s=settings_section, res=resolution, v_label=value_label, is_flt=is_float):
+            def update_value(value: int, k: str = key, s: Any = settings_section, res: float = resolution, v_label: QLabel = value_label, is_flt: bool = is_float):
                 real_val = value / res
                 v_label.setText(f"{real_val:.2f}" if is_flt else str(int(real_val)))
                 setattr(s, k, real_val if is_flt else int(real_val))
@@ -1157,22 +968,22 @@ class MainWindow(QMainWindow):
         
         self.log_output.append(html_message)
 
-        if self.log_output.document().blockCount() > MAX_LOG_LINES:
+        if self.log_output.document().blockCount() > constants.MAX_LOG_LINES:
             cursor = self.log_output.textCursor()
             cursor.movePosition(cursor.MoveOperation.Start)
             cursor.movePosition(cursor.MoveOperation.NextBlock, cursor.MoveMode.KeepAnchor)
             cursor.removeSelectedText()
             cursor.deleteChar()
 
-    def _check_model_status_and_update_ui(self, auto_start_download=False, force_download=False):
+    def _check_model_status_and_update_ui(self, auto_start_download: bool = False, force_download: bool = False):
         """Checks for model files and updates the run button's state and appearance."""
         if not force_download and self._is_model_available():
             self.run_button.setText(self.locale_manager.get_string("Constants", "Tag_Button_Text"))
-            self.run_button.setStyleSheet(STYLE_BTN_GREEN)
+            self.run_button.setStyleSheet(constants.STYLE_BTN_GREEN)
             self.run_button.setEnabled(True)
         else:
             self.run_button.setText(self.locale_manager.get_string("Constants", "Download_Start_No_Model"))
-            self.run_button.setStyleSheet(STYLE_BTN_ORANGE)
+            self.run_button.setStyleSheet(constants.STYLE_BTN_ORANGE)
             self.run_button.setEnabled(True)
             if auto_start_download:
                 self.update_log(self.locale_manager.get_string("MainWindow", "Info_Model_NotFound_Start_Download"), "orange")
@@ -1193,7 +1004,7 @@ class MainWindow(QMainWindow):
 
 
     @Slot()
-    def _show_enlarged_image(self):
+    def show_enlarged_image(self):
         """Shows the currently selected image, positioned next to the tag panel."""
         if not self._original_image_pixmap or self._original_image_pixmap.isNull():
             return
@@ -1201,13 +1012,17 @@ class MainWindow(QMainWindow):
         screen_geom = QApplication.primaryScreen().availableGeometry()
         
         tag_panel_widget = self.tag_display_grid.parentWidget().parentWidget() # Get the splitter child widget
+        if not tag_panel_widget:
+            return
+            
         global_top_left = tag_panel_widget.mapToGlobal(QPoint(0,0))
         tag_panel_global_rect = QRect(global_top_left, tag_panel_widget.size())
         
         available_width = tag_panel_global_rect.left()
         available_height = screen_geom.height()
 
-        if self._original_image_pixmap.height() == 0: return
+        if self._original_image_pixmap.height() == 0:
+            return
         img_ratio = self._original_image_pixmap.width() / self._original_image_pixmap.height()
         
         dialog_width = available_width
@@ -1222,11 +1037,11 @@ class MainWindow(QMainWindow):
 
         # --- MODIFIED: Position dialog to the left of the tag panel ---
         dialog_x = tag_panel_global_rect.left() - dialog_width
-        dialog_y = screen_geom.top() + (screen_geom.height() - dialog_height) // 2
+        dialog_y = screen_geom.y() + (screen_geom.height() - dialog_height) // 2
         
         if self._image_viewer_dialog is None:
             # Launch in navigation mode (default)
-            self._image_viewer_dialog = ImageViewerDialog(self, tag_panel_global_rect)
+            self._image_viewer_dialog = ImageViewerDialog(self) # Removed tag_panel_global_rect
             self._image_viewer_dialog.finished.connect(self._image_viewer_dialog_closed)
             self._image_viewer_dialog.nextImageRequested.connect(lambda: self._navigate_image_list(1))
             self._image_viewer_dialog.prevImageRequested.connect(lambda: self._navigate_image_list(-1))
@@ -1250,7 +1065,7 @@ class MainWindow(QMainWindow):
             return
 
         self.central_widget.setCurrentWidget(self.grid_view_widget)
-        self.setWindowTitle(f"{MSG_WINDOW_TITLE} - Grid View")
+        self.setWindowTitle(f"{constants.MSG_WINDOW_TITLE} - Grid View")
         self.grid_view_widget.load_images(image_paths)
         self.showMaximized()
         self.update_log(self.locale_manager.get_string("MainWindow", "Switched_To_Grid_View"), "blue")
@@ -1259,7 +1074,7 @@ class MainWindow(QMainWindow):
     def _show_main_view(self):
         """Switches the central widget back to the main view."""
         self.central_widget.setCurrentWidget(self.main_view_widget)
-        self.setWindowTitle(MSG_WINDOW_TITLE)
+        self.setWindowTitle(constants.MSG_WINDOW_TITLE)
         self.showNormal() # Or restore previous geometry
         self.update_log(self.locale_manager.get_string("MainWindow", "Switched_Back_To_Main_View"), "blue")
         self.reload_tags_only()
@@ -1278,7 +1093,7 @@ class MainWindow(QMainWindow):
         self._overwrite_event_loop = loop
 
         # Emit a signal to the main thread to show the dialog
-        self._overwrite_request.emit(file_path)
+        self.overwrite_request.emit(file_path)
 
         # Wait until the main thread signals that it's done.
         loop.exec()
@@ -1316,17 +1131,24 @@ class MainWindow(QMainWindow):
         msg.setIcon(QMessageBox.Icon.Question)
         
         btn_yes = msg.addButton(self.locale_manager.get_string("MainWindow", "Overwrite"), QMessageBox.ButtonRole.YesRole)
-        btn_no = msg.addButton(self.locale_manager.get_string("MainWindow", "Skip"), QMessageBox.ButtonRole.NoRole)
+        _ = msg.addButton(self.locale_manager.get_string("MainWindow", "Skip"), QMessageBox.ButtonRole.NoRole)
         btn_yes_all = msg.addButton(self.locale_manager.get_string("MainWindow", "Always_Overwrite"), QMessageBox.ButtonRole.YesRole)
         btn_no_all = msg.addButton(self.locale_manager.get_string("MainWindow", "Always_Skip"), QMessageBox.ButtonRole.NoRole)
         
         msg.exec()
         clicked_button = msg.clickedButton()
 
-        if clicked_button == btn_yes_all: self._always_overwrite = True
-        elif clicked_button == btn_no_all: self._always_skip = True
+        if clicked_button == btn_yes_all:
+            self._always_overwrite = True
+        elif clicked_button == btn_no_all:
+            self._always_skip = True
         
-        if clicked_button is None:
+        if clicked_button is None: # type: ignore
             return False
 
         return clicked_button in (btn_yes, btn_yes_all)
+
+    @Slot(str)
+    def _update_input_dir(self, text: str):
+        """Updates the input directory path in the settings."""
+        self.settings.paths.input_dir = text

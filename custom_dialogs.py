@@ -4,7 +4,7 @@ from PySide6.QtCore import (
     Qt, Signal, QPoint, QRect, QEvent, QPointF
 )
 from PySide6.QtWidgets import (
-    QLabel, QDialog, QApplication, QVBoxLayout
+    QLabel, QDialog, QApplication, QVBoxLayout, QWidget
 )
 from PySide6.QtGui import (
     QMouseEvent, QPixmap, QKeyEvent, QWheelEvent, QResizeEvent, QPainter
@@ -20,7 +20,8 @@ class ClickableLabel(QLabel):
         super().mouseDoubleClickEvent(event)
 
     def hasHeightForWidth(self) -> bool:
-        return self.pixmap() is not None and not self.pixmap().isNull()
+        pixmap: QPixmap | None = self.pixmap()
+        return pixmap is not None and not pixmap.isNull() # type: ignore
 
     def heightForWidth(self, width: int) -> int:
         if self.pixmap() and not self.pixmap().isNull() and self.pixmap().width() > 0:
@@ -46,12 +47,12 @@ class ImageViewerDialog(QDialog):
         TopLeft = Top | Left; TopRight = Top | Right
         BottomLeft = Bottom | Left; BottomRight = Bottom | Right
 
-    def __init__(self, parent=None, tag_panel_rect: QRect = QRect(), zoom_and_pan_enabled: bool = False):
+    def __init__(self, parent: QWidget | None = None, tag_panel_rect: QRect = QRect(), zoom_and_pan_enabled: bool = False):
         super().__init__(parent)
         self.setWindowFlag(Qt.WindowType.FramelessWindowHint)
-        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setAttribute(Qt.WA_TranslucentBackground) # type: ignore
         self.setMouseTracking(True)
-        self.setAttribute(Qt.WA_Hover)
+        self.setAttribute(Qt.WA_Hover) # type: ignore
         self.setMinimumSize(200, 200)
 
         self._zoom_and_pan_enabled = zoom_and_pan_enabled
@@ -72,7 +73,7 @@ class ImageViewerDialog(QDialog):
         self._original_pixmap: QPixmap | None = None
         self._window_move_offset = QPoint()
         self._scale_factor = 1.0
-        self._pan_offset = QPointF(0, 0)
+        self._pan_offset: QPointF = QPointF(0, 0)
     
     def show_image(self, pixmap: QPixmap, dialog_width: int, dialog_height: int):
         self._original_pixmap = pixmap
@@ -138,7 +139,7 @@ class ImageViewerDialog(QDialog):
             zoom_factor = 1.15 if delta > 0 else 1 / 1.15
             mouse_pos = QPointF(event.position())
             
-            image_pos_before_zoom = (mouse_pos - self._pan_offset) / self._scale_factor
+            image_pos_before_zoom = (mouse_pos - self._pan_offset) / self._scale_factor # type: ignore
             self._scale_factor *= zoom_factor
             self._pan_offset = mouse_pos - image_pos_before_zoom * self._scale_factor
             
@@ -150,7 +151,7 @@ class ImageViewerDialog(QDialog):
     def mousePressEvent(self, event: QMouseEvent):
         if event.button() == Qt.MouseButton.LeftButton:
             self._resize_edge = self._get_resize_handle(event.pos())
-            if self._resize_edge != self.ResizeHandle.NoHandle:
+            if self._resize_edge != self.ResizeHandle.NoHandle: # type: ignore # type: ignore
                 self._resizing = True
                 self._last_mouse_global_pos = event.globalPosition().toPoint()
             else:
@@ -208,9 +209,9 @@ class ImageViewerDialog(QDialog):
 
     def keyPressEvent(self, event: QKeyEvent):
         key = event.key()
-        if key in (Qt.Key_Up, Qt.Key_W, Qt.Key_K, Qt.Key_Left, Qt.Key_H, Qt.Key.Key_A):
+        if key in (Qt.Key_Up, Qt.Key_W, Qt.Key_K, Qt.Key_Left, Qt.Key_H, Qt.Key.Key_A): # type: ignore
             self.prevImageRequested.emit()
-        elif key in (Qt.Key_Down, Qt.Key_S, Qt.Key_J, Qt.Key_Right, Qt.Key_L, Qt.Key.Key_D):
+        elif key in (Qt.Key_Down, Qt.Key_S, Qt.Key_J, Qt.Key_Right, Qt.Key_L, Qt.Key.Key_D): # type: ignore
             self.nextImageRequested.emit()
         elif key == Qt.Key.Key_Escape:
             self.close()

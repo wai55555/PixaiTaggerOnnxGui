@@ -2,6 +2,10 @@ __pycache__/
 *.pyc
 venv/
 .venv/
+.idea/
 *.env
 dist/
 build/
+pixai-tagger-v0.9-onnx/
+debug_log.txt
+*コピー*

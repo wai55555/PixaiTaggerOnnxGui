@@ -6,12 +6,12 @@ from PySide6.QtWidgets import (
     QPushButton, QGridLayout, QSizePolicy, QScrollArea, QFrame, QToolTip,
     QApplication
 )
-from PySide6.QtCore import Qt, Signal, Slot, QPoint
-from PySide6.QtGui import QPixmap, QWheelEvent
+from PySide6.QtCore import Qt, Signal, Slot
+from PySide6.QtGui import QPixmap, QWheelEvent, QResizeEvent
 
 import tag_utils
 from locale_manager import LocaleManager
-from settings_model import AppSettings
+from app_settings import AppSettings
 from custom_dialogs import ClickableLabel, ImageViewerDialog
 
 TAGS_PER_PAGE_GRID = 14
@@ -20,7 +20,7 @@ class ImageEditCellWidget(QWidget):
     # --- ADDED: Signal to request image enlargement with its global index ---
     image_enlarge_requested = Signal(int)
 
-    def __init__(self, locale_manager: LocaleManager, parent=None):
+    def __init__(self, locale_manager: LocaleManager, parent: QWidget | None = None):
         super().__init__(parent)
         self.locale_manager = locale_manager
         self._image_path: Path | None = None
@@ -96,7 +96,7 @@ class ImageEditCellWidget(QWidget):
         self._update_tag_display()
 
     # ... (rest of the class is unchanged) ...
-    def resizeEvent(self, event):
+    def resizeEvent(self, event: QResizeEvent):
         super().resizeEvent(event)
         self._update_image_display()
     def _update_image_display(self):
@@ -107,8 +107,8 @@ class ImageEditCellWidget(QWidget):
                                               Qt.AspectRatioMode.KeepAspectRatio, 
                                               Qt.TransformationMode.SmoothTransformation)
                 self.image_label.setPixmap(scaled_pixmap)
-    def _update_tag_display(self):
-        for btn in self.tag_buttons: btn.deleteLater()
+        for btn in self.tag_buttons:
+            btn.deleteLater()
         self.tag_buttons.clear()
         if not self._image_path: 
             self.prev_tag_page_btn.setEnabled(False)
@@ -125,7 +125,7 @@ class ImageEditCellWidget(QWidget):
             btn.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Expanding)
             btn.setStyleSheet("font-size: 11pt; text-align: left; padding-left: 3px;")
             btn.setToolTip(self.locale_manager.get_string("GridView", "Click_To_Delete_Tag", tag=tag))
-            btn.clicked.connect(lambda checked, t=tag: self._remove_tag(t))
+            btn.clicked.connect(lambda checked=False, t=tag: self._remove_tag(t))
             row = i % 7; col = i // 7
             self.tag_grid_layout.addWidget(btn, row, col)
             self.tag_buttons.append(btn)
@@ -133,14 +133,15 @@ class ImageEditCellWidget(QWidget):
         self.next_tag_page_btn.setEnabled(end_index < total_tags)
     @Slot()
     def _add_tag(self):
-        if not self._image_path: return
+        if not self._image_path:
+            return
         tags_to_add_str = self.add_tag_line.text().strip()
         if not tags_to_add_str: return
         tags_to_add = [t.strip() for t in tags_to_add_str.split(',') if t.strip()]
         if not tags_to_add: return
         txt_path = tag_utils.get_txt_path(self._image_path)
         existing_tags = tag_utils.read_tags(txt_path)
-        actually_new_tags = []; any_duplicates = False
+        actually_new_tags: list[str] = []; any_duplicates = False
         for tag in tags_to_add:
             if tag in existing_tags: any_duplicates = True
             else:
@@ -149,7 +150,7 @@ class ImageEditCellWidget(QWidget):
         if any_duplicates:
             tooltip_message = self.locale_manager.get_string("GridView", "Tooltip_Duplication")
             tooltip_pos = self.add_tag_line.mapToGlobal(self.add_tag_line.rect().bottomLeft())
-            QToolTip.showText(tooltip_pos, tooltip_message, self.add_tag_line, msecs=3000)
+            QToolTip.showText(tooltip_pos, tooltip_message, self.add_tag_line)
         if actually_new_tags:
             if tag_utils.add_tags_to_file(txt_path, actually_new_tags): self._update_tag_display()
     @Slot(str)
@@ -164,25 +165,32 @@ class ImageEditCellWidget(QWidget):
             self._update_tag_display()
     @Slot()
     def _prev_tag_page(self):
-        if self._current_tag_page > 0: self._current_tag_page -= 1; self._update_tag_display()
+        if self._current_tag_page > 0:
+            self._current_tag_page -= 1
+            self._update_tag_display()
     @Slot()
     def _next_tag_page(self):
         if not self._image_path: return
         txt_path = tag_utils.get_txt_path(self._image_path)
         tags = tag_utils.read_tags(txt_path)
-        if (self._current_tag_page + 1) * TAGS_PER_PAGE_GRID < len(tags): self._current_tag_page += 1; self._update_tag_display()
+        if (self._current_tag_page + 1) * TAGS_PER_PAGE_GRID < len(tags):
+            self._current_tag_page += 1
+            self._update_tag_display()
     def clear_data(self):
-        self._image_path = None; self._global_index = -1; self._current_tag_page = 0
+        self._image_path = None
+        self._global_index = -1
+        self._current_tag_page = 0
         self.image_label.clear()
         self.image_label.setText(self.locale_manager.get_string("GridView", "No_Image"))
         for btn in self.tag_buttons: btn.deleteLater()
         self.tag_buttons.clear()
-        self.prev_tag_page_btn.setEnabled(False); self.next_tag_page_btn.setEnabled(False)
+        self.prev_tag_page_btn.setEnabled(False)
+        self.next_tag_page_btn.setEnabled(False)
 
 class GridViewWidget(QWidget):
     back_to_main_requested = Signal()
     
-    def __init__(self, settings: AppSettings, locale_manager: LocaleManager, parent=None):
+    def __init__(self, settings: AppSettings, locale_manager: LocaleManager, parent: QWidget | None = None):
         super().__init__(parent)
         self.settings = settings
         self.locale_manager = locale_manager
@@ -223,14 +231,19 @@ class GridViewWidget(QWidget):
         pagination_layout = QHBoxLayout()
         self.prev_page_btn = QPushButton(self.locale_manager.get_string("GridView", "Previous_9"))
         self.prev_page_btn.clicked.connect(self.prev_page)
-        self.prev_page_btn.setMinimumHeight(40); self.prev_page_btn.setStyleSheet("font-size: 14pt;")
+        self.prev_page_btn.setMinimumHeight(40)
+        self.prev_page_btn.setStyleSheet("font-size: 14pt;")
         self.next_page_btn = QPushButton(self.locale_manager.get_string("GridView", "Next_9"))
         self.next_page_btn.clicked.connect(self.next_page)
-        self.next_page_btn.setMinimumHeight(40); self.next_page_btn.setStyleSheet("font-size: 14pt;")
+        self.next_page_btn.setMinimumHeight(40)
+        self.next_page_btn.setStyleSheet("font-size: 14pt;")
         self.page_label = QLabel("Page 1 / 1")
-        pagination_layout.addStretch(2); pagination_layout.addWidget(self.prev_page_btn)
-        pagination_layout.addStretch(1); pagination_layout.addWidget(self.page_label)
-        pagination_layout.addStretch(1); pagination_layout.addWidget(self.next_page_btn)
+        pagination_layout.addStretch(2)
+        pagination_layout.addWidget(self.prev_page_btn)
+        pagination_layout.addStretch(1)
+        pagination_layout.addWidget(self.page_label)
+        pagination_layout.addStretch(1)
+        pagination_layout.addWidget(self.next_page_btn)
         pagination_layout.addStretch(2)
         main_layout.addLayout(pagination_layout)
 
@@ -274,7 +287,8 @@ class GridViewWidget(QWidget):
 
         path = self._image_paths[index]
         pixmap = QPixmap(str(path))
-        if pixmap.isNull(): return
+        if pixmap.isNull():
+            return
 
         # Set initial size and position only if it's the first time showing
         if not self._image_viewer_dialog.isVisible():
@@ -307,17 +321,26 @@ class GridViewWidget(QWidget):
     # ... (rest of the file is unchanged) ...
     def wheelEvent(self, event: QWheelEvent):
         delta = event.angleDelta().y()
-        if delta > 0: self.prev_page(); event.accept()
-        elif delta < 0: self.next_page(); event.accept()
-        else: super().wheelEvent(event)
+        if delta > 0:
+            self.prev_page()
+            event.accept()
+        elif delta < 0:
+            self.next_page()
+            event.accept()
+        else:
+            super().wheelEvent(event)
     def load_images(self, image_paths: List[Path]):
         self._image_paths = image_paths
         self._current_page = 0
         self._display_page()
     def prev_page(self):
-        if self._current_page > 0: self._current_page -= 1; self._display_page()
+        if self._current_page > 0:
+            self._current_page -= 1
+            self._display_page()
     def next_page(self):
-        if (self._current_page + 1) * 9 < len(self._image_paths): self._current_page += 1; self._display_page()
+        if (self._current_page + 1) * 9 < len(self._image_paths):
+            self._current_page += 1
+            self._display_page()
     def _update_pagination_controls(self):
         total_pages = (len(self._image_paths) + 8) // 9
         total_pages = max(1, total_pages)
