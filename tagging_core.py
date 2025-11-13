@@ -34,8 +34,8 @@ LOG_FILE_PATH = BASE_DIR / "debug_log.txt"
 CONFIG_PATH = BASE_DIR / "config.ini"
 
 from utils import log_dbg, GetString
-from settings_model import AppSettings
-from config_utils import load_settings
+from app_settings import AppSettings, load_settings, load_config
+
 
 _get_string: GetString = lambda section, key, **kwargs: str(key)
 

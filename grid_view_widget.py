@@ -39,6 +39,7 @@ class ImageEditCellWidget(QWidget):
         self.image_label.setText(self.locale_manager.get_string("GridView", "No_Image"))
         self.image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.image_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored)
+        self.image_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored)
         self.image_label.setStyleSheet("border: 1px solid grey;")
         # --- MODIFIED: Connect to a slot that emits the new signal ---
         self.image_label.doubleClicked.connect(self._on_double_click)
@@ -92,14 +93,13 @@ class ImageEditCellWidget(QWidget):
         self._image_path = image_path
         self._global_index = global_index
         self._current_tag_page = 0
-        self._update_image_display()
         self._update_tag_display()
 
     # ... (rest of the class is unchanged) ...
     def resizeEvent(self, event: QResizeEvent):
         super().resizeEvent(event)
-        self._update_image_display()
-    def _update_image_display(self):
+        self._update_tag_display()
+    def _update_tag_display(self):
         if self._image_path and self.image_label.width() > 0 and self.image_label.height() > 0:
             pixmap = QPixmap(str(self._image_path))
             if not pixmap.isNull():

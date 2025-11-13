@@ -63,7 +63,6 @@ class MainWindow(QMainWindow):
     # --- Signals ---
     request_overwrite_check = Signal(str, str)
     overwrite_dialog_requested = Signal(Path) 
-    _overwrite_request = Signal(Path) 
     _request_worker_stop = Signal() # Signal to request workers to stop
     
     def __init__(self):
@@ -1093,7 +1092,7 @@ class MainWindow(QMainWindow):
         self._overwrite_event_loop = loop
 
         # Emit a signal to the main thread to show the dialog
-        self.overwrite_request.emit(file_path)
+        self.overwrite_dialog_requested.emit(file_path)
 
         # Wait until the main thread signals that it's done.
         loop.exec()

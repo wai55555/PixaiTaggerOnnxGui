@@ -65,7 +65,7 @@ class Ui_MainWindow(object):
         main_window.run_button.clicked.connect(main_window.toggle_download_or_start_tagging)
         main_window.grid_view_widget.back_to_main_requested.connect(main_window._show_main_view)  # type: ignore
         main_window._resize_timer.timeout.connect(main_window._handle_resize_debounced)  # type: ignore
-        main_window._overwrite_request.connect(main_window._handle_overwrite_request)  # type: ignore
+        main_window.overwrite_dialog_requested.connect(main_window._handle_overwrite_request)
 
     def _create_main_view(self, main_window: 'MainWindow') -> QWidget:
         """Constructs the main view widget with its layout and components."""
