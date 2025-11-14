@@ -74,6 +74,8 @@ class MainWindow(QMainWindow):
         self.ui = Ui_MainWindow()
         self.ui.setup_ui(self)
 
+        QApplication.instance().installEventFilter(self) # アプリケーション全体のイベントフィルターとして登録
+
         write_debug_log(self.locale_manager.get_string("MainWindow", "MainWindow_Init_Complete"))
 
         QTimer.singleShot(0, self.initial_load)
@@ -466,22 +468,34 @@ class MainWindow(QMainWindow):
             write_debug_log("DEBUG: keyPressEvent - AutoRepeat event ignored.")
             super().keyPressEvent(event)
             return
-
-        # Ctrl + Up/Down で画像ナビゲーション
-        if event.modifiers() == Qt.KeyboardModifier.ControlModifier:
-            if event.key() == Qt.Key.Key_Up:
-                write_debug_log("DEBUG: keyPressEvent - Ctrl+Up detected, navigating -1.")
-                self._navigate_image_list(-1)
-                event.accept()
-                return
-            elif event.key() == Qt.Key.Key_Down:
-                write_debug_log("DEBUG: keyPressEvent - Ctrl+Down detected, navigating +1.")
-                self._navigate_image_list(1)
-                event.accept()
-                return
         
         # その他のキーイベントは親クラスに渡す
         super().keyPressEvent(event)
+
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:
+        if isinstance(event, QKeyEvent):
+            watched_name = watched.objectName() if hasattr(watched, 'objectName') and watched.objectName() else watched.__class__.__name__
+            write_debug_log(f"DEBUG: eventFilter - watched: {watched_name}, key: {event.key()}, modifiers: {event.modifiers()}, isAutoRepeat: {event.isAutoRepeat()}, count: {event.count()}")
+        """Filters events from child widgets to implement custom keyboard shortcuts."""
+        
+        # QLineEdit がフォーカスを持っている場合にのみ処理
+        if isinstance(watched, QLineEdit):
+            if isinstance(event, QKeyEvent):
+                if event.isAutoRepeat():
+                    write_debug_log("DEBUG: eventFilter - AutoRepeat event ignored.")
+                    return False
+
+                if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+                    if event.key() == Qt.Key.Key_Up:
+                        write_debug_log("DEBUG: eventFilter - Ctrl+Up detected, navigating -1.")
+                        self._navigate_image_list(-1)
+                        return True
+                    elif event.key() == Qt.Key.Key_Down:
+                        write_debug_log("DEBUG: eventFilter - Ctrl+Down detected, navigating +1.")
+                        self._navigate_image_list(1)
+                        return True
+        
+        return super().eventFilter(watched, event)
 
 
 

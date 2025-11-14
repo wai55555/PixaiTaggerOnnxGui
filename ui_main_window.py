@@ -193,6 +193,7 @@ class Ui_MainWindow(object):
         main_window.add_single_tag_line.setPlaceholderText(main_window.locale_manager.get_string("MainWindow", "Tags_Comma_Separated_Placeholder"))
         main_window.add_single_tag_line.setToolTip(main_window.locale_manager.get_string("MainWindow", "AddTag_Hover_Tooltip"))
         main_window.add_single_tag_line.returnPressed.connect(main_window._add_single_tag)  # type: ignore
+        main_window.add_single_tag_line.installEventFilter(main_window)
         main_window.add_single_tag_button = QPushButton(main_window.locale_manager.get_string("MainWindow", "Add_Button"))
         main_window.add_single_tag_button.clicked.connect(main_window._add_single_tag)  # type: ignore
         add_tag_layout.addWidget(main_window.add_single_tag_line)
@@ -261,6 +262,7 @@ class Ui_MainWindow(object):
         main_window.add_tag_button = QPushButton(main_window.locale_manager.get_string("MainWindow", "Add_Tags_To_All_Txt_Files"))
         main_window.add_tag_button.setStyleSheet(constants.STYLE_BTN_BLUE)
         main_window.add_tag_button.clicked.connect(lambda: main_window.add_tag_all(prepend=True))
+        main_window.add_tag_line.installEventFilter(main_window)
         layout.addWidget(main_window.add_tag_line)
         layout.addWidget(main_window.add_tag_button)
 
@@ -271,6 +273,7 @@ class Ui_MainWindow(object):
         main_window.add_tag_button_append = QPushButton(main_window.locale_manager.get_string("MainWindow", "Add_Tags_To_All_Txt_Files_Append"))
         main_window.add_tag_button_append.setStyleSheet(constants.STYLE_BTN_BLUE)
         main_window.add_tag_button_append.clicked.connect(lambda: main_window.add_tag_all(prepend=False))
+        main_window.add_tag_line_append.installEventFilter(main_window)
         layout.addWidget(main_window.add_tag_line_append)
         layout.addWidget(main_window.add_tag_button_append)
 
