@@ -58,7 +58,9 @@ class DownloaderWorker(QObject):
             return False
 
         file_name = file_path.name
-        total_size = self._file_sizes.get(file_path, 0)
+        # 期待される最終サイズ。モデルポインターから取得した値があればそれを使用。
+        # なければ0で初期化し、content-lengthから取得を試みる。
+        expected_final_size = self._file_sizes.get(file_path, 0)
         
         if file_path.exists():
             if file_path == TAGS_CSV_PATH:
@@ -67,11 +69,11 @@ class DownloaderWorker(QObject):
                 return True
 
             local_size = file_path.stat().st_size
-            if total_size > 0:
-                if local_size > total_size:
+            if expected_final_size > 0: # 期待サイズが分かっている場合のみチェック
+                if local_size > expected_final_size:
                     self.log_message.emit(self.get_string("Workers", "DownloaderWorker_Error_LocalFileTooLarge", file_name=file_path.name), "red")
                     return False
-                elif local_size == total_size:
+                elif local_size == expected_final_size:
                     if file_path == MODEL_PATH and expected_sha256:
                         self.log_message.emit(self.get_string("Workers", "DownloaderWorker_VerifyingHash", file_name=file_path.name), "blue")
                         local_sha256 = calculate_sha256(file_path)
@@ -89,7 +91,7 @@ class DownloaderWorker(QObject):
                         return True
 
         file_path.parent.mkdir(parents=True, exist_ok=True)
-        self.log_message.emit(self.get_string("Workers", "DownloaderWorker_Downloading_Model", file_name=file_name, total_size=f"{total_size/1024/1024:.2f}"), "blue")
+        self.log_message.emit(self.get_string("Workers", "DownloaderWorker_Downloading_Model", file_name=file_name, total_size=f"{expected_final_size/1024/1024:.2f}"), "blue")
         
         downloaded_size = file_path.stat().st_size if file_path.exists() else 0
         mode = 'ab' if downloaded_size > 0 else 'wb'
@@ -101,29 +103,34 @@ class DownloaderWorker(QObject):
             response.raise_for_status()
             content_length = int(response.headers.get('content-length', 0))
             
+            # 進捗表示用の合計サイズを決定
+            current_total_size_for_progress = expected_final_size if expected_final_size > 0 else content_length
+
             if content_length > 0:
                 if response.status_code == 206:
-                    total_size = downloaded_size + content_length
-                    self.log_message.emit(self.get_string("Workers", "DownloaderWorker_Resume_Download", content_length=f"{content_length/1024/1024:.2f}", total_size=f"{total_size/1024/1024:.2f}"), "black")
+                    # レジュームダウンロードの場合、進捗表示用の合計サイズを更新
+                    current_total_size_for_progress = downloaded_size + content_length
+                    self.log_message.emit(self.get_string("Workers", "DownloaderWorker_Resume_Download", content_length=f"{content_length/1024/1024:.2f}", total_size=f"{current_total_size_for_progress/1024/1024:.2f}"), "black")
                 else:
                     if downloaded_size > 0:
                         self.log_message.emit(self.get_string("Workers", "DownloaderWorker_Warning_200_OK_Restart"), "orange")
                         downloaded_size = 0
                         mode = 'wb'
-                    total_size = content_length
-                    self.log_message.emit(self.get_string("Workers", "DownloaderWorker_Info_FileSize_Header", total_size=f"{total_size/1024/1024:.2f}"), "black")
+                    # 新規ダウンロードの場合、進捗表示用の合計サイズを更新
+                    current_total_size_for_progress = content_length
+                    self.log_message.emit(self.get_string("Workers", "DownloaderWorker_Info_FileSize_Header", total_size=f"{current_total_size_for_progress/1024/1024:.2f}"), "black")
             
-            last_percent = int(downloaded_size * 100 / total_size) if total_size > 0 else 0
-            self.progress_update.emit(last_percent, downloaded_size / 1024 / 1024, total_size / 1024 / 1024)
+            last_percent = int(downloaded_size * 100 / current_total_size_for_progress) if current_total_size_for_progress > 0 else 0
+            self.progress_update.emit(last_percent, downloaded_size / 1024 / 1024, current_total_size_for_progress / 1024 / 1024)
             
             with open(file_path, mode) as f:
                 for chunk in response.iter_content(chunk_size=8192):
                     if self.is_stopped(): break
                     f.write(chunk)
                     downloaded_size += len(chunk)
-                    if total_size > 0: 
-                        percent = min(100, int(downloaded_size * 100 / total_size))
-                        self.progress_update.emit(percent, downloaded_size / 1024 / 1024, total_size / 1024 / 1024)
+                    if current_total_size_for_progress > 0: 
+                        percent = min(100, int(downloaded_size * 100 / current_total_size_for_progress))
+                        self.progress_update.emit(percent, downloaded_size / 1024 / 1024, current_total_size_for_progress / 1024 / 1024)
                         last_percent = percent
             
             if self.is_stopped():
@@ -132,9 +139,16 @@ class DownloaderWorker(QObject):
                 return False
             
             final_size = file_path.stat().st_size
-            if final_size != total_size:
-                self.log_message.emit(self.get_string("Workers", "DownloaderWorker_Error_Size_Mismatch", downloaded_size=f"{final_size/1024/1024:.2f}", total_size=f"{total_size/1024/1024:.2f}"), "red")
+            
+            # 最終的なファイルサイズチェックは expected_final_size と比較
+            # expected_final_size が0より大きい場合のみチェックを行う
+            if expected_final_size > 0 and final_size != expected_final_size:
+                self.log_message.emit(self.get_string("Workers", "DownloaderWorker_Error_Size_Mismatch", downloaded_size=f"{final_size/1024/1024:.2f}", total_size=f"{expected_final_size/1024/1024:.2f}"), "red")
                 return False
+            # expected_final_size が0の場合（期待サイズ不明の場合）は、content_length が0より大きい場合は content_length と比較する
+            elif expected_final_size == 0 and content_length > 0 and final_size != content_length:
+                 self.log_message.emit(self.get_string("Workers", "DownloaderWorker_Error_Size_Mismatch", downloaded_size=f"{final_size/1024/1024:.2f}", total_size=f"{content_length/1024/1024:.2f}"), "red")
+                 return False
 
             if file_path == MODEL_PATH and expected_sha256:
                 self.log_message.emit(self.get_string("Workers", "DownloaderWorker_VerifyingHash", file_name=file_path.name), "blue")
