@@ -161,7 +161,7 @@ class DownloaderWorker(QObject):
                     self._mark_model_as_verified()
             
             if not self.is_stopped():
-                self.progress_update.emit(100, total_size / 1024 / 1024, total_size / 1024 / 1024)
+                self.progress_update.emit(100, current_total_size_for_progress / 1024 / 1024, current_total_size_for_progress / 1024 / 1024)
                 self.log_message.emit(self.get_string("Workers", "DownloaderWorker_Download_Complete", file_name=file_name), "green")
             
             return True

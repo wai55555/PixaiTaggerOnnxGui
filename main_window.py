@@ -458,41 +458,35 @@ class MainWindow(QMainWindow):
         super().closeEvent(event)
 
     def keyPressEvent(self, event: QKeyEvent):
+        write_debug_log(f"DEBUG: keyPressEvent - key: {event.key()}, modifiers: {event.modifiers()}, isAutoRepeat: {event.isAutoRepeat()}")
         """Handles global key presses for image navigation."""
-        if not self.input_line.hasFocus() and not self.add_single_tag_line.hasFocus():
-             if event.key() in (Qt.Key.Key_Up, Qt.Key.Key_W, Qt.Key.Key_K, Qt.Key.Key_A):
-                 self._navigate_image_list(-1)
-                 event.accept()
-             elif event.key() in (Qt.Key.Key_Down, Qt.Key.Key_S, Qt.Key.Key_J, Qt.Key.Key_D):
-                 self._navigate_image_list(1)
-                 event.accept()
-        # The Alt modifier logic can be added here if needed
+
+        # 自動リピートイベントを無視する
+        if event.isAutoRepeat():
+            write_debug_log("DEBUG: keyPressEvent - AutoRepeat event ignored.")
+            super().keyPressEvent(event)
+            return
+
+        # Ctrl + Up/Down で画像ナビゲーション
+        if event.modifiers() == Qt.KeyboardModifier.ControlModifier:
+            if event.key() == Qt.Key.Key_Up:
+                write_debug_log("DEBUG: keyPressEvent - Ctrl+Up detected, navigating -1.")
+                self._navigate_image_list(-1)
+                event.accept()
+                return
+            elif event.key() == Qt.Key.Key_Down:
+                write_debug_log("DEBUG: keyPressEvent - Ctrl+Down detected, navigating +1.")
+                self._navigate_image_list(1)
+                event.accept()
+                return
+        
+        # その他のキーイベントは親クラスに渡す
         super().keyPressEvent(event)
 
-    def eventFilter(self, watched: QObject, event: QEvent) -> bool:
-        """Filters events from child widgets to implement custom keyboard shortcuts."""
-        # Defensively check if target widgets exist before accessing them
-        target_widgets: list[QObject] = []
-        if hasattr(self, 'add_single_tag_line'):
-            target_widgets.append(self.add_single_tag_line)
-        if hasattr(self, 'add_tag_line'):
-            target_widgets.append(self.add_tag_line)
-        if hasattr(self, 'add_tag_line_append'):
-            target_widgets.append(self.add_tag_line_append)
 
-        if watched in target_widgets:
-            if isinstance(event, QKeyEvent):
-                if event.modifiers() == Qt.KeyboardModifier.ControlModifier:
-                    if event.key() == Qt.Key.Key_Up:
-                        self._navigate_image_list(-1)
-                        return True # Event handled, do not process further
-                    elif event.key() == Qt.Key.Key_Down:
-                        self._navigate_image_list(1)
-                        return True # Event handled
-        
-        return super().eventFilter(watched, event)
 
     def wheelEvent(self, event: QWheelEvent):
+        write_debug_log(f"DEBUG: wheelEvent - angleDelta: {event.angleDelta().y()}")
         """Handles mouse wheel events for image navigation."""
         if self.image_list.geometry().contains(event.position().toPoint()):
              super().wheelEvent(event)
@@ -507,11 +501,13 @@ class MainWindow(QMainWindow):
     
     @Slot()
     def select_image_item(self, item: QListWidgetItem):
+        write_debug_log(f"DEBUG: select_image_item - item: {item.text()}")
         """Slot for when an item in the image list is clicked."""
         self._load_and_fit_image(item)
 
     @Slot(str, str)
     def _handle_folder_drop(self, folder_path: str, file_to_select: str | None = None):
+        write_debug_log(f"DEBUG: _handle_folder_drop - folder_path: {folder_path}, file_to_select: {file_to_select}")
         """Handles the logic for when a folder is dropped or selected."""
         self.input_line.setText(folder_path)
         self.reload_image_list(file_to_select) 
@@ -519,12 +515,14 @@ class MainWindow(QMainWindow):
     
     @Slot()
     def browse_folder(self):
+        write_debug_log("DEBUG: browse_folder called.")
         """Opens a dialog to select an input folder."""
         dir_path = QFileDialog.getExistingDirectory(self, self.locale_manager.get_string("MainWindow", "Select_Input_Folder"), self.input_line.text())
         if dir_path:
             self._handle_folder_drop(dir_path)
 
     def dragEnterEvent(self, event: QDragEnterEvent):
+        write_debug_log(f"DEBUG: dragEnterEvent - hasUrls: {event.mimeData().hasUrls()}")
         """Handles drag enter events to accept valid file types."""
         if event.mimeData().hasUrls():
             path = Path(event.mimeData().urls()[0].toLocalFile())
@@ -532,6 +530,7 @@ class MainWindow(QMainWindow):
                 event.acceptProposedAction()
 
     def dropEvent(self, event: QDropEvent):
+        write_debug_log(f"DEBUG: dropEvent - hasUrls: {event.mimeData().hasUrls()}")
         """Handles drop events to load folders or files."""
         path = Path(event.mimeData().urls()[0].toLocalFile())
         folder_path, file_to_select = None, None
@@ -553,12 +552,14 @@ class MainWindow(QMainWindow):
             event.acceptProposedAction()
 
     def resizeEvent(self, event: QResizeEvent):
+        write_debug_log(f"DEBUG: resizeEvent - size: {event.size().width()}x{event.size().height()}")
         """Starts a timer to handle resizing after it has finished."""
         self._resize_timer.start()
         super().resizeEvent(event)
 
     @Slot()
     def _handle_resize_debounced(self):
+        write_debug_log("DEBUG: _handle_resize_debounced called.")
         """Reloads the currently displayed image to fit the new window size."""
         current_item = self.image_list.currentItem()
         if current_item and self.image_label.pixmap():
@@ -566,6 +567,7 @@ class MainWindow(QMainWindow):
         self.update_all_button_alignments()
 
     def update_button_text_alignment(self, button: QPushButton):
+        # write_debug_log(f"DEBUG: update_button_text_alignment - button text: {button.text()}")
         font_metrics = button.fontMetrics()
         text_width = font_metrics.horizontalAdvance(button.text())
         
@@ -577,6 +579,7 @@ class MainWindow(QMainWindow):
             button.setStyleSheet("QPushButton { text-align: center; }")
 
     def update_all_button_alignments(self):
+        write_debug_log("DEBUG: update_all_button_alignments called.")
         for button in self.tag_buttons:
             if button.isVisible():
                 self.update_button_text_alignment(button)
@@ -586,6 +589,7 @@ class MainWindow(QMainWindow):
 
 
     def _navigate_image_list(self, delta: int):
+        write_debug_log(f"DEBUG: _navigate_image_list called with delta: {delta}")
         """Navigates the image list up or down by a given delta."""
         current = self.image_list.currentRow()
         new_row = current + delta
