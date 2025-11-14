@@ -1,5 +1,5 @@
 # PixAI Tagger ONNX GUI
-## [English](README/README_en.md) [简体中文](README/readme_zh_CN.md) [繁體中文](README/README_zh.md) [Русский](README/README_ru.md)
+## [English](readme/readme_en.md) [简体中文](readme/readme_zh_CN.md) [繁體中文](readme/readme_zh_TW.md) [Русский](readme/readme_ru.md)
 
 このアプリケーションは、ローカル環境にある大量の画像に対して、高速かつ正確なタグを自動で付与するためのGUIツールです。直感的な操作で、データセットの整理や管理を劇的に効率化します。
 
