@@ -1,10 +1,10 @@
 # PixAI Tagger ONNX GUI
 此應用程式是一個GUI工具，用於在本地環境中對大量圖像自動分配快速準確的標籤。透過直觀的操作，它極大地簡化了資料集的組織和管理。
 
-| 主螢幕 | 網格編輯螢幕 |
-| :---: | :---: |
-| ![](https://raw.githubusercontent.com/wiki/wai55555/PixaiTaggerOnnxGui/Sample/main_window_01.png) | ![](https://raw.githubusercontent.com/wiki/wai55555/PixaiTaggerOnnxGui/Sample/main_window_02.png) |
-| *(https://raw.githubusercontent.com/wiki/wai55555/PixaiTaggerOnnxGui/Sample/gridview_01.jpg)* | |
+|![](https://raw.githubusercontent.com/wai55555/PixaiTaggerOnnxGui/refs/heads/main/sample/main_window_01.png)|![](https://raw.githubusercontent.com/wai55555/PixaiTaggerOnnxGui/refs/heads/main/sample/main_window_02.jpg)|
+|:-:|:-:|
+
+![](https://raw.githubusercontent.com/wai55555/PixaiTaggerOnnxGui/refs/heads/main/sample/gridview_01.jpg)
 
 ## 概述 (Overview)
 
