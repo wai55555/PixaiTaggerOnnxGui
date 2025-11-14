@@ -1,7 +1,7 @@
 # PixAI Tagger ONNX GUI
 ## [English](readme/readme_en.md) [简体中文](readme/readme_zh_CN.md) [繁體中文](readme/readme_zh_TW.md) [Русский](readme/readme_ru.md)
 
-このアプリケーションは、ローカル環境にある大量の画像に対して、高速かつ正確なタグを自動で付与するためのGUIツールです。直感的な操作で、データセットの整理や管理を劇的に効率化します。
+ローカル環境にある大量の画像に対して、高速かつ正確なタグを自動で付与するためのGUIツールです。直感的な操作で、データセットの整理や管理を劇的に効率化します。
 
 |![](https://raw.githubusercontent.com/wai55555/PixaiTaggerOnnxGui/refs/heads/main/sample/main_window_01.png)|![](https://raw.githubusercontent.com/wai55555/PixaiTaggerOnnxGui/refs/heads/main/sample/main_window_02.jpg)|
 |:-:|:-:|
@@ -12,9 +12,9 @@
 
 **PixAI Tagger ONNX GUI** は、[PixAI](https://pixai.art/) が開発した画像タグ付けモデルの[ONNX版](https://huggingface.co/deepghs/pixai-tagger-v0.9-onnx)を利用し、ローカル環境の画像にタグを付与します。
 
-オリジナルのPixAI Taggerは13,000以上の豊富なタグに対応しており、一般的なタグ付けモデル（例：wd-taggerの約10,000タグ）と比較して有利です。このツールはその性能を最大限に引き出し、あなたの画像管理をサポートするために開発されました。
+PixAI Taggerは13,000以上の豊富なタグに対応しており、一般的なタグ付けモデル（例：wd-taggerの約10,000タグ）と比較して有利です。このツールはその性能を最大限に引き出し、あなたの画像管理をサポートするために開発されました。
 
-画像の自動タグ付けはもちろん、タグの閲覧、個別編集、そして強力な一括編集機能（特定タグの追加・削除）を備えています。
+画像の自動タグ付けはもちろん、タグの閲覧、個別編集、そして強力な一括編集機能（タグの追加・削除）を備えています。
 
 ## インストールと実行 (Installation & Usage)
 
@@ -77,5 +77,5 @@ ONNX Runtimeではオーバーヘッドが発生してバッチ処理による�
 
 ## 謝辞 (Acknowledgements)
 
-- このツールは [PixAI](https://pixai.art/) によってトレーニングされた素晴らしいタグ付けモデルを利用しています。Pixai Taggerが公開されていなければ、このアプリケーションは生まれませんでした。心から感謝申し上げます。
-- ONNXモデルは [deepghs](https://huggingface.co/deepghs/pixai-tagger-v0.9-onnx) によってHugging Faceで公開されているものを利用しています。ありがとうございます。
+- このツールは [PixAI](https://pixai.art/) 様によってトレーニングされた素晴らしいタグ付けモデルを利用しています。Pixai Taggerが公開されていなければ、このアプリケーションは生まれませんでした。心から感謝申し上げます。
+- ONNXモデルは [deepghs](https://huggingface.co/deepghs/pixai-tagger-v0.9-onnx)様 によってHugging Faceで公開されているものを利用しています。大変ありがとうございます。
