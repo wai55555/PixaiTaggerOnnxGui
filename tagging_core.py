@@ -349,10 +349,14 @@ def process_image_loop(
     _get_string_internal = get_string if get_string else _get_string
 
     for i, image_path in enumerate(image_paths):
-        if stop_checker and stop_checker():
-            core_log_gui(_get_string_internal("TaggerCore", "Tagging_Process_Aborted_By_User"), "red")
-            log_dbg(_get_string_internal("TaggerCore", "Tagging_Process_Aborted_By_User_Debug"))
-            break
+        if stop_checker:
+            log_dbg("DEBUG: process_image_loop: Calling stop_checker.")
+            should_stop = stop_checker()
+            log_dbg(f"DEBUG: process_image_loop: stop_checker returned {should_stop}.")
+            if should_stop:
+                core_log_gui(_get_string_internal("TaggerCore", "Tagging_Process_Aborted_By_User"), "red")
+                log_dbg(_get_string_internal("TaggerCore", "Tagging_Process_Aborted_By_User_Debug"))
+                break
 
         # First, check if the output file exists and should be skipped.
         base_name, _ = os.path.splitext(str(image_path))

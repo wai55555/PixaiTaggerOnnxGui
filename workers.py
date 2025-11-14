@@ -1,42 +1,21 @@
 from pathlib import Path
 import requests
+import threading
 from typing import Callable
 from collections import Counter
 
-from PySide6.QtCore import QObject, Signal, Slot, QMutex
+from PySide6.QtCore import QObject, Signal, Slot
 
 from utils import write_debug_log, calculate_sha256, GetString, default_get_string_fallback
 from constants import (
     DOWNLOAD_URLS, MODEL_PATH, TAGS_CSV_PATH, MODEL_POINTER_PATH
 )
-from app_settings import AppSettings, update_model_verification_status # Updated import
+from app_settings import AppSettings, update_model_verification_status
 from get_pointer_huggingface import get_model_info_from_pointer
 from tagging_core import setup_tagger_from_settings, process_image_loop, get_image_paths_recursive
 
-class DownloaderWorker(QObject):
-    """Worker for downloading model files."""
-    log_message = Signal(str, str)
-    download_finished = Signal(bool)
-    progress_update = Signal(int, float, float) # percent, downloaded_mb, total_mb
-    
-    def __init__(self, get_string: GetString | None = None):
-        super().__init__()
-        self._mutex = QMutex()
-        self._is_paused = False
-        self._is_stopped = False
-        self.get_string: GetString = get_string if get_string else default_get_string_fallback
-        self._file_sizes: dict[Path, int] = {}
-
-    def stop(self):
-        self._mutex.lock()
-        self._is_stopped = True
-        self._mutex.unlock()
-
     def is_stopped(self):
-        self._mutex.lock()
-        stopped = self._is_stopped
-        self._mutex.unlock()
-        return stopped
+        return self._stop_event.is_set()
 
     def _download_single_file(self, file_path: Path, url: str, expected_sha256: str | None = None) -> bool:
         """
@@ -49,18 +28,17 @@ class DownloaderWorker(QObject):
         file_name = file_path.name
         total_size = self._file_sizes.get(file_path, 0)
         
-        # File validation before download (partially moved from run_download)
         if file_path.exists():
             if file_path == TAGS_CSV_PATH:
                 self.log_message.emit(self.get_string("Workers", "DownloaderWorker_Skip_Existing_Tags_CSV", file_name=file_path.name), "blue")
                 write_debug_log(str(self.get_string("Workers", "DownloaderWorker_Skip_Existing_Tags_CSV_Debug", file_path_name=file_path.name)), self.get_string)
-                return True # Already exists and is fine
+                return True
 
             local_size = file_path.stat().st_size
-            if total_size > 0: # Only compare if expected size is known
+            if total_size > 0:
                 if local_size > total_size:
                     self.log_message.emit(self.get_string("Workers", "DownloaderWorker_Error_LocalFileTooLarge", file_name=file_path.name), "red")
-                    return False # Local file is too large, consider it corrupted
+                    return False
                 elif local_size == total_size:
                     if file_path == MODEL_PATH and expected_sha256:
                         self.log_message.emit(self.get_string("Workers", "DownloaderWorker_VerifyingHash", file_name=file_path.name), "blue")
@@ -69,14 +47,14 @@ class DownloaderWorker(QObject):
                             self._mark_model_as_verified()
                             self.log_message.emit(self.get_string("Workers", "DownloaderWorker_HashMatch", file_name=file_path.name), "green")
                             write_debug_log(str(self.get_string("Workers", "DownloaderWorker_HashMatch_Log", file_path_name=file_path.name)), self.get_string)
-                            return True # File exists, size matches, hash matches
+                            return True
                         else:
                             self.log_message.emit(self.get_string("Workers", "DownloaderWorker_Error_HashMismatch", file_name=file_path.name), "red")
-                            file_path.unlink(missing_ok=True) # Delete corrupted file
-                            return False # Hash mismatch, need to re-download
-                    else: # Other files like CSV, assume correct if size matches
+                            file_path.unlink(missing_ok=True)
+                            return False
+                    else:
                         write_debug_log(str(self.get_string("Workers", "DownloaderWorker_Skip_Existing", file_path_name=file_path.name)), self.get_string)
-                        return True # File exists and size matches, skip download
+                        return True
 
         file_path.parent.mkdir(parents=True, exist_ok=True)
         self.log_message.emit(self.get_string("Workers", "DownloaderWorker_Downloading_Model", file_name=file_name, total_size=f"{total_size/1024/1024:.2f}"), "blue")
@@ -155,29 +133,27 @@ class DownloaderWorker(QObject):
             return False
 
     def _mark_model_as_verified(self):
-        """Loads config, sets model as verified, and saves it."""
         try:
             update_model_verification_status(True, self.get_string)
             self.log_message.emit(self.get_string("Workers", "DownloaderWorker_ModelVerified_Success"), "green")
-            write_debug_log(str(self.get_string("Workers", "DownloaderWorker_ModelVerified_Success_Debug")), self.get_string) # type: ignore
+            write_debug_log(str(self.get_string("Workers", "DownloaderWorker_ModelVerified_Success_Debug")), self.get_string)
 
         except Exception as e:
             self.log_message.emit(self.get_string("Workers", "DownloaderWorker_ModelVerified_Fail"), "red")
-            write_debug_log(str(self.get_string("Workers", "DownloaderWorker_ModelVerified_Fail_Debug", e=e)), self.get_string) # type: ignore
+            write_debug_log(str(self.get_string("Workers", "DownloaderWorker_ModelVerified_Fail_Debug", e=e)), self.get_string)
 
     @Slot()
     def run_download(self):
-        write_debug_log(str(self.get_string("Workers", "DownloaderWorker_Start")), self.get_string) # type: ignore
+        write_debug_log(str(self.get_string("Workers", "DownloaderWorker_Start")), self.get_string)
         all_success = True
 
-        # 1. Get model info from pointer file
         model_pointer_url = DOWNLOAD_URLS.get(MODEL_POINTER_PATH)
         if not model_pointer_url:
             self.log_message.emit(self.get_string("Workers", "DownloaderWorker_Error_NoPointerURL"), "red")
             self.download_finished.emit(False)
             return
 
-        expected_sha256, expected_size = get_model_info_from_pointer(model_pointer_url, self.get_string) # type: ignore
+        expected_sha256, expected_size = get_model_info_from_pointer(model_pointer_url, self.get_string)
         if not expected_sha256 or not expected_size:
             self.log_message.emit(self.get_string("Workers", "DownloaderWorker_Error_FailedToGetModelInfo"), "red")
             self.download_finished.emit(False)
@@ -185,10 +161,9 @@ class DownloaderWorker(QObject):
         
         self._file_sizes[MODEL_PATH] = expected_size
 
-        # Main download loop
         for file_path, url in DOWNLOAD_URLS.items():
             if file_path == MODEL_POINTER_PATH:
-                continue # Skip pointer file itself
+                continue
 
             if self.is_stopped():
                 all_success = False
@@ -200,7 +175,7 @@ class DownloaderWorker(QObject):
                 break
         
         self.download_finished.emit(all_success)
-        write_debug_log(str(self.get_string("Workers", "DownloaderWorker_Download_Thread_Exit")), self.get_string) # type: ignore
+        write_debug_log(str(self.get_string("Workers", "DownloaderWorker_Download_Thread_Exit")), self.get_string)
 
 class TaggerThreadWorker(QObject):
     """Tagging Worker"""
@@ -211,42 +186,38 @@ class TaggerThreadWorker(QObject):
     reload_image_list_signal = Signal()
     def __init__(self, settings: AppSettings, overwrite_checker: Callable[[Path], bool], get_string: GetString | None = None, selected_file_path: Path | None = None):
         super().__init__()
-        self._settings: AppSettings = settings # Added type hint
+        self._settings: AppSettings = settings
         self._overwrite_checker = overwrite_checker
         self._selected_file_path = selected_file_path
-        self._mutex = QMutex()
-        self._is_stopped = False
+        self._stop_event = threading.Event()
         self.get_string: GetString = get_string if get_string else default_get_string_fallback
     
     def stop(self):
-        self._mutex.lock()
-        self._is_stopped = True
-        self._mutex.unlock()
+        write_debug_log(f"DEBUG: {type(self).__name__}.stop() called.")
+        self._stop_event.set()
 
     def is_stopped(self) -> bool:
-        self._mutex.lock()
-        stopped = self._is_stopped
-        self._mutex.unlock()
-        return stopped
+        is_set = self._stop_event.is_set()
+        if is_set:
+            write_debug_log(f"DEBUG: {type(self).__name__}.is_stopped() returning True.")
+        return is_set
 
     def _mark_model_as_unverified(self):
-        """Loads config, sets model as unverified, and saves it."""
         try:
             update_model_verification_status(False, self.get_string)
             self.log_message.emit(self.get_string("Workers", "TaggerThreadWorker_ModelUnverified"), "orange")
-            self.model_status_changed.emit() # Emit signal to update UI
+            self.model_status_changed.emit()
         except Exception as e:
-            write_debug_log(str(f"Debug: Failed to save model unverified status: {e}"), self.get_string) # type: ignore
+            write_debug_log(str(f"Debug: Failed to save model unverified status: {e}"), self.get_string)
 
     @Slot()
     def run_tagging(self):
-        write_debug_log(str(self.get_string("Workers", "TaggerThreadWorker_Start")), self.get_string) # type: ignore
+        write_debug_log(str(self.get_string("Workers", "TaggerThreadWorker_Start")), self.get_string)
         self.running_state_changed.emit(True)
-        write_debug_log(str(self.get_string("Workers", "TaggerThreadWorker_Tagging_Process_Start")), self.get_string) # type: ignore
+        write_debug_log(str(self.get_string("Workers", "TaggerThreadWorker_Tagging_Process_Start")), self.get_string)
         
         try:
-            # Setup Tagger
-            tagger, settings_dict = setup_tagger_from_settings(self._settings, self.get_string) # _settings is now AppSettings
+            tagger, settings_dict = setup_tagger_from_settings(self._settings, self.get_string)
             if not tagger or not settings_dict:
                 self.log_message.emit(self.get_string("Workers", "TaggerThreadWorker_Error_Tagger_Init_Failed"), "red")
                 self._mark_model_as_unverified()
@@ -256,11 +227,9 @@ class TaggerThreadWorker(QObject):
             
             self.log_message.emit(self.get_string("Workers", "TaggerThreadWorker_Loading_Model"), "black")
 
-            # Get image paths
             input_dir = Path(settings_dict['INPUT_DIR'])
             image_paths = get_image_paths_recursive(input_dir)
 
-            # Prioritize the selected file
             if self._selected_file_path and self._selected_file_path in image_paths:
                 image_paths.remove(self._selected_file_path)
                 image_paths.insert(0, self._selected_file_path)
@@ -273,16 +242,14 @@ class TaggerThreadWorker(QObject):
 
             self.log_message.emit(self.get_string("Workers", "TaggerThreadWorker_Total_Image_Files", count=len(image_paths)), "blue")
 
-            # Define log_to_gui for tagging_core
             def log_to_gui(message: str, color: str):
-                write_debug_log(str(self.get_string("Workers", "TaggerThreadWorker_Core_Log", message=message)), self.get_string) # type: ignore
+                write_debug_log(str(self.get_string("Workers", "TaggerThreadWorker_Core_Log", message=message)), self.get_string)
                 self.log_message.emit(message, color)
 
-            # Process images
             process_image_loop(
                 tagger=tagger,
                 image_paths=image_paths,
-                settings=settings_dict, # Pass the settings_dict directly
+                settings=settings_dict,
                 overwrite_checker=self._overwrite_checker,
                 log_gui=log_to_gui,
                 stop_checker=self.is_stopped,
@@ -293,13 +260,13 @@ class TaggerThreadWorker(QObject):
             import traceback
             error_message = self.get_string("Workers", "TaggerThreadWorker_Fatal_Exception", type_e_name=type(e).__name__, e=e, traceback_exc=traceback.format_exc())
             self.log_message.emit(error_message, "red")
-            write_debug_log(str(self.get_string("Workers", "TaggerThreadWorker_Runtime_Exception", e=e, traceback_exc=traceback.format_exc())), self.get_string) # type: ignore
+            write_debug_log(str(self.get_string("Workers", "TaggerThreadWorker_Runtime_Exception", e=e, traceback_exc=traceback.format_exc())), self.get_string)
         
         finally:
             self.running_state_changed.emit(False)
             self.reload_image_list_signal.emit()
             self.finished.emit()
-            write_debug_log(str(self.get_string("Workers", "TaggerThreadWorker_Thread_Exit")), self.get_string) # type: ignore
+            write_debug_log(str(self.get_string("Workers", "TaggerThreadWorker_Thread_Exit")), self.get_string)
 
 class TagLoader(QObject):
     """Worker to asynchronously load tag files from an image folder"""
@@ -310,22 +277,20 @@ class TagLoader(QObject):
         super().__init__()
         self.folder = folder
         self.get_string: GetString = get_string if get_string else default_get_string_fallback
-        self._mutex = QMutex()
-        self._is_stopped = False
+        self._stop_event = threading.Event()
 
     def stop(self):
-        self._mutex.lock()
-        self._is_stopped = True
-        self._mutex.unlock()
+        write_debug_log(f"DEBUG: {type(self).__name__}.stop() called.")
+        self._stop_event.set()
 
     def is_stopped(self):
-        self._mutex.lock()
-        stopped = self._is_stopped
-        self._mutex.unlock()
-        return stopped
+        is_set = self._stop_event.is_set()
+        if is_set:
+            write_debug_log(f"DEBUG: {type(self).__name__}.is_stopped() returning True.")
+        return is_set
 
     def run(self):
-        write_debug_log(str(self.get_string("Workers", "TagLoader_Start", folder=self.folder)), self.get_string) # type: ignore
+        write_debug_log(str(self.get_string("Workers", "TagLoader_Start", folder=self.folder)), self.get_string)
         counter: Counter[str] = Counter()
         files = list(self.folder.rglob("*.txt"))
         try:
@@ -337,18 +302,18 @@ class TagLoader(QObject):
                         tags = [t.strip() for t in f.read().split(",") if t.strip()]
                         counter.update(tags)
                 except Exception as e:
-                    write_debug_log(str(self.get_string("Workers", "TagLoader_TXT_Load_Failed", txt_name=txt.name, e=e)), self.get_string) # type: ignore
+                    write_debug_log(str(self.get_string("Workers", "TagLoader_TXT_Load_Failed", txt_name=txt.name, e=e)), self.get_string)
             
             if not self.is_stopped():
                 all_tags: list[tuple[str, int]] = counter.most_common() 
                 self.tags_loaded.emit(all_tags)
         except Exception as e:
-            write_debug_log(str(self.get_string("Workers", "TagLoader_Fatal_Error", e=e)), self.get_string) # type: ignore
+            write_debug_log(str(self.get_string("Workers", "TagLoader_Fatal_Error", e=e)), self.get_string)
             if not self.is_stopped():
                 self.tags_loaded.emit([])
         finally:
             self.finished.emit()
-            write_debug_log(str(self.get_string("Workers", "TagLoader_Thread_Exit")), self.get_string) # type: ignore
+            write_debug_log(str(self.get_string("Workers", "TagLoader_Thread_Exit")), self.get_string)
 
 class BulkTagWorker(QObject):
     """Worker to execute bulk tag editing (add/delete)"""
@@ -358,32 +323,26 @@ class BulkTagWorker(QObject):
     def __init__(self, get_string: GetString | None = None):
         super().__init__()
         self.get_string: GetString = get_string if get_string else default_get_string_fallback
-        self._mutex = QMutex()
-        self._is_stopped = False
+        self._stop_event = threading.Event()
 
     def stop(self):
-        self._mutex.lock()
-        self._is_stopped = True
-        self._mutex.unlock()
+        write_debug_log(f"DEBUG: {type(self).__name__}.stop() called.")
+        self._stop_event.set()
 
     def is_stopped(self):
-        self._mutex.lock()
-        stopped = self._is_stopped
-        self._mutex.unlock()
-        return stopped
+        is_set = self._stop_event.is_set()
+        if is_set:
+            write_debug_log(f"DEBUG: {type(self).__name__}.is_stopped() returning True.")
+        return is_set
 
     def _process_tag_file(self, txt_file_path: Path, tag_operation_callback: Callable[[list[str]], list[str]]) -> bool:
-        """
-        Helper method to read, modify, and write a single tag file.
-        Returns True if the file was modified, False otherwise.
-        """
         try:
             with open(txt_file_path, "r", encoding="utf-8") as f:
                 existing_tags = [t.strip() for t in f.read().split(',') if t.strip()]
             
             modified_tags = tag_operation_callback(existing_tags)
             
-            if set(existing_tags) != set(modified_tags): # Check if tags actually changed
+            if set(existing_tags) != set(modified_tags):
                 new_content = ", ".join(modified_tags)
                 with open(txt_file_path, "w", encoding="utf-8") as f:
                     f.write(new_content)
@@ -395,7 +354,7 @@ class BulkTagWorker(QObject):
 
     @Slot(Path, str)
     def run_bulk_delete(self, input_dir: Path, tag_to_delete: str):
-        write_debug_log(str(self.get_string("Workers", "BulkTagWorker_Bulk_Delete_Start", tag_to_delete=tag_to_delete)), self.get_string) # type: ignore
+        write_debug_log(str(self.get_string("Workers", "BulkTagWorker_Bulk_Delete_Start", tag_to_delete=tag_to_delete)), self.get_string)
         count = 0
         try:
             for txt in input_dir.rglob("*.txt"):
@@ -410,20 +369,19 @@ class BulkTagWorker(QObject):
             
             if not self.is_stopped():
                 self.log_message.emit(self.get_string("Workers", "BulkTagWorker_Bulk_Delete_Complete", count=count, tag_to_delete=tag_to_delete), "green")
-            write_debug_log(str(self.get_string("Workers", "BulkTagWorker_Bulk_Delete_Count", count=count)), self.get_string) # type: ignore
+            write_debug_log(str(self.get_string("Workers", "BulkTagWorker_Bulk_Delete_Count", count=count)), self.get_string)
         except Exception as e:
-            write_debug_log(str(self.get_string("Workers", "BulkTagWorker_Unexpected_Error_Bulk_Delete", e=e)), self.get_string) # type: ignore
+            write_debug_log(str(self.get_string("Workers", "BulkTagWorker_Unexpected_Error_Bulk_Delete", e=e)), self.get_string)
             self.log_message.emit(self.get_string("Workers", "BulkTagWorker_Error_Unexpected_Bulk_Delete", e=e), "red")
         finally:
             self.finished.emit()
-            write_debug_log(str(self.get_string("Workers", "BulkTagWorker_Bulk_Delete_Thread_Exit")), self.get_string) # type: ignore
+            write_debug_log(str(self.get_string("Workers", "BulkTagWorker_Bulk_Delete_Thread_Exit")), self.get_string)
 
     @Slot(Path, str, bool)
     def run_bulk_add(self, input_dir: Path, tags_to_add: str, prepend: bool):
-        write_debug_log(str(self.get_string("Workers", "BulkTagWorker_Bulk_Add_Start", tags_to_add=tags_to_add)), self.get_string) # type: ignore
+        write_debug_log(str(self.get_string("Workers", "BulkTagWorker_Bulk_Add_Start", tags_to_add=tags_to_add)), self.get_string)
         count = 0
         
-        # Parse tags to add and create a list without duplicates
         new_tags_to_add = sorted(list(set([t.strip() for t in tags_to_add.split(',') if t.strip()])))
         if not new_tags_to_add:
             self.log_message.emit(self.get_string("Workers", "BulkTagWorker_Warning_No_Valid_Tags_To_Add"), "orange")
@@ -437,10 +395,8 @@ class BulkTagWorker(QObject):
                 
                 def add_callback(existing_tags: list[str]) -> list[str]:
                     if prepend:
-                        # Prepend new tags, avoiding duplicates
                         return [tag for tag in new_tags_to_add if tag not in existing_tags] + existing_tags
                     else:
-                        # Append new tags, avoiding duplicates
                         return existing_tags + [tag for tag in new_tags_to_add if tag not in existing_tags]
 
                 if self._process_tag_file(txt, add_callback):
@@ -448,10 +404,10 @@ class BulkTagWorker(QObject):
 
             if not self.is_stopped():
                 self.log_message.emit(self.get_string("Workers", "BulkTagWorker_Bulk_Add_Complete", count=count, tags_to_add=tags_to_add), "green")
-            write_debug_log(str(self.get_string("Workers", "BulkTagWorker_Bulk_Add_Count", count=count)), self.get_string) # type: ignore
+            write_debug_log(str(self.get_string("Workers", "BulkTagWorker_Bulk_Add_Count", count=count)), self.get_string)
         except Exception as e:
-            write_debug_log(str(self.get_string("Workers", "BulkTagWorker_Unexpected_Error_Bulk_Add", e=e)), self.get_string) # type: ignore
+            write_debug_log(str(self.get_string("Workers", "BulkTagWorker_Unexpected_Error_Bulk_Add", e=e)), self.get_string)
             self.log_message.emit(self.get_string("Workers", "BulkTagWorker_Error_Unexpected_Bulk_Add", e=e), "red")
         finally:
             self.finished.emit()
-            write_debug_log(str(self.get_string("Workers", "BulkTagWorker_Bulk_Add_Thread_Exit")), self.get_string) # type: ignore
+            write_debug_log(str(self.get_string("Workers", "BulkTagWorker_Bulk_Add_Thread_Exit")), self.get_string)

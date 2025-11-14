@@ -25,7 +25,7 @@ if TYPE_CHECKING:
 class Ui_MainWindow(object):
     def setup_ui(self, main_window: 'MainWindow'):
         main_window.setWindowTitle(constants.MSG_WINDOW_TITLE)
-        main_window.setWindowIcon(QIcon(str(constants.BASE_DIR / "app_icon.ico")))
+        main_window.setWindowIcon(QIcon(str(constants.BASE_DIR / "icons/app_icon.ico")))
         try:
             if main_window.settings.window and main_window.settings.window.geometry:
                 geometry_str = main_window.settings.window.geometry

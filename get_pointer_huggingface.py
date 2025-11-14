@@ -1,7 +1,6 @@
 import sys
 import locale
 from pathlib import Path
-from typing import Any
 
 import requests
 

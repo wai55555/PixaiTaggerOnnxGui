@@ -98,6 +98,7 @@ class MainWindow(QMainWindow):
         
     def _initialize_state(self):
         """Initializes all state variables for the main window."""
+        self._is_shutting_down = False # Flag to prevent race conditions on close
         # Thread and worker management
         self._tagger_thread: QThread | None = None
         self._tagger_worker: TaggerThreadWorker | None = None
@@ -418,65 +419,42 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event: QCloseEvent):
         """Handles the window closing event to save settings and stop threads gracefully."""
-        write_debug_log("closeEvent triggered")
+        self._is_shutting_down = True
+        write_debug_log("DEBUG: closeEvent triggered. _is_shutting_down = True")
         self.save_current_config()
 
-        threads_to_stop: list[tuple[QThread | None, DownloaderWorker | TaggerThreadWorker | TagLoader | BulkTagWorker | None]] = [
+        threads_to_stop: list[tuple[QThread | None, QObject | None]] = [
             (self._download_thread, self._downloader_worker),
             (self._tagger_thread, self._tagger_worker),
             (self._bulk_tag_thread, self._bulk_tag_worker),
             (self.tag_thread, self.tag_worker)
         ]
 
+        # First, request all running threads to stop by calling their thread-safe stop() method
         for thread, worker in threads_to_stop:
             if thread and thread.isRunning():
-                write_debug_log(f"Requesting thread {thread} to quit.")
-                
-                if worker is not None and hasattr(worker, 'stop'):
-                    self._request_worker_stop.connect(worker.stop, Qt.ConnectionType.QueuedConnection)
-                    self._request_worker_stop.emit() # Request worker to stop
-                    QApplication.processEvents() # Allow signal to be processed
-                    self._request_worker_stop.disconnect(worker.stop) # Disconnect immediately
-
+                write_debug_log(f"DEBUG: closeEvent: Requesting worker {type(worker).__name__} in thread {thread} to stop.")
+                if worker and hasattr(worker, 'stop'):
+                    # This is a cross-thread method call, but it is safe
+                    # because the worker's stop() method is thread-safe.
+                    write_debug_log(f"DEBUG: closeEvent: Calling stop() on worker {type(worker).__name__}.")
+                    worker.stop()
+                    write_debug_log(f"DEBUG: closeEvent: Returned from stop() on worker {type(worker).__name__}.")
+                write_debug_log(f"DEBUG: closeEvent: Calling quit() on thread {thread}.")
                 thread.quit()
-                
-                # Wait for the worker's finished signal
-                if worker is not None:
-                    signal_to_connect: Any | None = None # Changed Signal to Any to resolve Pylance reportAssignmentType
-                    if isinstance(worker, DownloaderWorker):
-                        signal_to_connect = worker.download_finished
-                    elif hasattr(worker, 'finished'):
-                        # TaggerThreadWorker, TagLoader, BulkTagWorker should have 'finished'
-                        # Type check necessary for Pylance
-                        if isinstance(worker, (TaggerThreadWorker, TagLoader, BulkTagWorker)): # type: ignore
-                            signal_to_connect = worker.finished
-                    
-                    if signal_to_connect:
-                        loop = QEventLoop()
-                        self._worker_finished_event_loop = loop
-                        signal_to_connect.connect(loop.quit) # type: ignore
-                        
-                        # Set a timeout to prevent indefinite waiting
-                        QTimer.singleShot(10000, loop.quit) # Force quit loop after 10 seconds
 
-                        write_debug_log(f"Waiting for worker {worker} to finish...")
-                        loop.exec() # Block until worker finishes or timeout
-                        write_debug_log(f"Worker {worker} finished waiting.")
-                        
-                        self._worker_finished_event_loop = None # Cleanup
-
-                if not thread.wait(100): # 短い時間だけ待機し、スレッドが完全に終了したか確認
-                    write_debug_log(f"Thread {thread} did not exit gracefully, terminating.")
-                    thread.terminate()
+        # Now, wait for them to finish
+        for thread, worker in threads_to_stop:
+            if thread and thread.isRunning():
+                write_debug_log(f"DEBUG: closeEvent: Waiting for thread {thread} to finish...")
+                # Wait up to 5 seconds. This blocks the GUI, which is acceptable on close.
+                if not thread.wait(5000):
+                    write_debug_log(f"ERROR: closeEvent: Thread {thread} did not finish gracefully, terminating.")
+                    thread.terminate() # Last resort
                 else:
-                    write_debug_log(f"Thread {thread} finished gracefully.")
-                
-                if worker:
-                    worker.deleteLater()
+                    write_debug_log(f"DEBUG: closeEvent: Thread {thread} finished gracefully.")
 
-
-
-        write_debug_log("Proceeding with application close.")
+        write_debug_log("DEBUG: closeEvent: Proceeding with application close.")
         super().closeEvent(event)
 
     def keyPressEvent(self, event: QKeyEvent):
@@ -544,7 +522,7 @@ class MainWindow(QMainWindow):
         """Opens a dialog to select an input folder."""
         dir_path = QFileDialog.getExistingDirectory(self, self.locale_manager.get_string("MainWindow", "Select_Input_Folder"), self.input_line.text())
         if dir_path:
-            self.handle_folder_drop(dir_path)
+            self._handle_folder_drop(dir_path)
 
     def dragEnterEvent(self, event: QDragEnterEvent):
         """Handles drag enter events to accept valid file types."""
@@ -571,7 +549,7 @@ class MainWindow(QMainWindow):
                     break
         
         if folder_path:
-            self.handle_folder_drop(folder_path, file_to_select)
+            self._handle_folder_drop(folder_path, file_to_select)
             event.acceptProposedAction()
 
     def resizeEvent(self, event: QResizeEvent):
@@ -833,13 +811,23 @@ class MainWindow(QMainWindow):
     @Slot()
     def _on_tagger_finished(self):
         """Cleans up after the tagging thread has finished."""
+        if self._is_shutting_down:
+            return # Do not perform post-processing if the app is closing
+
+        current_item = self.image_list.currentItem()
+        path_to_reselect = None
+        if current_item:
+            # Store the relative path of the current file to re-select it later
+            path_to_reselect = current_item.data(Qt.ItemDataRole.UserRole + 1)
+
+        # Reload everything to ensure UI is in sync with the file system
+        self.reload_image_list(auto_select_path=path_to_reselect)
         self.reload_tags_only()
+
         # Reload settings from disk as the worker may have updated the verification status
         config = load_config()
         self.settings = load_settings(config)
         self._update_ui_for_processing(False, 'tagging')
-        if self.image_list.count() > 0:
-            self._load_and_fit_image(self.image_list.item(0))
         
         if self._tagger_thread:
             self._tagger_thread.quit()
@@ -852,6 +840,9 @@ class MainWindow(QMainWindow):
     @Slot(bool)
     def _on_download_finished(self, success: bool):
         """Cleans up after the download thread has finished."""
+        if self._is_shutting_down:
+            return
+
         write_debug_log(f"Download finished signal received with success: {success}")
         self._is_downloading = False
         self._set_main_controls_enabled(True) # Re-enable main controls
@@ -877,6 +868,9 @@ class MainWindow(QMainWindow):
     @Slot()
     def _on_tag_loader_finished(self):
         """Cleans up after the tag loader thread has finished."""
+        if self._is_shutting_down:
+            return
+
         if self.tag_thread:
             self.tag_thread.quit()
             self.tag_thread.wait()
@@ -888,6 +882,9 @@ class MainWindow(QMainWindow):
     @Slot()
     def _on_bulk_tag_finished(self):
         """Cleans up after the bulk tag worker thread has finished."""
+        if self._is_shutting_down:
+            return
+
         self.reload_tags_only() # This will re-enable controls on finish
         if self._bulk_tag_thread:
             self._bulk_tag_thread.quit()

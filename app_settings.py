@@ -1,5 +1,5 @@
 import configparser
-from typing import Any, Callable, TypeVar
+from typing import Any
 from dataclasses import dataclass, is_dataclass, fields
 from pathlib import Path
 
@@ -81,6 +81,7 @@ def load_config() -> configparser.ConfigParser:
     """Loads the config.ini file, creating it from defaults if it doesn't exist."""
     config = get_default_config()
     if CONFIG_PATH.is_file():
+            
         config.read(CONFIG_PATH, encoding='utf-8')
         write_debug_log(_get_string("ConfigUtils", "Config_File_Load_Success", CONFIG_PATH=CONFIG_PATH), _get_string)
     else:
@@ -166,6 +167,7 @@ def save_config(settings: AppSettings):
                 # This case should ideally not be hit if AppSettings only contains nested dataclasses
                 # and language_code is handled specifically.
                 pass # Or raise an error if unexpected direct fields exist
+
 
     try:
         with open(CONFIG_PATH, 'w', encoding='utf-8') as f:
