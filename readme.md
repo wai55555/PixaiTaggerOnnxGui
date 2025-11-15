@@ -1,81 +1,71 @@
 # PixAI Tagger ONNX GUI
-## [English](readme/readme_en.md) [简体中文](readme/readme_zh_CN.md) [繁體中文](readme/readme_zh_TW.md) [Русский](readme/readme_ru.md)
-
-ローカル環境にある大量の画像に対して、高速かつ正確なタグを自動で付与するためのGUIツールです。直感的な操作で、データセットの整理や管理を劇的に効率化します。
+## [日本語](readme/readme_ja.md) [简体中文](readme/readme_zh_CN.md) [繁體中文](readme/readme_zh_TW.md) [Русский](readme/readme_ru.md)
+This application is a GUI tool for automatically assigning fast and accurate tags to a large number of images in a local environment. It dramatically streamlines dataset organization and management with intuitive operations.
 
 |![](https://raw.githubusercontent.com/wai55555/PixaiTaggerOnnxGui/refs/heads/main/sample/main_window_01.png)|![](https://raw.githubusercontent.com/wai55555/PixaiTaggerOnnxGui/refs/heads/main/sample/main_window_02.jpg)|
 |:-:|:-:|
 
 ![](https://raw.githubusercontent.com/wai55555/PixaiTaggerOnnxGui/refs/heads/main/sample/gridview_01.jpg)
 
-## 概要 (Overview)
+## Overview
 
-**PixAI Tagger ONNX GUI** は、[PixAI](https://pixai.art/) が開発した画像タグ付けモデルの[ONNX版](https://huggingface.co/deepghs/pixai-tagger-v0.9-onnx)を利用し、ローカル環境の画像にタグを付与します。
+**PixAI Tagger ONNX GUI** utilizes the [ONNX version](https://huggingface.co/deepghs/pixai-tagger-v0.9-onnx) of the image tagging model developed by [PixAI](https://pixai.art/) to assign tags to local images.
 
-PixAI Taggerは13,000以上の豊富なタグに対応しており、一般的なタグ付けモデル（例：wd-taggerの約10,000タグ）と比較して有利です。このツールはその性能を最大限に引き出し、あなたの画像管理をサポートするために開発されました。
+The original PixAI Tagger supports over 13,000 rich tags, offering an advantage compared to common tagging models (e.g., wd-tagger's ~10,000 tags). This tool was developed to maximize its performance and support your image management.
 
-画像の自動タグ付けはもちろん、タグの閲覧、個別編集、そして強力な一括編集機能（タグの追加・削除）を備えています。
+It features automatic image tagging, tag browsing, individual editing, and powerful bulk editing functions (adding/deleting specific tags).
 
-## インストールと実行 (Installation & Usage)
+## Installation & Usage
 
-1.  リリースページから最新の `PixaiTaggerOnnxGui-vX.X.X.zip` をダウンロードします。
-2.  zipファイルを好きな場所に解凍します。
-3.  中の `pixai_tagger_gui.exe` を実行します。
+1.  Download the latest `PixaiTaggerOnnxGui-vX.X.X.zip` from the release page.
+2.  Unzip the file to your preferred location.
+3.  Run `pixai_tagger_gui.exe` inside.
 
-## 使い方 (How to Use)
-画像をWクリックしてホイールやドラッグすれば大体OK、直感的操作で動かせます。
-3x3表示時でも画像Wクリックとホイールとドラッグは有効です。ctrl+ホイールで画像を前後します。
+## How to Use
+Double-click an image and use the wheel or drag to move it around. Intuitive operation is possible.
+Double-clicking, wheel, and dragging are also effective when displaying 3x3. Ctrl+wheel moves images back and forth.
 
-1.  **フォルダの指定**: `参照`ボタンか、画像フォルダのドラッグ＆ドロップで、対象の画像群を読み込みます。
-2.  **モデルの準備 (初回のみ)**: `TAG`ボタンの代わりに`ダウンロード開始`と表示されたら、クリックしてモデルをダウンロードします。
-3.  **タグ付け実行**: `TAG`ボタンを押すと、フォルダ内の全画像に対してタグ付け処理が始まります。既存の`.txt`ファイルがあれば、上書きを確認するダイアログが表示されます。
-4.  **結果の確認と編集**:
-    - 左のリストで画像を選ぶと、中央に画像、右にその画像のタグが表示されます。タグ入力欄ではctrl+上下キーで画像を前後できます。
-    - 不要なタグは、右側のタグボタンをクリックして削除します。
-    - 下部にある「一括タグ」セクションでは、フォルダ全体にまたがるタグの追加・削除が可能です。
+1.  **Specify Folder**: Load target image groups by clicking the `Browse` button or by dragging and dropping an image folder.
+2.  **Prepare Model (First time only)**: If `Download Start` is displayed instead of `TAG` button, click it to download the model.
+3.  **Execute Tagging**: Press the `TAG` button to start tagging all images in the folder. If existing `.txt` files are found, a dialog will appear to confirm overwriting.
+4.  **Check and Edit Results**:
+    -   Select an image from the left list to display the image in the center and its tags on the right. In the tag input field, you can navigate images back and forth with Ctrl+Up/Down keys.
+    -   Delete unnecessary tags by clicking the tag button on the right.
+    -   The "Bulk Tags" section at the bottom allows adding/deleting tags across the entire folder.
 
-## 主な機能 (Features)
+## Features
 
-### 1. 直感的で快適なUI
-- **ドラッグ＆ドロップ対応**: 画像フォルダ、単体の画像ファイル、さらにはタグが記載された`.txt`ファイルまで、ウィンドウに直接ドラッグ＆ドロップするだけで即座に読み込めます。
-- **軽快な画像ビューア**:
-    - リストから画像を選ぶだけの簡単操作。
-    - 画像をダブルクリックすれば、自由にリサイズ・移動可能な拡大ウィンドウが表示されます。
-    - マウスホイールやキーボード（矢印キー, WASDなど）で、サクサクと次々に画像を切り替えて確認できます。
+### 1. Intuitive and Comfortable UI
+-   **Drag & Drop Support**: Image folders, individual image files, and even `.txt` files containing tags can be loaded instantly by dragging and dropping them directly into the window.
+-   **Lightweight Image Viewer**:
+    -   Easy operation by simply selecting an image from the list.
+    -   Double-click an image to display an enlarged window that can be freely resized and moved.
+    -   Quickly switch between images using the mouse wheel or keyboard (arrow keys, WASD, etc.).
 
-### 2. パワフルな自動タグ付け
-- **高速なONNX Runtime**: CPUでも軽快に動作するONNXモデルを採用。大量の画像もストレスなく処理します。
-- **モデル自動ダウンロード**: 初回起動時にボタン一つで、Hugging FaceからPixAI Taggerのモデルとタグファイルを自動でダウンロード。面倒な手作業は不要です。
+### 2. Powerful Automatic Tagging
+-   **High-speed ONNX Runtime**: Employs an ONNX model that operates smoothly even on CPUs. Processes large volumes of images without stress.
+-   **Automatic Model Download**: With a single button click on first launch, the PixAI Tagger model and tag files are automatically downloaded from Hugging Face. No tedious manual work required.
 
-### 3. 柔軟で高度なタグ編集
-- **個別編集**:
-    - 画像の既存タグをボタンとして一覧表示。不要なタグはボタンをクリックするだけで削除できます。
-    - 新しいタグ（カンマ区切りで複数可）を簡単に追加できます。
-- **強力な一括編集**:
-    - フォルダ内の全`.txt`ファイルからタグを集計し、出現頻度順に表示。
-    - ボタンクリック一つで、**全ファイルから特定のタグを一括で削除**できます。
-    - 指定したタグを、**全ファイルの先頭または末尾に一括で追加**することも可能です。
-- **グリッド編集ビュー**:
-    - `3x3`ボタンからグリッドビューに移行。複数の画像を一度に俯瞰しながら、タグの確認や編集ができます。
+### 3. Flexible and Advanced Tag Editing
+-   **Individual Editing**:
+    -   Existing tags for an image are displayed as buttons. Unnecessary tags can be deleted by simply clicking the button.
+    -   New tags (multiple separated by commas are allowed) can be easily added.
+-   **Powerful Bulk Editing**:
+    -   Aggregates tags from all `.txt` files in a folder and displays them in order of frequency.
+    -   **Bulk delete specific tags from all files** with a single button click.
+    -   It is also possible to **bulk add specified tags to the beginning or end of all files**.
+-   **Grid Editing View**:
+    -   Transition to grid view from the `3x3` button. Confirm and edit tags while viewing multiple images at once.
 
-### 4. 細やかなカスタマイズ性
-- **タグ生成の調整**: `general` と `character` のカテゴリごとに、タグを生成する**しきい値**や**最大タグ数**をスライダーで直感的に調整できます。
-- **設定の自動保存**: ウィンドウサイズや各設定値は、アプリ終了時に`config.ini`へ自動保存。次回も同じ環境で作業を再開できます。
-- **多言語対応**: 日本語と英語をサポート。OSの言語設定に応じてUIが自動で切り替わります。
+### 4. Detailed Customization
+-   **Tag Generation Adjustment**: Intuitively adjust **thresholds** and **maximum tag counts** for `general` and `character` categories using sliders.
+-   **Multi-language Support**: Supports Multi-language. The UI automatically switches according to the OS language settings.
 
+## License
 
+This project is released under the **LGPLv3** and **Apache License 2.0** licenses.
 
-## ~~実装予定 (To Be Released)~~
-- ~~GPU利用を `config.ini` で切り替えられるようにして高速化~~
-CUDA tool kit、NVIDIA Developer Programへのユーザー登録必須なcuDNNが必要と判明
-- ~~バッチ処理対応による高速化~~
-ONNX Runtimeではオーバーヘッドが発生してバッチ処理による高速化はできなかった
+## Acknowledgements
 
-## ライセンス (License)
-
-このプロジェクトは **LGPLv3** と **Apache License 2.0** のライセンスの下で公開されています。
-
-## 謝辞 (Acknowledgements)
-
-- このツールは [PixAI](https://pixai.art/) 様によってトレーニングされた素晴らしいタグ付けモデルを利用しています。Pixai Taggerが公開されていなければ、このアプリケーションは生まれませんでした。心から感謝申し上げます。
-- ONNXモデルは [deepghs](https://huggingface.co/deepghs/pixai-tagger-v0.9-onnx)様 によってHugging Faceで公開されているものを利用しています。大変ありがとうございます。
+- This tool utilizes the excellent tagging model trained by [PixAI](https://pixai.art/). This application would not have been possible without the public release of Pixai Tagger. My heartfelt thanks.
+- The ONNX model used is publicly available on Hugging Face by [deepghs](https://huggingface.co/deepghs/pixai-tagger-v0.9-onnx). Thank you.
