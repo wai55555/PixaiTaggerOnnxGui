@@ -2,6 +2,7 @@ __pycache__/
 *.pyc
 venv/
 .venv/
+.vscode
 .idea/
 *.env
 dist/
@@ -10,3 +11,5 @@ pixai-tagger-v0.9-onnx/
 debug_log.txt
 *コピー*
 .git
+GEMINI.md
+config.ini

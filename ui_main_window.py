@@ -59,7 +59,7 @@ class Ui_MainWindow(object):
     def _connect_signals(self, main_window: 'MainWindow'):
         """Connects all signals to their corresponding slots."""
         main_window.image_list.itemClicked.connect(main_window.select_image_item)
-        main_window.input_line.editingFinished.connect(main_window.reload_image_list)
+        main_window.input_line.editingFinished.connect(main_window._on_input_path_changed)
         main_window.input_line.textChanged.connect(main_window._update_input_dir)  # type: ignore
         main_window.input_line.folder_dropped.connect(main_window._handle_folder_drop)  # type: ignore
         main_window.run_button.clicked.connect(main_window.toggle_download_or_start_tagging)

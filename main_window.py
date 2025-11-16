@@ -524,6 +524,17 @@ class MainWindow(QMainWindow):
         if dir_path:
             self._handle_folder_drop(dir_path)
 
+    @Slot()
+    def _on_input_path_changed(self):
+        """Handles folder path changes from the input line editingFinished signal."""
+        folder_path = self.input_line.text().strip()
+        if Path(folder_path).is_dir():
+            # We don't have a file to select, so pass None.
+            self._handle_folder_drop(folder_path, None)
+        else:
+            # Using a hardcoded string for now. Should be added to locale.
+            self.update_log(f"無効なフォルダパスです: {folder_path}", "red")
+
     def dragEnterEvent(self, event: QDragEnterEvent):
         write_debug_log(f"DEBUG: dragEnterEvent - hasUrls: {event.mimeData().hasUrls()}")
         """Handles drag enter events to accept valid file types."""
