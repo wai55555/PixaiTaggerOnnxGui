@@ -3,7 +3,10 @@ from pathlib import Path
 from typing import Mapping
 
 # --- Global constant ---
-BASE_DIR = Path(sys.executable).parent if getattr(sys, 'frozen', False) else Path(__file__).parent.resolve()
+if getattr(sys, 'frozen', False):
+    BASE_DIR = Path(sys._MEIPASS) # type: ignore
+else:
+    BASE_DIR = Path(__file__).parent.resolve()
 CONFIG_PATH = BASE_DIR / "config.ini"
 LOG_FILE_PATH = BASE_DIR / "debug_log.txt"
 
