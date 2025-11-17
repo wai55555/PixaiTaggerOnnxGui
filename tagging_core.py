@@ -34,7 +34,7 @@ LOG_FILE_PATH = BASE_DIR / "debug_log.txt"
 CONFIG_PATH = BASE_DIR / "config.ini"
 
 from utils import log_dbg, GetString
-from app_settings import AppSettings, load_settings, load_config
+from app_settings import AppSettings, load_settings
 
 
 _get_string: GetString = lambda section, key, **kwargs: str(key)
@@ -272,7 +272,7 @@ class OnnxTagger:
 
 def get_image_paths_recursive(base_dir: Path) -> list[Path]:
     IMAGE_EXTENSIONS = [".png", ".jpg", ".jpeg", ".webp"]
-    image_paths = []
+    image_paths: list[Path] = []
     for ext in IMAGE_EXTENSIONS:
         image_paths.extend(base_dir.rglob(f"*{ext}"))
     return sorted(image_paths)

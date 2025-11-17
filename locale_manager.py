@@ -13,8 +13,8 @@ class LocaleManager:
 
     def _load_translations(self) -> configparser.ConfigParser:
         config = configparser.ConfigParser()
-        primary_path = self.base_dir / "lang" / f"{self.lang_code}.ini"
-        fallback_path = self.base_dir / "lang" / "en.ini"
+        primary_path = self.base_dir / f"{self.lang_code}.ini"
+        fallback_path = self.base_dir / "en.ini"
 
         # Try to read the primary language file
         if primary_path.is_file():

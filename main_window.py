@@ -1,7 +1,6 @@
 from pathlib import Path
-from typing import Any, Mapping
-from datetime import datetime, timedelta
-import locale
+from datetime import datetime
+from typing import Any, Mapping, Protocol
 import functools
 import sys, os
 
@@ -68,6 +67,11 @@ def get_os_language() -> str:
     except Exception:
         return "en"
 
+class StoppableWorker(Protocol): # type: ignore
+    """A protocol for worker objects that have a thread-safe stop() method."""
+    def stop(self) -> None:
+        ...
+
 # --- Main Window ---
 
 class MainWindow(QMainWindow):
@@ -128,7 +132,7 @@ class MainWindow(QMainWindow):
             self.settings.language_code = os_lang
             save_config(self.settings)
 
-        self.locale_manager = LocaleManager(self.settings.language_code, constants.BASE_DIR)
+        self.locale_manager = LocaleManager(self.settings.language_code, constants.LANG_DIR)
         app_settings.set_get_string_func(self.locale_manager.get_string) # Add this line
         write_debug_log(self.locale_manager.get_string("MainWindow", "Application_Startup"))
 
@@ -470,7 +474,7 @@ class MainWindow(QMainWindow):
         write_debug_log("DEBUG: closeEvent triggered. _is_shutting_down = True")
         self.save_current_config()
 
-        threads_to_stop: list[tuple[QThread | None, QObject | None]] = [
+        threads_to_stop: list[tuple[QThread | None, StoppableWorker | None]] = [ # type: ignore
             (self._download_thread, self._downloader_worker),
             (self._tagger_thread, self._tagger_worker),
             (self._bulk_tag_thread, self._bulk_tag_worker),
@@ -1110,8 +1114,8 @@ class MainWindow(QMainWindow):
             # Launch in navigation mode (default)
             self._image_viewer_dialog = ImageViewerDialog(self) # Removed tag_panel_global_rect
             self._image_viewer_dialog.finished.connect(self._image_viewer_dialog_closed)
-            self._image_viewer_dialog.nextImageRequested.connect(lambda: self._navigate_image_list(1))
-            self._image_viewer_dialog.prevImageRequested.connect(lambda: self._navigate_image_list(-1))
+            self._image_viewer_dialog.nextImageRequested.connect(lambda: self.navigate_image_list(1))
+            self._image_viewer_dialog.prevImageRequested.connect(lambda: self.navigate_image_list(-1))
 
         self._image_viewer_dialog.show_image(self._original_image_pixmap, dialog_width, dialog_height)
         self._image_viewer_dialog.setGeometry(dialog_x, dialog_y, dialog_width, dialog_height)
