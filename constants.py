@@ -2,28 +2,34 @@ import sys
 from pathlib import Path
 from typing import Mapping
 
-# --- Global constant ---
-def get_base_dir() -> Path:
+def get_resource_dir() -> Path:
     """
-    Determines the base directory for the application, handling both
-    source execution and PyInstaller bundled execution (including _internal folder).
+    Determines the resource directory, handling PyInstaller's _internal folder.
     """
     if getattr(sys, "frozen", False):
-        # Running as a bundled executable (PyInstaller)
-        base_path = Path(sys.executable).parent
-        # Check if resources are in an _internal directory
-        internal_path = base_path / "_internal"
-        return internal_path if internal_path.is_dir() else base_path
-    # Running from source
+        # For bundled apps, resources like icons might be in _internal
+        exe_dir = Path(sys.executable).parent
+        internal_dir = exe_dir / "_internal"
+        return internal_dir if internal_dir.is_dir() else exe_dir
     return Path(__file__).parent.resolve()
 
-BASE_DIR = get_base_dir()
+# --- Path Constants ---
+BASE_DIR = Path(sys.executable).parent if getattr(sys, "frozen", False) else Path(__file__).parent.resolve()
+
+# RESOURCE_DIR is where bundled, non-user-editable resources are located.
+# This handles PyInstaller's `_internal` folder structure.
+RESOURCE_DIR = get_resource_dir()
+
+# LANG_DIR is where user-editable translation files are located.
+# It should be next to the executable.
+LANG_DIR = BASE_DIR / "lang"
+
+# User-facing paths are relative to BASE_DIR
 CONFIG_PATH = BASE_DIR / "config.ini"
 LOG_FILE_PATH = BASE_DIR / "debug_log.txt"
 
 # --- Model-related constants ---
 MODEL_SIZE_BYTES = 1271365853
-MODEL_SHA256_HASH = "b444747c34b22c7a52e1855e94b1509a25b2a096c466fa854a59117070529d2b"
 MODEL_DIR_NAME = "pixai-tagger-v0.9-onnx"
 MODEL_PATH = BASE_DIR / MODEL_DIR_NAME / "model.onnx"
 MODEL_POINTER_PATH = BASE_DIR / MODEL_DIR_NAME / "model_pointer.txt"

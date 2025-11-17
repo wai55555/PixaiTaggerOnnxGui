@@ -1,7 +1,7 @@
 __version__ = "0.1.0"
 
 import sys
-from PySide6.QtWidgets import QApplication, QLineEdit
+from PySide6.QtWidgets import QApplication
 from main_window import MainWindow
 
 
