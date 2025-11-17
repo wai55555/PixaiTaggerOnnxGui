@@ -485,9 +485,6 @@ class MainWindow(QMainWindow):
 
     def keyPressEvent(self, event: QKeyEvent):
         """Handles global key presses for the main window (when not on a specific widget)."""
-        # This method is now only for truly global shortcuts, not for fixing
-        # event propagation from child widgets.
-        # We can keep it for other potential shortcuts or remove if not needed.
         super().keyPressEvent(event)
 
 
@@ -746,11 +743,14 @@ class MainWindow(QMainWindow):
     def _start_tagging_thread(self):
         """Initializes and starts the TaggerThreadWorker."""
         if self._tagger_thread and self._tagger_thread.isRunning():
+            self.update_log(self.locale_manager.get_string("MainWindow", "Warning_Tagging_Already_Running"), "orange")
             return
-        
+
+        self._cleanup_tagger_thread()
+
         self._always_overwrite = False
         self._always_skip = False
-        
+
         self._update_ui_for_processing(True, 'tagging')
 
         # Get selected file to prioritize it
@@ -770,6 +770,20 @@ class MainWindow(QMainWindow):
         self._tagger_thread.started.connect(self._tagger_worker.run_tagging)
         
         self._tagger_thread.start()
+
+    def _cleanup_tagger_thread(self):
+        """Safely cleans up the existing tagger thread and worker."""
+        if self._tagger_thread:
+            if self._tagger_thread.isRunning():
+                # This should not happen if called from _start_tagging_thread, but as a safeguard:
+                self._tagger_thread.quit()
+                self.update_log(self.locale_manager.get_string("MainWindow", "Waiting_For_Thread_To_Finish"), "orange")
+                self._tagger_thread.wait(1000) # Wait a bit
+            self._tagger_thread.deleteLater()
+            self._tagger_thread = None
+        if self._tagger_worker:
+            self._tagger_worker.deleteLater()
+            self._tagger_worker = None
 
     def _stop_tagging_thread(self):
         """Requests the tagging thread to stop."""
@@ -850,15 +864,11 @@ class MainWindow(QMainWindow):
         # Reload settings from disk as the worker may have updated the verification status
         config = load_config()
         self.settings = load_settings(config)
+
+
         self._update_ui_for_processing(False, 'tagging')
         
-        if self._tagger_thread:
-            self._tagger_thread.quit()
-            self._tagger_thread.wait()
-            if self._tagger_worker:
-                self._tagger_worker.deleteLater()
-            self._tagger_thread.deleteLater()
-            self._tagger_thread = self._tagger_worker = None
+        self._cleanup_tagger_thread()
 
     @Slot(bool)
     def _on_download_finished(self, success: bool):
@@ -922,14 +932,15 @@ class MainWindow(QMainWindow):
     def save_current_config(self):
         """Updates the settings object with the current UI state and saves it to file."""
         write_debug_log(self.locale_manager.get_string("MainWindow", "Saving_UI_Settings"))
-        
+
         # Only update geometry if in main view and not maximized/minimized
         if self.central_widget.currentWidget() == self.main_view_widget and not self.isMaximized() and not self.isMinimized():
             self.settings.window.geometry = f"{self.width()}x{self.height()}+{self.x()}+{self.y()}"
-        
+
         save_config(self.settings)
-        self.update_log(self.locale_manager.get_string("MainWindow", "Settings_Saved"), "green")
-        
+        # The log message can be distracting for this frequent operation, so it's commented out.
+        # self.update_log(self.locale_manager.get_string("MainWindow", "Settings_Saved"), "green")
+
     def _is_model_available(self) -> bool:
         """Checks if the model is verified and essential files exist."""
         if not self.settings.model.verified:

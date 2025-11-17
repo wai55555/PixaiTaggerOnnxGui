@@ -2,6 +2,9 @@ import configparser
 from pathlib import Path
 from typing import Any
 
+from utils import write_debug_log
+
+
 class LocaleManager:
     def __init__(self, lang_code: str, base_dir: Path):
         self.lang_code = lang_code
@@ -23,8 +26,13 @@ class LocaleManager:
 
     def get_string(self, section: str, key: str, **kwargs: Any) -> str:
         try:
-            raw_string = self.translations.get(section, key)
-            return raw_string.format(**kwargs)
+            raw_string = self.translations.get(section, key, fallback=key)
+            try:
+                return raw_string.format(**kwargs)
+            except (KeyError, ValueError) as e:
+                # Log the formatting error but return the raw string to avoid crashing
+                write_debug_log(f"LocaleManager format error for key '{key}' in section '{section}': {e}. Kwargs: {kwargs}")
+                return raw_string
         except (configparser.NoSectionError, configparser.NoOptionError):
             # Fallback to key if not found
-            return key.replace("_", " ").capitalize().format(**kwargs)
+            return key.replace("_", " ").capitalize()

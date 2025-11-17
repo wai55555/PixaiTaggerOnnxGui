@@ -291,7 +291,6 @@ class Ui_MainWindow(object):
         limit_layout = QGridLayout(limit_group)
         main_window.create_slider_group(limit_layout, 'Limits', 1, 150, 1, {'general': 0})
         main_window.create_slider_group(limit_layout, 'Limits', 1, 10, 1, {'character': 1})
-        
         layout.addWidget(thresh_group)
         layout.addWidget(limit_group)
         return widget
