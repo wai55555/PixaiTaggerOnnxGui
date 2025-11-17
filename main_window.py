@@ -74,6 +74,8 @@ class MainWindow(QMainWindow):
         self.ui = Ui_MainWindow()
         self.ui.setup_ui(self)
 
+        self._install_event_filters()
+
         write_debug_log(self.locale_manager.get_string("MainWindow", "MainWindow_Init_Complete"))
 
         QTimer.singleShot(0, self.initial_load)
@@ -145,6 +147,13 @@ class MainWindow(QMainWindow):
         """Performs the initial loading of images and tags after the main window is shown."""
         self.reload_image_list()
         self.reload_tags_only()
+
+    def _install_event_filters(self):
+        """Installs event filters on widgets to intercept specific key presses."""
+        # Intercept Ctrl+Up/Down on QLineEdit widgets to prevent event propagation
+        self.add_single_tag_line.installEventFilter(self)
+        self.add_tag_line.installEventFilter(self)
+        self.add_tag_line_append.installEventFilter(self)
 
     def reload_image_list(self, auto_select_path: str | None = None):
         """Reloads the list of images from the input directory."""
@@ -458,32 +467,28 @@ class MainWindow(QMainWindow):
         write_debug_log("DEBUG: closeEvent: Proceeding with application close.")
         super().closeEvent(event)
 
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:
+        """Filters events from watched objects (e.g., QLineEdit)."""
+        if event.type() == QEvent.Type.KeyPress:
+            assert isinstance(event, QKeyEvent)
+            # Check if the event is from one of our QLineEdit widgets
+            if watched in (self.add_single_tag_line, self.add_tag_line, self.add_tag_line_append):
+                if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+                    if event.key() in (Qt.Key.Key_Up, Qt.Key.Key_Down):
+                        if not event.isAutoRepeat():
+                            delta = -1 if event.key() == Qt.Key.Key_Up else 1
+                            self.navigate_image_list(delta)
+                        return True # Event handled, stop further processing
+
+        # Pass the event on to the parent class if not handled
+        return super().eventFilter(watched, event)
+
     def keyPressEvent(self, event: QKeyEvent):
-        write_debug_log(f"DEBUG: keyPressEvent - key: {event.key()}, modifiers: {event.modifiers()}, isAutoRepeat: {event.isAutoRepeat()}")
-        """Handles global key presses for image navigation."""
-
-        # 自動リピートイベントを無視する
-        if event.isAutoRepeat():
-            write_debug_log("DEBUG: keyPressEvent - AutoRepeat event ignored.")
-            super().keyPressEvent(event)
-            return
-
-        # Ctrl + Up/Down で画像ナビゲーション
-        if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
-            if event.key() == Qt.Key.Key_Up:
-                write_debug_log("DEBUG: keyPressEvent - Ctrl+Up detected, navigating -1.")
-                self._navigate_image_list(-1)
-                event.accept()
-                return
-            elif event.key() == Qt.Key.Key_Down:
-                write_debug_log("DEBUG: keyPressEvent - Ctrl+Down detected, navigating +1.")
-                self._navigate_image_list(1)
-                event.accept()
-                return
-        
-        # その他のキーイベントは親クラスに渡す
+        """Handles global key presses for the main window (when not on a specific widget)."""
+        # This method is now only for truly global shortcuts, not for fixing
+        # event propagation from child widgets.
+        # We can keep it for other potential shortcuts or remove if not needed.
         super().keyPressEvent(event)
-
 
 
 
@@ -497,9 +502,9 @@ class MainWindow(QMainWindow):
         
         # If cursor is elsewhere, perform global navigation.
         if event.angleDelta().y() > 0:
-            self._navigate_image_list(-1)
+            self.navigate_image_list(-1)
         elif event.angleDelta().y() < 0:
-            self._navigate_image_list(1)
+            self.navigate_image_list(1)
         event.accept()
     
     @Slot()
@@ -602,7 +607,7 @@ class MainWindow(QMainWindow):
                 self.update_button_text_alignment(button)
 
 
-    def _navigate_image_list(self, delta: int):
+    def navigate_image_list(self, delta: int):
         write_debug_log(f"DEBUG: _navigate_image_list called with delta: {delta}")
         """Navigates the image list up or down by a given delta."""
         current = self.image_list.currentRow()
