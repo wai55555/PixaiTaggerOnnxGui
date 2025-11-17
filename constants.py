@@ -3,10 +3,21 @@ from pathlib import Path
 from typing import Mapping
 
 # --- Global constant ---
-if getattr(sys, 'frozen', False):
-    BASE_DIR = Path(sys._MEIPASS) # type: ignore
-else:
-    BASE_DIR = Path(__file__).parent.resolve()
+def get_base_dir() -> Path:
+    """
+    Determines the base directory for the application, handling both
+    source execution and PyInstaller bundled execution (including _internal folder).
+    """
+    if getattr(sys, "frozen", False):
+        # Running as a bundled executable (PyInstaller)
+        base_path = Path(sys.executable).parent
+        # Check if resources are in an _internal directory
+        internal_path = base_path / "_internal"
+        return internal_path if internal_path.is_dir() else base_path
+    # Running from source
+    return Path(__file__).parent.resolve()
+
+BASE_DIR = get_base_dir()
 CONFIG_PATH = BASE_DIR / "config.ini"
 LOG_FILE_PATH = BASE_DIR / "debug_log.txt"
 
