@@ -13,15 +13,25 @@ class LocaleManager:
 
     def _load_translations(self) -> configparser.ConfigParser:
         config = configparser.ConfigParser()
-        lang_file_path = self.base_dir / "lang" / f"{self.lang_code}.ini"
-        if lang_file_path.is_file():
-            config.read(lang_file_path, encoding="utf-8")
-        else:
-            # Fallback to English or default if language file not found
-            fallback_path = self.base_dir / "lang" / "en.ini" # Assuming an English fallback
-            if fallback_path.is_file():
+        primary_path = self.base_dir / "lang" / f"{self.lang_code}.ini"
+        fallback_path = self.base_dir / "lang" / "en.ini"
+
+        # Try to read the primary language file
+        if primary_path.is_file():
+            try:
+                config.read(primary_path, encoding="utf-8")
+                return config
+            except Exception as e:
+                write_debug_log(f"Failed to read primary language file {primary_path}: {e}")
+
+        # If primary fails or doesn't exist, fall back to English
+        if fallback_path.is_file():
+            try:
                 config.read(fallback_path, encoding="utf-8")
-            # If no fallback, config will be empty
+            except Exception as e:
+                write_debug_log(f"Failed to read fallback language file {fallback_path}: {e}")
+        
+        # If both fail, return an empty config to prevent crashes
         return config
 
     def get_string(self, section: str, key: str, **kwargs: Any) -> str:

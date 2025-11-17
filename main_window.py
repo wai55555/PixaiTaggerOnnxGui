@@ -3,6 +3,7 @@ from typing import Any, Mapping
 from datetime import datetime, timedelta
 import locale
 import functools
+import sys, os
 
 from PySide6.QtCore import (
     Qt, QThread, QObject, Signal, Slot, QTimer, QPoint, QRect, QEvent, QEventLoop
@@ -29,6 +30,43 @@ from grid_view_widget import GridViewWidget
 from workers import DownloaderWorker, TaggerThreadWorker, TagLoader, BulkTagWorker
 from locale_manager import LocaleManager
 from ui_main_window import Ui_MainWindow
+
+def get_os_language() -> str:
+    """
+    Gets the OS's UI language in a robust, cross-platform way.
+    Uses ctypes for Windows, QLocale for macOS/Linux, and falls back to locale.
+    """
+    try:
+        if sys.platform == "win32":
+            # Windows: Use ctypes to call Windows API for the most reliable result.
+            import ctypes
+            windll = ctypes.windll.kernel32
+            # GetUserDefaultUILanguage returns a LANGID, e.g., 0x0411 for ja-JP
+            lang_id = windll.GetUserDefaultUILanguage()
+            # Primary language ID is in the lower 10 bits
+            primary_lang_id = lang_id & 0x3FF
+            # A map for common primary language IDs to ISO 639-1 codes
+            lang_map = {0x09: "en", 0x11: "ja", 0x07: "de", 0x0c: "fr", 0x12: "ko", 0x04: "zh"}
+            return lang_map.get(primary_lang_id, "en")
+    except Exception as e:
+        write_debug_log(f"Failed to get OS language via ctypes: {e}")
+    
+    # macOS & Linux: Use QLocale, which is more reliable for GUI apps.
+    try:
+        # QLocale.system().name() returns "en_US", "ja_JP", etc.
+        from PySide6.QtCore import QLocale
+        locale_name = QLocale.system().name()
+        if locale_name:
+            return locale_name.split('_')[0]
+    except Exception as e:
+        write_debug_log(f"Failed to get OS language via QLocale: {e}")
+
+    # Generic Fallback: Use environment variables, which is what locale.getdefaultlocale does.
+    try:
+        lang_code = os.environ.get('LANG', '').split('.')[0]
+        return lang_code.split('_')[0] if lang_code else "en"
+    except Exception:
+        return "en"
 
 # --- Main Window ---
 
@@ -86,8 +124,7 @@ class MainWindow(QMainWindow):
         self.settings = load_settings(config)
 
         if not self.settings.language_code:
-            default_locale = locale.getdefaultlocale()[0]
-            os_lang = default_locale.split('_')[0] if default_locale else "en"
+            os_lang = get_os_language()
             self.settings.language_code = os_lang
             save_config(self.settings)
 
