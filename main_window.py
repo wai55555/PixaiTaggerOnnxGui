@@ -2,7 +2,7 @@ from pathlib import Path
 from datetime import datetime
 from typing import Any, Mapping, Protocol
 import functools
-import sys, os
+import sys
 
 from PySide6.QtCore import (
     Qt, QThread, QObject, Signal, Slot, QTimer, QPoint, QRect, QEvent, QEventLoop
@@ -49,22 +49,16 @@ def get_os_language() -> str:
             return lang_map.get(primary_lang_id, "en")
     except Exception as e:
         write_debug_log(f"Failed to get OS language via ctypes: {e}")
-    
-    # macOS & Linux: Use QLocale, which is more reliable for GUI apps.
-    try:
-        # QLocale.system().name() returns "en_US", "ja_JP", etc.
-        from PySide6.QtCore import QLocale
-        locale_name = QLocale.system().name()
-        if locale_name:
-            return locale_name.split('_')[0]
-    except Exception as e:
-        write_debug_log(f"Failed to get OS language via QLocale: {e}")
 
-    # Generic Fallback: Use environment variables, which is what locale.getdefaultlocale does.
+    # Fallback for non-Windows (macOS, Linux) or if ctypes fails.
+    # locale.getdefaultlocale() is more reliable in bundled apps than QLocale
+    # as it doesn't depend on the QApplication instance's state.
     try:
-        lang_code = os.environ.get('LANG', '').split('.')[0]
+        import locale
+        lang_code, _ = locale.getdefaultlocale()
         return lang_code.split('_')[0] if lang_code else "en"
-    except Exception:
+    except (ImportError, ValueError, IndexError) as e:
+        write_debug_log(f"Failed to get OS language via locale: {e}")
         return "en"
 
 class StoppableWorker(Protocol): # type: ignore
@@ -173,6 +167,7 @@ class MainWindow(QMainWindow):
         self._resize_timer.setInterval(100)
         self.loading_timer: QTimer | None = None
         self.loading_state = 0
+        self._sliders: dict[str, tuple[QSlider, QLabel]] = {}
         self._image_viewer_dialog: ImageViewerDialog | None = None
         
         self._overwrite_event_loop: QEventLoop | None = None
@@ -898,14 +893,8 @@ class MainWindow(QMainWindow):
             # Store the relative path of the current file to re-select it later
             path_to_reselect = current_item.data(Qt.ItemDataRole.UserRole + 1)
 
-        # Reload everything to ensure UI is in sync with the file system
         self.reload_image_list(auto_select_path=path_to_reselect)
         self.reload_tags_only()
-
-        # Reload settings from disk as the worker may have updated the verification status
-        config = load_config()
-        self.settings = load_settings(config)
-
 
         self._update_ui_for_processing(False, 'tagging')
         
@@ -926,6 +915,7 @@ class MainWindow(QMainWindow):
             # Reload settings from disk as the worker may have updated the verification status
             config = load_config()
             self.settings = load_settings(config)
+            self._reconnect_sliders()
             self._check_model_status_and_update_ui() # On success, check status to show "TAG" button
         else:
             self.update_log(self.locale_manager.get_string("MainWindow", "Model_Download_Failed"), "red")
@@ -1018,17 +1008,48 @@ class MainWindow(QMainWindow):
             
             value_label = QLabel(f"{initial_val:.2f}" if is_float else str(int(initial_val)))
             value_label.setFixedWidth(50)
+            self._sliders[f"{section.lower()}_{key}"] = (slider, value_label)
 
             def update_value(value: int, k: str = key, s: Any = settings_section, res: float = resolution, v_label: QLabel = value_label, is_flt: bool = is_float):
                 real_val = value / res
                 v_label.setText(f"{real_val:.2f}" if is_flt else str(int(real_val)))
                 setattr(s, k, real_val if is_flt else int(real_val))
+                self.save_current_config() # Save settings whenever a slider value changes
 
             slider.valueChanged.connect(update_value)
             
             layout.addWidget(label, row_index, 0)
             layout.addWidget(slider, row_index, 1)
             layout.addWidget(value_label, row_index, 2)
+
+    def _reconnect_sliders(self):
+        """Reconnects all sliders to the current self.settings object."""
+        write_debug_log("Reconnecting sliders to the new settings object.")
+        for key, (slider, value_label) in self._sliders.items():
+            try:
+                section_name, key_name = key.split('_', 1)
+                settings_section = getattr(self.settings, section_name)
+                initial_val = getattr(settings_section, key_name)
+                is_float = isinstance(initial_val, float)
+                resolution = 100.0 if is_float else 1.0
+
+                # Disconnect old connections to prevent multiple updates
+                slider.valueChanged.disconnect()
+
+                # Update UI to reflect new settings
+                slider.setValue(int(initial_val * resolution))
+                value_label.setText(f"{initial_val:.2f}" if is_float else str(int(initial_val)))
+
+                # Create and connect the new update function
+                def new_update_value(value: int, s: Any = settings_section, k: str = key_name, res: float = resolution,
+                                     v_label: QLabel = value_label, is_flt: bool = is_float):
+                    real_val = value / res
+                    v_label.setText(f"{real_val:.2f}" if is_flt else str(int(real_val)))
+                    setattr(s, k, real_val)
+
+                slider.valueChanged.connect(new_update_value)
+            except Exception as e:
+                write_debug_log(f"Error reconnecting slider for '{key}': {e}")
 
     @Slot(str, str)
     def update_log(self, message: str, color: str = "black"):
