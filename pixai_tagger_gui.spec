@@ -5,7 +5,7 @@ a = Analysis(
     ['pixai_tagger_gui.py'],
     pathex=[],
     binaries=[],
-    datas=[],
+    datas=[('icons', 'icons')],
     hiddenimports=['PySide6.QtCore', 'PySide6.QtGui', 'PySide6.QtWidgets'],
     hookspath=[],
     hooksconfig={},
