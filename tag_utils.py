@@ -1,4 +1,5 @@
 from pathlib import Path
+import csv
 
 def get_txt_path(image_path: Path) -> Path:
     """Return the path to the txt file corresponding to the image path."""
@@ -48,3 +49,44 @@ def remove_tag_from_file(txt_path: Path, tag_to_remove: str) -> bool:
         write_tags(txt_path, existing_tags)
         return True
     return False
+
+def load_tag_translation_map(english_csv_path: Path, japanese_csv_path: Path) -> dict[str, str]:
+    """
+    Loads English tags and their Japanese translations, returning a dictionary mapping English -> Japanese.
+    Assumes both files have matching lines and the first line is a header to be skipped.
+    """
+    mapping: dict[str, str] = {}
+    if not english_csv_path.is_file() or not japanese_csv_path.is_file():
+        return mapping
+
+    try:
+        with open(english_csv_path, 'r', encoding='utf-8') as f_en, \
+             open(japanese_csv_path, 'r', encoding='utf-8') as f_jp:
+            
+            reader_en = csv.reader(f_en)
+            reader_jp = csv.reader(f_jp)
+            
+            # Skip header
+            try:
+                next(reader_en)
+                next(reader_jp)
+            except StopIteration:
+                return mapping
+
+            for row_en, row_jp in zip(reader_en, reader_jp):
+                if len(row_en) < 3 or not row_jp:
+                    continue
+                
+                # English tag is at index 2 in selected_tags.csv
+                # Replace underscores with spaces to match the format used in the application
+                en_tag = row_en[2].strip().replace('_', ' ')
+                # Japanese tag is the first column
+                jp_tag = row_jp[0].strip()
+                
+                if en_tag and jp_tag:
+                    mapping[en_tag] = jp_tag
+                    
+    except Exception as e:
+        print(f"Error loading tag translations: {e}")
+        
+    return mapping

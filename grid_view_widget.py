@@ -20,6 +20,28 @@ class ImageEditCellWidget(QWidget):
     # --- ADDED: Signal to request image enlargement with its global index ---
     image_enlarge_requested = Signal(int)
 
+from pathlib import Path
+from typing import List
+
+from PySide6.QtWidgets import (
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
+    QPushButton, QGridLayout, QSizePolicy, QScrollArea, QFrame, QToolTip,
+    QApplication
+)
+from PySide6.QtCore import Qt, Signal, Slot
+from PySide6.QtGui import QPixmap, QWheelEvent, QResizeEvent
+
+import tag_utils
+from locale_manager import LocaleManager
+from app_settings import AppSettings
+from custom_dialogs import ClickableLabel, ImageViewerDialog
+
+TAGS_PER_PAGE_GRID = 14
+
+class ImageEditCellWidget(QWidget):
+    # --- ADDED: Signal to request image enlargement with its global index ---
+    image_enlarge_requested = Signal(int)
+
     def __init__(self, locale_manager: LocaleManager, parent: QWidget | None = None):
         super().__init__(parent)
         self.locale_manager = locale_manager
@@ -28,6 +50,9 @@ class ImageEditCellWidget(QWidget):
         self._current_tag_page = 0
         self._global_index = -1  # To store the image's index in the main list
         
+        self.tag_translation_map: dict[str, str] = {}
+        self._tag_display_language: str = "English"
+
         self.setMinimumSize(300, 300)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         
@@ -121,10 +146,15 @@ class ImageEditCellWidget(QWidget):
         end_index = min(start_index + TAGS_PER_PAGE_GRID, total_tags)
         current_page_tags = tags[start_index:end_index]
         for i, tag in enumerate(current_page_tags):
-            btn = QPushButton(tag)
+            display_text = tag
+            if self._tag_display_language == "日本語":
+                display_text = self.tag_translation_map.get(tag, tag)
+            
+            btn = QPushButton(display_text)
             btn.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Expanding)
             btn.setStyleSheet("font-size: 11pt; text-align: left; padding-left: 3px;")
-            btn.setToolTip(self.locale_manager.get_string("GridView", "Click_To_Delete_Tag", tag=tag))
+            btn.setToolTip(tag) # Tooltip always shows English tag
+            btn.setProperty("original_tag", tag)
             btn.clicked.connect(lambda checked=False, t=tag: self._remove_tag(t))
             row = i % 7; col = i // 7
             self.tag_grid_layout.addWidget(btn, row, col)
@@ -186,6 +216,11 @@ class ImageEditCellWidget(QWidget):
         self.tag_buttons.clear()
         self.prev_tag_page_btn.setEnabled(False)
         self.next_tag_page_btn.setEnabled(False)
+
+    def set_tag_display_language(self, language: str, translation_map: dict[str, str]):
+        self._tag_display_language = language
+        self.tag_translation_map = translation_map
+        self._update_tag_display()
 
 class GridViewWidget(QWidget):
     back_to_main_requested = Signal()
@@ -347,3 +382,7 @@ class GridViewWidget(QWidget):
         self.page_label.setText(f"Page {self._current_page + 1} / {total_pages}")
         self.prev_page_btn.setEnabled(self._current_page > 0)
         self.next_page_btn.setEnabled((self._current_page + 1) * 9 < len(self._image_paths))
+
+    def set_tag_display_language(self, language: str, translation_map: dict[str, str]):
+        for cell in self.cells:
+            cell.set_tag_display_language(language, translation_map)

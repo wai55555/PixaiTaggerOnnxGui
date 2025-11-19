@@ -11,7 +11,7 @@ from PySide6.QtWidgets import (
     QMainWindow, QWidget,
     QGridLayout, QLabel, QLineEdit, QPushButton,
     QSlider, QTextEdit, QFileDialog, QMessageBox,
-    QStackedWidget, QApplication, QSplitter, QListWidgetItem
+    QStackedWidget, QApplication, QSplitter, QListWidgetItem, QComboBox
 )
 from PySide6.QtGui import (
     QPixmap, QImage, QKeyEvent, QResizeEvent, QDragEnterEvent,
@@ -24,6 +24,7 @@ import constants
 import app_settings # Added import
 from app_settings import load_config, load_settings, save_config # Updated import
 from custom_widgets import PathLineEdit, TagListWidget
+from tag_utils import load_tag_translation_map
 from custom_dialogs import ClickableLabel, ImageViewerDialog
 from grid_view_widget import GridViewWidget
 from workers import DownloaderWorker, TaggerThreadWorker, TagLoader, BulkTagWorker
@@ -88,6 +89,7 @@ class MainWindow(QMainWindow):
     run_button: QPushButton
     loading_label: QLabel
     tag_button_grid: QGridLayout
+    language_combo: QComboBox
     prev_page_btn: QPushButton
     next_page_btn: QPushButton
     add_tag_line: QLineEdit
@@ -109,6 +111,8 @@ class MainWindow(QMainWindow):
         
         self.ui = Ui_MainWindow()
         self.ui.setup_ui(self)
+        
+        self.language_combo.currentIndexChanged.connect(self.toggle_tag_language)
 
         self._install_event_filters()
 
@@ -175,12 +179,16 @@ class MainWindow(QMainWindow):
         self._worker_finished_event_loop: QEventLoop | None = None
         self._last_navigation_event_time: datetime | None = None # 追加
         
+        self.tag_translation_map: dict[str, str] = {}
+        self._tag_display_language: str = "English"
+
         # Constants
         self._tag_button_min_width = 100
         self._tag_button_min_height = 25
 
     def initial_load(self):
         """Performs the initial loading of images and tags after the main window is shown."""
+        self.tag_translation_map = load_tag_translation_map(constants.TAGS_CSV_PATH, constants.TAGS_JP_CSV_PATH)
         self.reload_image_list()
         self.reload_tags_only()
 
@@ -389,10 +397,15 @@ class MainWindow(QMainWindow):
             
             current_page_tags = self._all_tags[start_index:end_index]
             for i, (tag_name, count) in enumerate(current_page_tags):
-                button = QPushButton(f"{tag_name} ({count})")
+                display_text = tag_name
+                if self._tag_display_language == "日本語":
+                    display_text = self.tag_translation_map.get(tag_name, tag_name)
+                
+                button = QPushButton(f"{display_text} ({count})")
                 button.setMinimumWidth(self._tag_button_min_width)
                 button.setFixedHeight(self._tag_button_min_height)
-                button.setToolTip(self.locale_manager.get_string("MainWindow", "Tag_Button_Tooltip", tag_name=tag_name))
+                button.setToolTip(tag_name) # Tooltip always shows English tag
+                button.setProperty("original_tag", tag_name)
                 button.clicked.connect(functools.partial(self.delete_tag_all, tag_name))
                 self.tag_button_grid.addWidget(button, i // 4, i % 4)
                 self.tag_buttons.append(button)
@@ -417,9 +430,14 @@ class MainWindow(QMainWindow):
         end = min(start + tags_per_page, total_tags)
         
         for i, tag_name in enumerate(self._current_image_tags[start:end]):
-            button = QPushButton(tag_name)
+            display_text = tag_name
+            if self._tag_display_language == "日本語":
+                display_text = self.tag_translation_map.get(tag_name, tag_name)
+            
+            button = QPushButton(display_text)
             button.setMinimumSize(self._tag_button_min_width, self._tag_button_min_height)
-            button.setToolTip(self.locale_manager.get_string("MainWindow", "Tag_Button_Tooltip_Delete", tag_name=tag_name))
+            button.setToolTip(tag_name) # Tooltip always shows English tag
+            button.setProperty("original_tag", tag_name)
             button.clicked.connect(functools.partial(self._delete_image_tag, tag_name))
             self.tag_display_grid.addWidget(button, i // cols, i % cols)
             self.tag_buttons_for_image.append(button)
@@ -427,6 +445,14 @@ class MainWindow(QMainWindow):
         self.image_tag_prev_page_btn.setEnabled(self._current_image_tag_page > 0)
         self.image_tag_next_page_btn.setEnabled(end < total_tags)
         QTimer.singleShot(0, self.update_all_button_alignments)
+
+    @Slot(int)
+    def toggle_tag_language(self, index: int):
+        """Toggles the display language of tags between English and Japanese."""
+        self._tag_display_language = self.language_combo.currentText()
+        self.display_current_tag_page()
+        self._display_image_tag_page()
+        self.grid_view_widget.set_tag_display_language(self._tag_display_language, self.tag_translation_map)
 
     def _update_ui_for_processing(self, is_running: bool, process_type: str):
         """Updates UI elements based on whether a process is starting or stopping."""
