@@ -6,7 +6,7 @@ from PySide6.QtCore import (
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout,
     QGridLayout, QGroupBox, QLabel, QLineEdit, QPushButton,
-    QTextEdit, QSizePolicy, QSplitter, QStackedWidget
+    QTextEdit, QSizePolicy, QSplitter, QStackedWidget, QComboBox
 )
 from PySide6.QtGui import (
     QIcon
@@ -229,9 +229,19 @@ class Ui_MainWindow(object):
         group = QGroupBox(main_window.locale_manager.get_string("MainWindow", "Bulk_Delete_Tags"))
         layout = QVBoxLayout(group)
         
+        header_layout = QHBoxLayout()
         main_window.loading_label = QLabel(main_window.locale_manager.get_string("Constants", "Loading_Tag_List"))
         main_window.loading_label.setStyleSheet("font-weight:bold;")
-        layout.addWidget(main_window.loading_label)
+        header_layout.addWidget(main_window.loading_label)
+
+        header_layout.addStretch(1)
+
+        main_window.language_combo = QComboBox()
+        main_window.language_combo.addItems(["English", "日本語"])
+        main_window.language_combo.setCurrentIndex(0)
+        header_layout.addWidget(main_window.language_combo)
+        
+        layout.addLayout(header_layout)
         
         main_window.tag_button_grid = QGridLayout()
         for i in range(4):

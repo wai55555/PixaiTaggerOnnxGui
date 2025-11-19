@@ -4,6 +4,7 @@ venv/
 .venv/
 .vscode
 .idea/
+.kiro
 *.env
 dist/
 build/
@@ -12,4 +13,5 @@ debug_log.txt
 *コピー*
 .git
 GEMINI.md
+AGENT.md
 config.ini
