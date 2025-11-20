@@ -14,3 +14,8 @@ debug_log.txt
 GEMINI.md
 AGENT.md
 config.ini
+
+# Downloaded model files that should not be committed
+pixai-tagger-v0.9-onnx/model.onnx
+pixai-tagger-v0.9-onnx/model.onnx.bak
+pixai-tagger-v0.9-onnx/selected_tags.csv
