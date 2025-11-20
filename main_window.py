@@ -943,6 +943,14 @@ class MainWindow(QMainWindow):
             self.settings = load_settings(config)
             self._reconnect_sliders()
             self._check_model_status_and_update_ui() # On success, check status to show "TAG" button
+            
+            # Reload tag translation map as files are now available
+            self.tag_translation_map = load_tag_translation_map(constants.TAGS_CSV_PATH, constants.TAGS_JP_CSV_PATH)
+            
+            # Update UI with new translation map
+            self.display_current_tag_page()
+            self._display_image_tag_page()
+            self.grid_view_widget.set_tag_display_language(self._tag_display_language, self.tag_translation_map)
         else:
             self.update_log(self.locale_manager.get_string("MainWindow", "Model_Download_Failed"), "red")
             self._check_model_status_and_update_ui(force_download=True) # On failure/stop, force "Download" button
