@@ -938,10 +938,9 @@ class MainWindow(QMainWindow):
 
         if success:
             self.update_log(self.locale_manager.get_string("MainWindow", "Model_Download_Complete"), "green")
-            # Reload settings from disk as the worker may have updated the verification status
+            # Update only the model verification status without overwriting user-modified settings
             config = load_config()
-            self.settings = load_settings(config)
-            self._reconnect_sliders()
+            self.settings.model.verified = config.getboolean('Model', 'verified', fallback=False)
             self._check_model_status_and_update_ui() # On success, check status to show "TAG" button
             
             # Reload tag translation map as files are now available
