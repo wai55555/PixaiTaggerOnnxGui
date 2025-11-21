@@ -41,6 +41,9 @@ TAGS_PER_PAGE_GRID = 14
 class ImageEditCellWidget(QWidget):
     # --- ADDED: Signal to request image enlargement with its global index ---
     image_enlarge_requested = Signal(int)
+    # Signals for undo/redo
+    tags_added = Signal(Path, list)  # (file_path, added_tags)
+    tag_removed = Signal(Path, str, int)  # (file_path, removed_tag, original_index)
 
     def __init__(self, locale_manager: LocaleManager, parent: QWidget | None = None):
         super().__init__(parent)
@@ -182,17 +185,29 @@ class ImageEditCellWidget(QWidget):
             tooltip_pos = self.add_tag_line.mapToGlobal(self.add_tag_line.rect().bottomLeft())
             QToolTip.showText(tooltip_pos, tooltip_message, self.add_tag_line)
         if actually_new_tags:
-            if tag_utils.add_tags_to_file(txt_path, actually_new_tags): self._update_tag_display()
+            if tag_utils.add_tags_to_file(txt_path, actually_new_tags):
+                self._update_tag_display()
+                # Emit signal for undo/redo
+                self.tags_added.emit(txt_path, actually_new_tags)
     @Slot(str)
     def _remove_tag(self, tag_to_remove: str):
         if not self._image_path: return
         txt_path = tag_utils.get_txt_path(self._image_path)
+        
+        # Get original index before removal
+        existing_tags = tag_utils.read_tags(txt_path)
+        original_index = existing_tags.index(tag_to_remove) if tag_to_remove in existing_tags else -1
+        
         if tag_utils.remove_tag_from_file(txt_path, tag_to_remove):
             tags = tag_utils.read_tags(txt_path)
             total_pages = (len(tags) + TAGS_PER_PAGE_GRID - 1) // TAGS_PER_PAGE_GRID
             total_pages = max(1, total_pages)
             if self._current_tag_page >= total_pages: self._current_tag_page = max(0, total_pages - 1)
             self._update_tag_display()
+            
+            # Emit signal for undo/redo
+            if original_index >= 0:
+                self.tag_removed.emit(txt_path, tag_to_remove, original_index)
     @Slot()
     def _prev_tag_page(self):
         if self._current_tag_page > 0:
@@ -224,6 +239,9 @@ class ImageEditCellWidget(QWidget):
 
 class GridViewWidget(QWidget):
     back_to_main_requested = Signal()
+    # Signals for undo/redo
+    tags_added = Signal(Path, list)  # (file_path, added_tags)
+    tag_removed = Signal(Path, str, int)  # (file_path, removed_tag, original_index)
     
     def __init__(self, settings: AppSettings, locale_manager: LocaleManager, parent: QWidget | None = None):
         super().__init__(parent)
@@ -245,6 +263,7 @@ class GridViewWidget(QWidget):
         main_layout.setContentsMargins(2, 2, 2, 2)
         main_layout.setSpacing(2)
         top_bar_layout = QHBoxLayout()
+        
         self.back_button = QPushButton(self.locale_manager.get_string("GridView", "Back_To_Main_View"))
         self.back_button.clicked.connect(self.back_to_main_requested.emit)
         top_bar_layout.addStretch(1)
@@ -258,6 +277,9 @@ class GridViewWidget(QWidget):
             cell = ImageEditCellWidget(self.locale_manager)
             # --- ADDED: Connect the cell's request signal to the handler slot ---
             cell.image_enlarge_requested.connect(self.show_enlarged_image_at_index)
+            # Connect undo/redo signals
+            cell.tags_added.connect(self.tags_added.emit)
+            cell.tag_removed.connect(self.tag_removed.emit)
             self.cells.append(cell)
             row, col = divmod(i, 3)
             self.grid_layout.addWidget(cell, row, col)
@@ -268,18 +290,41 @@ class GridViewWidget(QWidget):
         self.prev_page_btn.clicked.connect(self.prev_page)
         self.prev_page_btn.setMinimumHeight(40)
         self.prev_page_btn.setStyleSheet("font-size: 14pt;")
+        
+        # Undo button (placed after "Previous 9")
+        self.undo_button = QPushButton("↶ Undo")
+        self.undo_button.setEnabled(False)
+        self.undo_button.setMaximumWidth(100)
+        self.undo_button.setMinimumHeight(40)
+        self.undo_button.setStyleSheet("font-size: 14pt;")
+        self.undo_button.setToolTip("元に戻す操作がありません")
+        
+        self.page_label = QLabel("Page 1 / 1")
+        
+        # Redo button (placed before "Next 9")
+        self.redo_button = QPushButton("↷ Redo")
+        self.redo_button.setEnabled(False)
+        self.redo_button.setMaximumWidth(100)
+        self.redo_button.setMinimumHeight(40)
+        self.redo_button.setStyleSheet("font-size: 14pt;")
+        self.redo_button.setToolTip("やり直す操作がありません")
+        
         self.next_page_btn = QPushButton(self.locale_manager.get_string("GridView", "Next_9"))
         self.next_page_btn.clicked.connect(self.next_page)
         self.next_page_btn.setMinimumHeight(40)
         self.next_page_btn.setStyleSheet("font-size: 14pt;")
-        self.page_label = QLabel("Page 1 / 1")
-        pagination_layout.addStretch(2)
+        
+        pagination_layout.addStretch(3)
         pagination_layout.addWidget(self.prev_page_btn)
-        pagination_layout.addStretch(1)
-        pagination_layout.addWidget(self.page_label)
-        pagination_layout.addStretch(1)
-        pagination_layout.addWidget(self.next_page_btn)
+        pagination_layout.addSpacing(15)
+        pagination_layout.addWidget(self.undo_button)
         pagination_layout.addStretch(2)
+        pagination_layout.addWidget(self.page_label)
+        pagination_layout.addStretch(2)
+        pagination_layout.addWidget(self.redo_button)
+        pagination_layout.addSpacing(15)
+        pagination_layout.addWidget(self.next_page_btn)
+        pagination_layout.addStretch(3)
         main_layout.addLayout(pagination_layout)
 
     def _display_page(self):
@@ -386,3 +431,22 @@ class GridViewWidget(QWidget):
     def set_tag_display_language(self, language: str, translation_map: dict[str, str]):
         for cell in self.cells:
             cell.set_tag_display_language(language, translation_map)
+    
+    def update_undo_redo_buttons(self, can_undo: bool, can_redo: bool, undo_desc: str, redo_desc: str):
+        """Updates the enabled state and tooltips of undo/redo buttons in grid view."""
+        self.undo_button.setEnabled(can_undo)
+        self.redo_button.setEnabled(can_redo)
+        
+        if can_undo:
+            self.undo_button.setToolTip(f"{undo_desc}を元に戻す")
+        else:
+            self.undo_button.setToolTip("元に戻す操作がありません")
+        
+        if can_redo:
+            self.redo_button.setToolTip(f"{redo_desc}をやり直す")
+        else:
+            self.redo_button.setToolTip("やり直す操作がありません")
+    
+    def refresh_current_page(self):
+        """Refreshes the current page display after undo/redo operations."""
+        self._display_page()

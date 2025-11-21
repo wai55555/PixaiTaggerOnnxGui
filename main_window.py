@@ -30,6 +30,7 @@ from grid_view_widget import GridViewWidget
 from workers import DownloaderWorker, TaggerThreadWorker, TagLoader, BulkTagWorker
 from locale_manager import LocaleManager
 from ui_main_window import Ui_MainWindow
+from undo_manager import UndoManager, AddTagsAction, RemoveTagAction, BulkAddTagsAction, BulkRemoveTagsAction
 
 def get_os_language() -> str:
     """
@@ -97,6 +98,8 @@ class MainWindow(QMainWindow):
     add_tag_line_append: QLineEdit
     add_tag_button_append: QPushButton
     log_output: QTextEdit
+    undo_button: QPushButton
+    redo_button: QPushButton
 
     # --- Signals ---
     request_overwrite_check = Signal(str, str)
@@ -175,6 +178,9 @@ class MainWindow(QMainWindow):
         self._image_viewer_dialog: ImageViewerDialog | None = None
         
         self._overwrite_event_loop: QEventLoop | None = None
+        
+        # Undo/Redo Manager
+        self.undo_manager = UndoManager(max_history=50)
         self._overwrite_response: bool | None = None
         self._worker_finished_event_loop: QEventLoop | None = None
         self._last_navigation_event_time: datetime | None = None # 追加
@@ -191,6 +197,7 @@ class MainWindow(QMainWindow):
         self.tag_translation_map = load_tag_translation_map(constants.TAGS_CSV_PATH, constants.TAGS_JP_CSV_PATH)
         self.reload_image_list()
         self.reload_tags_only()
+        self._update_undo_redo_buttons()
 
     def _install_event_filters(self):
         """Installs event filters on widgets to intercept specific key presses."""
@@ -720,11 +727,23 @@ class MainWindow(QMainWindow):
             if txt_path.is_file():
                 existing_tags = [t.strip() for t in txt_path.read_text('utf-8').split(',') if t.strip()]
             
-            for tag in new_tags:
-                if tag not in existing_tags:
-                    existing_tags.append(tag)
+            # Filter out tags that already exist
+            tags_to_add = [tag for tag in new_tags if tag not in existing_tags]
+            
+            if not tags_to_add:
+                self.update_log("タグは既に存在します", "orange")
+                return
+            
+            for tag in tags_to_add:
+                existing_tags.append(tag)
             
             txt_path.write_text(', '.join(existing_tags), 'utf-8')
+            
+            # Record action for undo
+            action = AddTagsAction(file_path=txt_path, added_tags=tags_to_add)
+            self.undo_manager.push(action)
+            self._update_undo_redo_buttons()
+            
             self.update_log(self.locale_manager.get_string("MainWindow", "Tags_Added_To_File", txt_path_name=txt_path.name), "green")
             self.add_single_tag_line.clear()
             self._load_image_tags(image_path)
@@ -754,10 +773,19 @@ class MainWindow(QMainWindow):
             write_debug_log(f"[_delete_image_tag] Existing tags before deletion: {tags}")
 
             if tag_to_delete in tags:
+                # Record original index for undo
+                original_index = tags.index(tag_to_delete)
+                
                 tags.remove(tag_to_delete)
                 write_debug_log(f"[_delete_image_tag] Tags after removal: {tags}")
                 txt_path.write_text(', '.join(tags), 'utf-8')
                 write_debug_log(f"[_delete_image_tag] Successfully wrote tags to file: {txt_path.name}")
+                
+                # Record action for undo
+                action = RemoveTagAction(file_path=txt_path, removed_tag=tag_to_delete, original_index=original_index)
+                self.undo_manager.push(action)
+                self._update_undo_redo_buttons()
+                
                 self.update_log(self.locale_manager.get_string("MainWindow", "Tag_Deleted_From_File", tag_name=tag_to_delete, file_name=txt_path.name), "green")
                 self._load_image_tags(image_path)
                 write_debug_log("[_delete_image_tag] UI updated after tag deletion.")
@@ -897,6 +925,8 @@ class MainWindow(QMainWindow):
 
         worker.log_message.connect(self.update_log)
         worker.finished.connect(self._on_bulk_tag_finished)
+        worker.bulk_add_completed.connect(self._on_bulk_add_completed)
+        worker.bulk_delete_completed.connect(self._on_bulk_delete_completed)
         
         if mode == 'add':
             self._bulk_tag_thread.started.connect(lambda: worker.run_bulk_add(kwargs['input_dir'], kwargs['tags'], kwargs['prepend']))
@@ -990,6 +1020,40 @@ class MainWindow(QMainWindow):
                 self._bulk_tag_worker.deleteLater()
             self._bulk_tag_thread.deleteLater()
             self._bulk_tag_thread = self._bulk_tag_worker = None
+    
+    @Slot(list, list, str)
+    def _on_bulk_add_completed(self, file_paths: list[Path], added_tags: list[str], position: str):
+        """Records bulk add operation for undo."""
+        if file_paths:
+            action = BulkAddTagsAction(file_paths=file_paths, added_tags=added_tags, position=position)
+            self.undo_manager.push(action)
+            self._update_undo_redo_buttons()
+            write_debug_log(f"Bulk add action recorded: {len(file_paths)} files, {len(added_tags)} tags")
+    
+    @Slot(str, list)
+    def _on_bulk_delete_completed(self, removed_tag: str, file_tag_positions: list[tuple[Path, int]]):
+        """Records bulk delete operation for undo."""
+        if file_tag_positions:
+            action = BulkRemoveTagsAction(removed_tag=removed_tag, file_tag_positions=file_tag_positions)
+            self.undo_manager.push(action)
+            self._update_undo_redo_buttons()
+            write_debug_log(f"Bulk delete action recorded: {len(file_tag_positions)} files")
+    
+    @Slot(Path, list)
+    def _on_gridview_tags_added(self, file_path: Path, added_tags: list[str]):
+        """Records tag addition from GridView for undo."""
+        action = AddTagsAction(file_path=file_path, added_tags=added_tags)
+        self.undo_manager.push(action)
+        self._update_undo_redo_buttons()
+        write_debug_log(f"GridView add action recorded: {len(added_tags)} tags to {file_path.name}")
+    
+    @Slot(Path, str, int)
+    def _on_gridview_tag_removed(self, file_path: Path, removed_tag: str, original_index: int):
+        """Records tag removal from GridView for undo."""
+        action = RemoveTagAction(file_path=file_path, removed_tag=removed_tag, original_index=original_index)
+        self.undo_manager.push(action)
+        self._update_undo_redo_buttons()
+        write_debug_log(f"GridView remove action recorded: '{removed_tag}' from {file_path.name}")
 
    
 
@@ -1099,6 +1163,65 @@ class MainWindow(QMainWindow):
             cursor.movePosition(cursor.MoveOperation.NextBlock, cursor.MoveMode.KeepAnchor)
             cursor.removeSelectedText()
             cursor.deleteChar()
+
+    def _update_undo_redo_buttons(self):
+        """Updates the enabled state and tooltips of undo/redo buttons."""
+        can_undo = self.undo_manager.can_undo()
+        can_redo = self.undo_manager.can_redo()
+        
+        self.undo_button.setEnabled(can_undo)
+        self.redo_button.setEnabled(can_redo)
+        
+        if can_undo:
+            desc = self.undo_manager.get_undo_description()
+            self.undo_button.setToolTip(f"{desc}を元に戻す")
+        else:
+            self.undo_button.setToolTip("元に戻す操作がありません")
+        
+        if can_redo:
+            desc = self.undo_manager.get_redo_description()
+            self.redo_button.setToolTip(f"{desc}をやり直す")
+        else:
+            self.redo_button.setToolTip("やり直す操作がありません")
+        
+        # Update grid view buttons as well
+        self.grid_view_widget.update_undo_redo_buttons(can_undo, can_redo, 
+                                                        self.undo_manager.get_undo_description(),
+                                                        self.undo_manager.get_redo_description())
+    
+    @Slot()
+    def _perform_undo(self):
+        """Performs an undo operation."""
+        if self.undo_manager.undo():
+            self.update_log("操作を元に戻しました", "green")
+            self._refresh_ui_after_undo_redo()
+        else:
+            self.update_log("元に戻す操作に失敗しました", "red")
+        self._update_undo_redo_buttons()
+    
+    @Slot()
+    def _perform_redo(self):
+        """Performs a redo operation."""
+        if self.undo_manager.redo():
+            self.update_log("操作をやり直しました", "green")
+            self._refresh_ui_after_undo_redo()
+        else:
+            self.update_log("やり直す操作に失敗しました", "red")
+        self._update_undo_redo_buttons()
+    
+    def _refresh_ui_after_undo_redo(self):
+        """Refreshes UI elements after undo/redo operations."""
+        # Refresh current image tags
+        current_item = self.image_list.currentItem()
+        if current_item:
+            image_path = Path(self.settings.paths.input_dir) / current_item.data(Qt.ItemDataRole.UserRole + 1)
+            self._load_image_tags(image_path)
+        
+        # Refresh bulk tag list
+        self.reload_tags_only()
+        
+        # Refresh grid view
+        self.grid_view_widget.refresh_current_page()
 
     def _check_model_status_and_update_ui(self, auto_start_download: bool = False, force_download: bool = False):
         """Checks for model files and updates the run button's state and appearance."""
