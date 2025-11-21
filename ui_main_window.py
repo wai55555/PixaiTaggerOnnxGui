@@ -64,6 +64,10 @@ class Ui_MainWindow(object):
         main_window.input_line.folder_dropped.connect(main_window._handle_folder_drop)  # type: ignore
         main_window.run_button.clicked.connect(main_window.toggle_download_or_start_tagging)
         main_window.grid_view_widget.back_to_main_requested.connect(main_window._show_main_view)  # type: ignore
+        main_window.grid_view_widget.undo_button.clicked.connect(main_window._perform_undo)  # type: ignore
+        main_window.grid_view_widget.redo_button.clicked.connect(main_window._perform_redo)  # type: ignore
+        main_window.grid_view_widget.tags_added.connect(main_window._on_gridview_tags_added)  # type: ignore
+        main_window.grid_view_widget.tag_removed.connect(main_window._on_gridview_tag_removed)  # type: ignore
         main_window._resize_timer.timeout.connect(main_window._handle_resize_debounced)  # type: ignore
         main_window.overwrite_dialog_requested.connect(main_window._handle_overwrite_request)
 
@@ -168,7 +172,29 @@ class Ui_MainWindow(object):
         tag_panel_widget = QWidget()
         tag_panel = QVBoxLayout(tag_panel_widget)
         tag_panel.setContentsMargins(0, 0, 0, 0)
-        tag_panel.addWidget(QLabel(main_window.locale_manager.get_string("MainWindow", "Image_Tags_Label")))
+        
+        # Header with title and undo/redo buttons
+        header_layout = QHBoxLayout()
+        header_layout.addWidget(QLabel(main_window.locale_manager.get_string("MainWindow", "Image_Tags_Label")))
+        header_layout.addStretch(1)
+        
+        # Undo button
+        main_window.undo_button = QPushButton("↶ Undo")
+        main_window.undo_button.setEnabled(False)
+        main_window.undo_button.setMaximumWidth(80)
+        main_window.undo_button.setToolTip("元に戻す操作がありません")
+        main_window.undo_button.clicked.connect(main_window._perform_undo)  # type: ignore
+        header_layout.addWidget(main_window.undo_button)
+        
+        # Redo button
+        main_window.redo_button = QPushButton("↷ Redo")
+        main_window.redo_button.setEnabled(False)
+        main_window.redo_button.setMaximumWidth(80)
+        main_window.redo_button.setToolTip("やり直す操作がありません")
+        main_window.redo_button.clicked.connect(main_window._perform_redo)  # type: ignore
+        header_layout.addWidget(main_window.redo_button)
+        
+        tag_panel.addLayout(header_layout)
         
         tag_grid_container = QWidget()
         main_window.tag_display_grid = QGridLayout(tag_grid_container)

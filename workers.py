@@ -349,6 +349,8 @@ class BulkTagWorker(QObject):
     """Worker to execute bulk tag editing (add/delete)"""
     log_message = Signal(str, str)
     finished = Signal()
+    bulk_add_completed = Signal(list, list, str)  # (file_paths, added_tags, position)
+    bulk_delete_completed = Signal(str, list)  # (removed_tag, file_tag_positions)
 
     def __init__(self, get_string: GetString | None = None):
         super().__init__()
@@ -386,19 +388,34 @@ class BulkTagWorker(QObject):
     def run_bulk_delete(self, input_dir: Path, tag_to_delete: str):
         write_debug_log(str(self.get_string("Workers", "BulkTagWorker_Bulk_Delete_Start", tag_to_delete=tag_to_delete)), self.get_string)
         count = 0
+        file_tag_positions: list[tuple[Path, int]] = []
+        
         try:
             for txt in input_dir.rglob("*.txt"):
                 if self.is_stopped():
                     break
                 
-                def delete_callback(tags: list[str]) -> list[str]:
-                    return [t for t in tags if t != tag_to_delete]
+                # Record original position before deletion
+                try:
+                    with open(txt, "r", encoding="utf-8") as f:
+                        existing_tags = [t.strip() for t in f.read().split(',') if t.strip()]
+                    
+                    if tag_to_delete in existing_tags:
+                        original_index = existing_tags.index(tag_to_delete)
+                        
+                        def delete_callback(tags: list[str]) -> list[str]:
+                            return [t for t in tags if t != tag_to_delete]
 
-                if self._process_tag_file(txt, delete_callback):
-                    count += 1
+                        if self._process_tag_file(txt, delete_callback):
+                            file_tag_positions.append((txt, original_index))
+                            count += 1
+                except Exception as e:
+                    write_debug_log(f"Error processing {txt}: {e}", self.get_string)
             
             if not self.is_stopped():
                 self.log_message.emit(self.get_string("Workers", "BulkTagWorker_Bulk_Delete_Complete", count=count, tag_to_delete=tag_to_delete), "green")
+                # Emit signal with undo information
+                self.bulk_delete_completed.emit(tag_to_delete, file_tag_positions)
             write_debug_log(str(self.get_string("Workers", "BulkTagWorker_Bulk_Delete_Count", count=count)), self.get_string)
         except Exception as e:
             write_debug_log(str(self.get_string("Workers", "BulkTagWorker_Unexpected_Error_Bulk_Delete", e=e)), self.get_string)
@@ -411,6 +428,7 @@ class BulkTagWorker(QObject):
     def run_bulk_add(self, input_dir: Path, tags_to_add: str, prepend: bool):
         write_debug_log(str(self.get_string("Workers", "BulkTagWorker_Bulk_Add_Start", tags_to_add=tags_to_add)), self.get_string)
         count = 0
+        modified_files: list[Path] = []
         
         new_tags_to_add = sorted(list(set([t.strip() for t in tags_to_add.split(',') if t.strip()])))
         if not new_tags_to_add:
@@ -430,10 +448,14 @@ class BulkTagWorker(QObject):
                         return existing_tags + [tag for tag in new_tags_to_add if tag not in existing_tags]
 
                 if self._process_tag_file(txt, add_callback):
+                    modified_files.append(txt)
                     count += 1
 
             if not self.is_stopped():
                 self.log_message.emit(self.get_string("Workers", "BulkTagWorker_Bulk_Add_Complete", count=count, tags_to_add=tags_to_add), "green")
+                # Emit signal with undo information
+                position = "prepend" if prepend else "append"
+                self.bulk_add_completed.emit(modified_files, new_tags_to_add, position)
             write_debug_log(str(self.get_string("Workers", "BulkTagWorker_Bulk_Add_Count", count=count)), self.get_string)
         except Exception as e:
             write_debug_log(str(self.get_string("Workers", "BulkTagWorker_Unexpected_Error_Bulk_Add", e=e)), self.get_string)
