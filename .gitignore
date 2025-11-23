@@ -8,6 +8,7 @@ venv/
 *.env
 dist/
 build/
+.agent/
 debug_log.txt
 *コピー*
 .git
