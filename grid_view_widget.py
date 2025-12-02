@@ -6,7 +6,7 @@ from PySide6.QtWidgets import (
     QPushButton, QGridLayout, QSizePolicy, QScrollArea, QFrame, QToolTip,
     QApplication
 )
-from PySide6.QtCore import Qt, Signal, Slot
+from PySide6.QtCore import Qt, Signal, Slot, QRect, QObject, QEvent
 from PySide6.QtGui import QPixmap, QWheelEvent, QResizeEvent
 
 import tag_utils
@@ -19,24 +19,6 @@ TAGS_PER_PAGE_GRID = 14
 class ImageEditCellWidget(QWidget):
     # --- ADDED: Signal to request image enlargement with its global index ---
     image_enlarge_requested = Signal(int)
-
-from pathlib import Path
-from typing import List
-
-from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
-    QPushButton, QGridLayout, QSizePolicy, QScrollArea, QFrame, QToolTip,
-    QApplication
-)
-from PySide6.QtCore import Qt, Signal, Slot
-from PySide6.QtGui import QPixmap, QWheelEvent, QResizeEvent
-
-import tag_utils
-from locale_manager import LocaleManager
-from app_settings import AppSettings
-from custom_dialogs import ClickableLabel, ImageViewerDialog
-
-TAGS_PER_PAGE_GRID = 14
 
 class ImageEditCellWidget(QWidget):
     # --- ADDED: Signal to request image enlargement with its global index ---
@@ -159,6 +141,7 @@ class ImageEditCellWidget(QWidget):
             btn.setToolTip(tag) # Tooltip always shows English tag
             btn.setProperty("original_tag", tag)
             btn.clicked.connect(lambda checked=False, t=tag: self._remove_tag(t))
+            btn.installEventFilter(self)
             row = i % 7; col = i // 7
             self.tag_grid_layout.addWidget(btn, row, col)
             self.tag_buttons.append(btn)
@@ -221,6 +204,35 @@ class ImageEditCellWidget(QWidget):
         if (self._current_tag_page + 1) * TAGS_PER_PAGE_GRID < len(tags):
             self._current_tag_page += 1
             self._update_tag_display()
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:
+        """Filters events from watched objects to handle right-click on tag buttons."""
+        if event.type() == QEvent.Type.MouseButtonRelease:
+            from PySide6.QtGui import QMouseEvent
+            assert isinstance(event, QMouseEvent)
+            if event.button() == Qt.MouseButton.RightButton:
+                # Check if this is a tag button
+                if isinstance(watched, QPushButton) and watched.property("original_tag"):
+                    tag_name = watched.property("original_tag")
+                    self._copy_tag_to_clipboard(tag_name)
+                    return True # Event handled
+        
+        return super().eventFilter(watched, event)
+    
+    def _copy_tag_to_clipboard(self, tag_name: str):
+        """Copies the tag to clipboard."""
+        from PySide6.QtGui import QCursor
+        from PySide6.QtCore import QTimer
+        clipboard = QApplication.clipboard()
+        clipboard.setText(tag_name)
+        # Show a tooltip to indicate success at the current cursor position
+        cursor_pos = QCursor.pos()
+        tooltip_text = self.locale_manager.get_string("MainWindow", "Copied_Tag_Tooltip", tag_name=tag_name)
+        # Show tooltip with self as the widget to keep it visible regardless of mouse button state
+        QToolTip.showText(cursor_pos, tooltip_text, self)
+        
+        # Keep the tooltip visible for 2 seconds
+        QTimer.singleShot(2000, QToolTip.hideText)
+    
     def clear_data(self):
         self._image_path = None
         self._global_index = -1
@@ -297,7 +309,7 @@ class GridViewWidget(QWidget):
         self.undo_button.setMaximumWidth(100)
         self.undo_button.setMinimumHeight(40)
         self.undo_button.setStyleSheet("font-size: 14pt;")
-        self.undo_button.setToolTip("元に戻す操作がありません")
+        self.undo_button.setToolTip(self.locale_manager.get_string("MainWindow", "Undo_No_Actions"))
         
         self.page_label = QLabel("Page 1 / 1")
         
@@ -307,7 +319,7 @@ class GridViewWidget(QWidget):
         self.redo_button.setMaximumWidth(100)
         self.redo_button.setMinimumHeight(40)
         self.redo_button.setStyleSheet("font-size: 14pt;")
-        self.redo_button.setToolTip("やり直す操作がありません")
+        self.redo_button.setToolTip(self.locale_manager.get_string("MainWindow", "Redo_No_Actions"))
         
         self.next_page_btn = QPushButton(self.locale_manager.get_string("GridView", "Next_9"))
         self.next_page_btn.clicked.connect(self.next_page)
@@ -438,14 +450,14 @@ class GridViewWidget(QWidget):
         self.redo_button.setEnabled(can_redo)
         
         if can_undo:
-            self.undo_button.setToolTip(f"{undo_desc}を元に戻す")
+            self.undo_button.setToolTip(self.locale_manager.get_string("MainWindow", "Undo_Action", desc=undo_desc))
         else:
-            self.undo_button.setToolTip("元に戻す操作がありません")
+            self.undo_button.setToolTip(self.locale_manager.get_string("MainWindow", "Undo_No_Actions"))
         
         if can_redo:
-            self.redo_button.setToolTip(f"{redo_desc}をやり直す")
+            self.redo_button.setToolTip(self.locale_manager.get_string("MainWindow", "Redo_Action", desc=redo_desc))
         else:
-            self.redo_button.setToolTip("やり直す操作がありません")
+            self.redo_button.setToolTip(self.locale_manager.get_string("MainWindow", "Redo_No_Actions"))
     
     def refresh_current_page(self):
         """Refreshes the current page display after undo/redo operations."""

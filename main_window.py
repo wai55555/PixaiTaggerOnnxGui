@@ -414,6 +414,7 @@ class MainWindow(QMainWindow):
                 button.setToolTip(tag_name) # Tooltip always shows English tag
                 button.setProperty("original_tag", tag_name)
                 button.clicked.connect(functools.partial(self.delete_tag_all, tag_name))
+                button.installEventFilter(self)
                 self.tag_button_grid.addWidget(button, i // 4, i % 4)
                 self.tag_buttons.append(button)
 
@@ -446,6 +447,7 @@ class MainWindow(QMainWindow):
             button.setToolTip(tag_name) # Tooltip always shows English tag
             button.setProperty("original_tag", tag_name)
             button.clicked.connect(functools.partial(self._delete_image_tag, tag_name))
+            button.installEventFilter(self)
             self.tag_display_grid.addWidget(button, i // cols, i % cols)
             self.tag_buttons_for_image.append(button)
 
@@ -537,7 +539,7 @@ class MainWindow(QMainWindow):
         super().closeEvent(event)
 
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:
-        """Filters events from watched objects (e.g., QLineEdit)."""
+        """Filters events from watched objects (e.g., QLineEdit, QPushButton)."""
         if event.type() == QEvent.Type.KeyPress:
             assert isinstance(event, QKeyEvent)
             # Check if the event is from one of our QLineEdit widgets
@@ -548,6 +550,17 @@ class MainWindow(QMainWindow):
                             delta = -1 if event.key() == Qt.Key.Key_Up else 1
                             self.navigate_image_list(delta)
                         return True # Event handled, stop further processing
+        
+        # Handle right-click on tag buttons
+        elif event.type() == QEvent.Type.MouseButtonRelease:
+            from PySide6.QtGui import QMouseEvent
+            assert isinstance(event, QMouseEvent)
+            if event.button() == Qt.MouseButton.RightButton:
+                # Check if this is a tag button
+                if isinstance(watched, QPushButton) and watched.property("original_tag"):
+                    tag_name = watched.property("original_tag")
+                    self._copy_tag_to_clipboard(tag_name)
+                    return True # Event handled
 
         # Pass the event on to the parent class if not handled
         return super().eventFilter(watched, event)
@@ -731,7 +744,7 @@ class MainWindow(QMainWindow):
             tags_to_add = [tag for tag in new_tags if tag not in existing_tags]
             
             if not tags_to_add:
-                self.update_log("タグは既に存在します", "orange")
+                self.update_log(self.locale_manager.get_string("MainWindow", "Tag_Already_Exists"), "orange")
                 return
             
             for tag in tags_to_add:
@@ -794,6 +807,13 @@ class MainWindow(QMainWindow):
         except Exception as e:
             write_debug_log(f"[_delete_image_tag] Error during tag deletion: {e}")
             self.update_log(self.locale_manager.get_string("MainWindow", "Error_Deleting_Tag", tag_name=tag_to_delete, file_name=txt_path.name, e=e), "red")
+    
+    def _copy_tag_to_clipboard(self, tag_name: str):
+        """Copies the tag to clipboard."""
+        clipboard = QApplication.clipboard()
+        clipboard.setText(tag_name)
+        self.update_log(self.locale_manager.get_string("MainWindow", "Tag_Copied_To_Clipboard", tag_name=tag_name), "blue")
+        write_debug_log(f"Tag copied to clipboard: {tag_name}")
 
     def add_tag_all(self, prepend: bool):
         if self._is_bulk_deleting:
@@ -1174,15 +1194,15 @@ class MainWindow(QMainWindow):
         
         if can_undo:
             desc = self.undo_manager.get_undo_description()
-            self.undo_button.setToolTip(f"{desc}を元に戻す")
+            self.undo_button.setToolTip(self.locale_manager.get_string("MainWindow", "Undo_Action", desc=desc))
         else:
-            self.undo_button.setToolTip("元に戻す操作がありません")
+            self.undo_button.setToolTip(self.locale_manager.get_string("MainWindow", "Undo_No_Actions"))
         
         if can_redo:
             desc = self.undo_manager.get_redo_description()
-            self.redo_button.setToolTip(f"{desc}をやり直す")
+            self.redo_button.setToolTip(self.locale_manager.get_string("MainWindow", "Redo_Action", desc=desc))
         else:
-            self.redo_button.setToolTip("やり直す操作がありません")
+            self.redo_button.setToolTip(self.locale_manager.get_string("MainWindow", "Redo_No_Actions"))
         
         # Update grid view buttons as well
         self.grid_view_widget.update_undo_redo_buttons(can_undo, can_redo, 
@@ -1193,20 +1213,20 @@ class MainWindow(QMainWindow):
     def _perform_undo(self):
         """Performs an undo operation."""
         if self.undo_manager.undo():
-            self.update_log("操作を元に戻しました", "green")
+            self.update_log(self.locale_manager.get_string("MainWindow", "Undo_Success"), "green")
             self._refresh_ui_after_undo_redo()
         else:
-            self.update_log("元に戻す操作に失敗しました", "red")
+            self.update_log(self.locale_manager.get_string("MainWindow", "Undo_Failed"), "red")
         self._update_undo_redo_buttons()
     
     @Slot()
     def _perform_redo(self):
         """Performs a redo operation."""
         if self.undo_manager.redo():
-            self.update_log("操作をやり直しました", "green")
+            self.update_log(self.locale_manager.get_string("MainWindow", "Redo_Success"), "green")
             self._refresh_ui_after_undo_redo()
         else:
-            self.update_log("やり直す操作に失敗しました", "red")
+            self.update_log(self.locale_manager.get_string("MainWindow", "Redo_Failed"), "red")
         self._update_undo_redo_buttons()
     
     def _refresh_ui_after_undo_redo(self):

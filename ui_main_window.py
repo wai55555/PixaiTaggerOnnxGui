@@ -182,7 +182,7 @@ class Ui_MainWindow(object):
         main_window.undo_button = QPushButton("↶ Undo")
         main_window.undo_button.setEnabled(False)
         main_window.undo_button.setMaximumWidth(80)
-        main_window.undo_button.setToolTip("元に戻す操作がありません")
+        main_window.undo_button.setToolTip(main_window.locale_manager.get_string("MainWindow", "Undo_No_Actions"))
         main_window.undo_button.clicked.connect(main_window._perform_undo)  # type: ignore
         header_layout.addWidget(main_window.undo_button)
         
@@ -190,7 +190,7 @@ class Ui_MainWindow(object):
         main_window.redo_button = QPushButton("↷ Redo")
         main_window.redo_button.setEnabled(False)
         main_window.redo_button.setMaximumWidth(80)
-        main_window.redo_button.setToolTip("やり直す操作がありません")
+        main_window.redo_button.setToolTip(main_window.locale_manager.get_string("MainWindow", "Redo_No_Actions"))
         main_window.redo_button.clicked.connect(main_window._perform_redo)  # type: ignore
         header_layout.addWidget(main_window.redo_button)
         
