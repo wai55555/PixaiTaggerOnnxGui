@@ -50,43 +50,92 @@ def remove_tag_from_file(txt_path: Path, tag_to_remove: str) -> bool:
         return True
     return False
 
-def load_tag_translation_map(english_csv_path: Path, japanese_csv_path: Path) -> dict[str, str]:
+def load_tag_translation_map(
+    english_csv_path: Path, 
+    japanese_csv_path: Path, 
+    french_csv_path: Path, 
+    german_csv_path: Path, 
+    spanish_csv_path: Path, 
+    russian_csv_path: Path, 
+    zh_cn_csv_path: Path, 
+    zh_tw_csv_path: Path, 
+    korean_csv_path: Path
+    ) -> dict[str, list[str]]:
     """
-    Loads English tags and their Japanese translations, returning a dictionary mapping English -> Japanese.
-    Assumes both files have matching lines and the first line is a header to be skipped.
+    すべての言語のCSVを読み込み、英語タグをキー、各言語の翻訳リストを値とする辞書を作成します。
+    戻り値の形式: { 'english_tag': ['Japanese', 'French', 'German', 'Spanish', 'Russian', 'Zh_CN', 'Zh_TW', 'Korean'] }
+    
+    CSVファイルの構造:
+    - English: id,tag_id,name,category,count,ips (nameが3列目、インデックス2)
+    - Japanese: japanese tag (1列目、インデックス0)
+    - その他の言語: id,name (nameが2列目、インデックス1)
     """
-    mapping: dict[str, str] = {}
-    if not english_csv_path.is_file() or not japanese_csv_path.is_file():
-        return mapping
+    mapping: dict[str, list[str]] = {}
+    
+    # 全てのパスが存在するか確認
+    paths = [english_csv_path, japanese_csv_path, french_csv_path, german_csv_path, 
+             spanish_csv_path, russian_csv_path, zh_cn_csv_path, zh_tw_csv_path, korean_csv_path]
+    
+    for p in paths:
+        if not p.is_file():
+            print(f"File not found: {p}")
+            return mapping
 
     try:
-        with open(english_csv_path, 'r', encoding='utf-8') as f_en, \
-             open(japanese_csv_path, 'r', encoding='utf-8') as f_jp:
-            
-            reader_en = csv.reader(f_en)
-            reader_jp = csv.reader(f_jp)
-            
-            # Skip header
-            try:
-                next(reader_en)
-                next(reader_jp)
-            except StopIteration:
-                return mapping
-
-            for row_en, row_jp in zip(reader_en, reader_jp):
-                if len(row_en) < 3 or not row_jp:
-                    continue
-                
-                # English tag is at index 2 in selected_tags.csv
-                # Replace underscores with spaces to match the format used in the application
-                en_tag = row_en[2].strip().replace('_', ' ')
-                # Japanese tag is the first column
-                jp_tag = row_jp[0].strip()
-                
-                if en_tag and jp_tag:
-                    mapping[en_tag] = jp_tag
+        # 英語版CSVを読み込む（ベースとなる）
+        english_tags = []
+        with open(english_csv_path, 'r', encoding='utf-8') as f:
+            reader = csv.reader(f)
+            next(reader)  # ヘッダーをスキップ
+            for row in reader:
+                if len(row) >= 3:
+                    # 3列目（インデックス2）がタグ名、アンダースコアをスペースに変換
+                    tag = row[2].strip().replace('_', ' ')
+                    english_tags.append(tag)
+        
+        # 各翻訳ファイルを読み込む
+        # すべての翻訳ファイルは1列目（インデックス0）に翻訳が格納されている
+        translation_files = [
+            (japanese_csv_path, 0),
+            (french_csv_path, 0),
+            (german_csv_path, 0),
+            (spanish_csv_path, 0),
+            (russian_csv_path, 0),
+            (zh_cn_csv_path, 0),
+            (zh_tw_csv_path, 0),
+            (korean_csv_path, 0)
+        ]
+        
+        all_translations = []
+        for trans_path, col_index in translation_files:
+            translations = []
+            with open(trans_path, 'r', encoding='utf-8') as f:
+                reader = csv.reader(f)
+                next(reader)  # ヘッダーをスキップ
+                for row in reader:
+                    if len(row) > col_index:
+                        # カンマで終わる場合は削除
+                        trans = row[col_index].strip().rstrip(',')
+                        translations.append(trans if trans else '')
+                    else:
+                        translations.append('')
+            all_translations.append(translations)
+        
+        # 英語タグと翻訳を対応付ける
+        for i, en_tag in enumerate(english_tags):
+            if en_tag:
+                trans_list = []
+                for trans_data in all_translations:
+                    if i < len(trans_data) and trans_data[i]:
+                        trans_list.append(trans_data[i])
+                    else:
+                        # データがない場合は英語タグをそのまま使用
+                        trans_list.append(en_tag)
+                mapping[en_tag] = trans_list
                     
     except Exception as e:
         print(f"Error loading tag translations: {e}")
+        import traceback
+        traceback.print_exc()
         
     return mapping

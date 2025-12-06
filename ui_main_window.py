@@ -263,7 +263,17 @@ class Ui_MainWindow(object):
         header_layout.addStretch(1)
 
         main_window.language_combo = QComboBox()
-        main_window.language_combo.addItems(["English", "日本語"])
+        main_window.language_combo.addItems([
+            "English", 
+            "日本語", 
+            "Français", 
+            "Deutsch", 
+            "Español", 
+            "Русский", 
+            "简体中文", 
+            "繁體中文", 
+            "한국어"
+        ])
         main_window.language_combo.setCurrentIndex(0)
         header_layout.addWidget(main_window.language_combo)
         

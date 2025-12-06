@@ -185,7 +185,7 @@ class MainWindow(QMainWindow):
         self._worker_finished_event_loop: QEventLoop | None = None
         self._last_navigation_event_time: datetime | None = None # 追加
         
-        self.tag_translation_map: dict[str, str] = {}
+        self.tag_translation_map: dict[str, list[str]] = {}
         self._tag_display_language: str = "English"
 
         # Constants
@@ -194,7 +194,18 @@ class MainWindow(QMainWindow):
 
     def initial_load(self):
         """Performs the initial loading of images and tags after the main window is shown."""
-        self.tag_translation_map = load_tag_translation_map(constants.TAGS_CSV_PATH, constants.TAGS_JP_CSV_PATH)
+        # ここで9個すべての引数を順番に渡します
+        self.tag_translation_map = load_tag_translation_map(
+            constants.TAGS_CSV_PATH,          # english_csv_path
+            constants.TAGS_JP_CSV_PATH,       # japanese_csv_path
+            constants.TAGS_FR_CSV_PATH,       # french_csv_path
+            constants.TAGS_DE_CSV_PATH,       # german_csv_path
+            constants.TAGS_ES_CSV_PATH,       # spanish_csv_path
+            constants.TAGS_RU_CSV_PATH,       # russian_csv_path
+            constants.TAGS_ZH_CN_CSV_PATH,    # zh_cn_csv_path
+            constants.TAGS_ZH_TW_CSV_PATH,    # zh_tw_csv_path
+            constants.TAGS_KO_CSV_PATH        # korean_csv_path
+        )
         self.reload_image_list()
         self.reload_tags_only()
         self._update_undo_redo_buttons()
@@ -387,6 +398,21 @@ class MainWindow(QMainWindow):
         self._current_page = 0
         self.display_current_tag_page()
 
+    # ヘルパーメソッドを追加（クラス内に追加してください）
+    def _get_translation_index(self, language: str) -> int:
+        """言語名からリストのインデックスを返す"""
+        lang_map = {
+            "日本語": 0,
+            "Français": 1,
+            "Deutsch": 2,
+            "Español": 3,
+            "Русский": 4,
+            "简体中文": 5,
+            "繁體中文": 6,
+            "한국어": 7
+        }
+        return lang_map.get(language, -1)
+
     def display_current_tag_page(self):
         """Displays the current page of bulk tags."""
         for button in self.tag_buttons:
@@ -403,12 +429,25 @@ class MainWindow(QMainWindow):
             self.loading_label.setText(self.locale_manager.get_string("MainWindow", "Displaying_Tags_Count_And_Click_Delete", total_tags=total_tags, start_index=start_index + 1, end_index=end_index))
             
             current_page_tags = self._all_tags[start_index:end_index]
+            
+            # 翻訳リストのインデックスを取得
+            lang_index = self._get_translation_index(self._tag_display_language)
+
             for i, (tag_name, count) in enumerate(current_page_tags):
                 display_text = tag_name
-                if self._tag_display_language == "日本語":
-                    display_text = self.tag_translation_map.get(tag_name, tag_name)
                 
+                # 英語以外かつ、辞書にタグが存在する場合
+                if lang_index != -1 and tag_name in self.tag_translation_map:
+                    try:
+                        # 指定した言語の翻訳を取得
+                        translations = self.tag_translation_map[tag_name]
+                        if len(translations) > lang_index:
+                            display_text = translations[lang_index]
+                    except IndexError:
+                        pass # エラー時は英語のまま
+
                 button = QPushButton(f"{display_text} ({count})")
+                # ... (以下のコードはそのまま) ...
                 button.setMinimumWidth(self._tag_button_min_width)
                 button.setFixedHeight(self._tag_button_min_height)
                 button.setToolTip(tag_name) # Tooltip always shows English tag
@@ -437,11 +476,20 @@ class MainWindow(QMainWindow):
         start = self._current_image_tag_page * tags_per_page
         end = min(start + tags_per_page, total_tags)
         
+        lang_index = self._get_translation_index(self._tag_display_language)
+
         for i, tag_name in enumerate(self._current_image_tags[start:end]):
             display_text = tag_name
-            if self._tag_display_language == "日本語":
-                display_text = self.tag_translation_map.get(tag_name, tag_name)
             
+            # 翻訳処理
+            if lang_index != -1 and tag_name in self.tag_translation_map:
+                try:
+                    translations = self.tag_translation_map[tag_name]
+                    if len(translations) > lang_index:
+                        display_text = translations[lang_index]
+                except IndexError:
+                    pass
+
             button = QPushButton(display_text)
             button.setMinimumSize(self._tag_button_min_width, self._tag_button_min_height)
             button.setToolTip(tag_name) # Tooltip always shows English tag
@@ -994,7 +1042,8 @@ class MainWindow(QMainWindow):
             self._check_model_status_and_update_ui() # On success, check status to show "TAG" button
             
             # Reload tag translation map as files are now available
-            self.tag_translation_map = load_tag_translation_map(constants.TAGS_CSV_PATH, constants.TAGS_JP_CSV_PATH)
+            self.tag_translation_map = load_tag_translation_map(constants.TAGS_CSV_PATH, constants.TAGS_JP_CSV_PATH, constants.TAGS_FR_CSV_PATH, constants.TAGS_DE_CSV_PATH, 
+                                                               constants.TAGS_ES_CSV_PATH, constants.TAGS_RU_CSV_PATH, constants.TAGS_ZH_CN_CSV_PATH, constants.TAGS_ZH_TW_CSV_PATH, constants.TAGS_KO_CSV_PATH)
             
             # Update UI with new translation map
             self.display_current_tag_page()

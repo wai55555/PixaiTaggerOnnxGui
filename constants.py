@@ -34,7 +34,15 @@ MODEL_DIR_NAME = "pixai-tagger-v0.9-onnx"
 MODEL_PATH = BASE_DIR / MODEL_DIR_NAME / "model.onnx"
 MODEL_POINTER_PATH = BASE_DIR / MODEL_DIR_NAME / "model_pointer.txt"
 TAGS_CSV_PATH = BASE_DIR / MODEL_DIR_NAME / "selected_tags.csv"
+TAGS_EN_CSV_PATH = BASE_DIR / MODEL_DIR_NAME / "selected_tags.csv"
 TAGS_JP_CSV_PATH = BASE_DIR / MODEL_DIR_NAME / "selected_tags_jp.csv"
+TAGS_FR_CSV_PATH = BASE_DIR / MODEL_DIR_NAME / "selected_tags_fr.csv"
+TAGS_DE_CSV_PATH = BASE_DIR / MODEL_DIR_NAME / "selected_tags_de.csv"
+TAGS_ES_CSV_PATH = BASE_DIR / MODEL_DIR_NAME / "selected_tags_es.csv"
+TAGS_RU_CSV_PATH = BASE_DIR / MODEL_DIR_NAME / "selected_tags_ru.csv"
+TAGS_ZH_CN_CSV_PATH = BASE_DIR / MODEL_DIR_NAME / "selected_tags_zh_cn.csv"
+TAGS_ZH_TW_CSV_PATH = BASE_DIR / MODEL_DIR_NAME / "selected_tags_zh_tw.csv"
+TAGS_KO_CSV_PATH = BASE_DIR / MODEL_DIR_NAME / "selected_tags_ko.csv"
 DOWNLOAD_URLS: Mapping[Path, str] = {
     MODEL_PATH: "https://huggingface.co/deepghs/pixai-tagger-v0.9-onnx/resolve/main/model.onnx",
     MODEL_POINTER_PATH: "https://huggingface.co/deepghs/pixai-tagger-v0.9-onnx/raw/main/model.onnx",

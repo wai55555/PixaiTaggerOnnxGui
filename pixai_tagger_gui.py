@@ -1,4 +1,4 @@
-__version__ = "0.1.0"
+__version__ = "1.4.0"
 
 import sys
 from PySide6.QtWidgets import QApplication

@@ -35,7 +35,7 @@ class ImageEditCellWidget(QWidget):
         self._current_tag_page = 0
         self._global_index = -1  # To store the image's index in the main list
         
-        self.tag_translation_map: dict[str, str] = {}
+        self.tag_translation_map: dict[str, list[str]] = {}
         self._tag_display_language: str = "English"
 
         self.setMinimumSize(300, 300)
@@ -104,6 +104,20 @@ class ImageEditCellWidget(QWidget):
         self._global_index = global_index
         self._current_tag_page = 0
         self._update_tag_display()
+    
+    def _get_translation_index(self, language: str) -> int:
+        """言語名からリストのインデックスを返す"""
+        lang_map = {
+            "日本語": 0,
+            "Français": 1,
+            "Deutsch": 2,
+            "Español": 3,
+            "Русский": 4,
+            "简体中文": 5,
+            "繁體中文": 6,
+            "한국어": 7
+        }
+        return lang_map.get(language, -1)
 
     # ... (rest of the class is unchanged) ...
     def resizeEvent(self, event: QResizeEvent):
@@ -130,10 +144,21 @@ class ImageEditCellWidget(QWidget):
         start_index = self._current_tag_page * TAGS_PER_PAGE_GRID
         end_index = min(start_index + TAGS_PER_PAGE_GRID, total_tags)
         current_page_tags = tags[start_index:end_index]
+        
+        # 翻訳リストのインデックスを取得
+        lang_index = self._get_translation_index(self._tag_display_language)
+        
         for i, tag in enumerate(current_page_tags):
             display_text = tag
-            if self._tag_display_language == "日本語":
-                display_text = self.tag_translation_map.get(tag, tag)
+            
+            # 英語以外かつ、辞書にタグが存在する場合
+            if lang_index != -1 and tag in self.tag_translation_map:
+                try:
+                    translations = self.tag_translation_map[tag]
+                    if len(translations) > lang_index:
+                        display_text = translations[lang_index]
+                except IndexError:
+                    pass # エラー時は英語のまま
             
             btn = QPushButton(display_text)
             btn.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Expanding)
@@ -244,7 +269,7 @@ class ImageEditCellWidget(QWidget):
         self.prev_tag_page_btn.setEnabled(False)
         self.next_tag_page_btn.setEnabled(False)
 
-    def set_tag_display_language(self, language: str, translation_map: dict[str, str]):
+    def set_tag_display_language(self, language: str, translation_map: dict[str, list[str]]):
         self._tag_display_language = language
         self.tag_translation_map = translation_map
         self._update_tag_display()
@@ -440,7 +465,7 @@ class GridViewWidget(QWidget):
         self.prev_page_btn.setEnabled(self._current_page > 0)
         self.next_page_btn.setEnabled((self._current_page + 1) * 9 < len(self._image_paths))
 
-    def set_tag_display_language(self, language: str, translation_map: dict[str, str]):
+    def set_tag_display_language(self, language: str, translation_map: dict[str, list[str]]):
         for cell in self.cells:
             cell.set_tag_display_language(language, translation_map)
     
