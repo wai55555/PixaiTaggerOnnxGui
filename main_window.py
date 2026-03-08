@@ -24,6 +24,7 @@ import constants
 import app_settings # Added import
 from app_settings import load_config, load_settings, save_config # Updated import
 from custom_widgets import PathLineEdit, TagListWidget
+import tag_utils
 from tag_utils import load_tag_translation_map
 from custom_dialogs import ClickableLabel, ImageViewerDialog
 from grid_view_widget import GridViewWidget
@@ -188,6 +189,9 @@ class MainWindow(QMainWindow):
         self.tag_translation_map: dict[str, list[str]] = {}
         self._tag_display_language: str = "English"
 
+        # Tag cache for hover highlight feature
+        self._tag_cache: dict[str, set[str]] = {}
+
         # Constants
         self._tag_button_min_width = 100
         self._tag_button_min_height = 25
@@ -247,6 +251,7 @@ class MainWindow(QMainWindow):
         else:
             self._clear_image_display()
 
+        self._build_tag_cache()
         self.update_log(self.locale_manager.get_string("MainWindow", "List_Updated_Total_Images", count=len(image_paths)), "blue")
 
     def _ensure_input_dir_exists(self, path: Path) -> bool:
@@ -609,6 +614,17 @@ class MainWindow(QMainWindow):
                     tag_name = watched.property("original_tag")
                     self._copy_tag_to_clipboard(tag_name)
                     return True # Event handled
+
+        elif event.type() == QEvent.Type.Enter:
+            if isinstance(watched, QPushButton) and watched.property("original_tag"):
+                tag_name = watched.property("original_tag")
+                self._highlight_files_for_tag(tag_name)
+                return False
+
+        elif event.type() == QEvent.Type.Leave:
+            if isinstance(watched, QPushButton) and watched.property("original_tag"):
+                self._clear_highlight()
+                return False
 
         # Pass the event on to the parent class if not handled
         return super().eventFilter(watched, event)
@@ -1232,6 +1248,49 @@ class MainWindow(QMainWindow):
             cursor.movePosition(cursor.MoveOperation.NextBlock, cursor.MoveMode.KeepAnchor)
             cursor.removeSelectedText()
             cursor.deleteChar()
+
+    def _build_tag_cache(self) -> None:
+        """入力ディレクトリ内の全画像ファイルのタグキャッシュを構築する。"""
+        self._tag_cache = {}
+        input_dir = Path(self.settings.paths.input_dir)
+        for i in range(self.image_list.count()):
+            item = self.image_list.item(i)
+            if item is None:
+                continue
+            rel_path = item.data(Qt.ItemDataRole.UserRole + 1)
+            txt_path = (input_dir / rel_path).with_suffix('.txt')
+            tags = tag_utils.read_tags(txt_path)
+            self._tag_cache[rel_path] = set(tags)
+
+    def _update_tag_cache_entry(self, rel_path: str) -> None:
+        """指定ファイルのキャッシュエントリを更新する。"""
+        input_dir = Path(self.settings.paths.input_dir)
+        txt_path = (input_dir / rel_path).with_suffix('.txt')
+        tags = tag_utils.read_tags(txt_path)
+        self._tag_cache[rel_path] = set(tags)
+
+    def _highlight_files_for_tag(self, tag_name: str) -> None:
+        """指定タグを持つファイルをTagListWidgetでハイライトする。"""
+        from PySide6.QtGui import QColor, QBrush
+        color = QColor("#4a5a2a") if self._is_dark_theme else QColor("#c8f0a0")
+        brush = QBrush(color)
+        for i in range(self.image_list.count()):
+            item = self.image_list.item(i)
+            if item is None:
+                continue
+            rel_path = item.data(Qt.ItemDataRole.UserRole + 1)
+            tags = self._tag_cache.get(rel_path, set())
+            if tag_name in tags:
+                item.setBackground(brush)
+
+    def _clear_highlight(self) -> None:
+        """TagListWidgetの全アイテムのハイライトを解除する。"""
+        from PySide6.QtGui import QBrush
+        default_brush = QBrush()
+        for i in range(self.image_list.count()):
+            item = self.image_list.item(i)
+            if item is not None:
+                item.setBackground(default_brush)
 
     def _update_undo_redo_buttons(self):
         """Updates the enabled state and tooltips of undo/redo buttons."""
