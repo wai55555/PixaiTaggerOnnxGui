@@ -218,9 +218,7 @@ class MainWindow(QMainWindow):
     def _apply_image_list_selection_style(self):
         """ダークモード時にファイルリストの選択色を見やすい色に上書きする。"""
         if self._is_dark_theme:
-            self.image_list.setStyleSheet(
-                "QListWidget::item:selected { background-color: #1a6b9a; color: #ffffff; }"
-            )
+            self.image_list.setStyleSheet(constants.STYLE_LIST_ITEM_SELECTED_DARK)
 
     def _install_event_filters(self):
         """Installs event filters on widgets to intercept specific key presses."""
@@ -391,8 +389,7 @@ class MainWindow(QMainWindow):
         
         if preserve_page:
             # タグ数変化に応じてページ番号をクランプする
-            tags_per_page = max(1, self.settings.window.tag_display_cols * self.settings.window.tag_display_rows)
-            total_pages = max(1, (len(self._current_image_tags) + tags_per_page - 1) // tags_per_page)
+            total_pages = self._get_total_image_tag_pages()
             self._current_image_tag_page = min(self._current_image_tag_page, total_pages - 1)
         else:
             self._current_image_tag_page = 0
@@ -419,6 +416,15 @@ class MainWindow(QMainWindow):
         self._current_page = 0
         self.display_current_tag_page()
         self._build_tag_cache()
+
+    def _get_image_tags_per_page(self) -> int:
+        """Returns the number of tags to display per page for the current image."""
+        return max(1, self.settings.window.tag_display_cols * self.settings.window.tag_display_rows)
+
+    def _get_total_image_tag_pages(self) -> int:
+        """Returns the total number of tag pages for the current image."""
+        tags_per_page = self._get_image_tags_per_page()
+        return max(1, (len(self._current_image_tags) + tags_per_page - 1) // tags_per_page)
 
     # ヘルパーメソッドを追加（クラス内に追加してください）
     def _get_translation_index(self, language: str) -> int:
@@ -491,8 +497,7 @@ class MainWindow(QMainWindow):
         self.tag_buttons_for_image.clear()
 
         cols = self.settings.window.tag_display_cols
-        rows = self.settings.window.tag_display_rows
-        tags_per_page = max(1, cols * rows)
+        tags_per_page = self._get_image_tags_per_page()
 
         total_tags = len(self._current_image_tags)
         start = self._current_image_tag_page * tags_per_page
@@ -671,6 +676,7 @@ class MainWindow(QMainWindow):
     def select_image_item(self, item: QListWidgetItem):
         write_debug_log(f"DEBUG: select_image_item - item: {item.text()}")
         """Slot for when an item in the image list is clicked."""
+        self._clear_highlight()
         self._load_and_fit_image(item)
 
     @Slot(str, str)
@@ -775,6 +781,7 @@ class MainWindow(QMainWindow):
         if 0 <= new_row < self.image_list.count():
             item = self.image_list.item(new_row)
             self.image_list.setCurrentItem(item)
+            self._clear_highlight()
             self._load_and_fit_image(item)
 
     def _change_tag_page(self, delta: int):
@@ -787,9 +794,8 @@ class MainWindow(QMainWindow):
 
     def _change_image_tag_page(self, delta: int):
         """Changes the displayed page for single image tags."""
-        tags_per_page = max(1, self.settings.window.tag_display_cols * self.settings.window.tag_display_rows)
         new_page = self._current_image_tag_page + delta
-        total_pages = (len(self._current_image_tags) + tags_per_page - 1) // tags_per_page
+        total_pages = self._get_total_image_tag_pages()
         if 0 <= new_page < total_pages:
             self._current_image_tag_page = new_page
             self._display_image_tag_page()
@@ -1299,14 +1305,13 @@ class MainWindow(QMainWindow):
         self._tag_cache[rel_path] = set(tags)
 
     def _highlight_files_for_tag(self, tag_name: str) -> None:
-        """指定タグを持つファイルをTagListWidgetでハイライトする。選択中アイテムはスキップする。"""
+        """指定タグを持つファイルをTagListWidgetでハイライトする。"""
         from PySide6.QtGui import QColor, QBrush
         color = QColor("#4a5a2a") if self._is_dark_theme else QColor("#c8f0a0")
         brush = QBrush(color)
-        current_item = self.image_list.currentItem()
         for i in range(self.image_list.count()):
             item = self.image_list.item(i)
-            if item is None or item is current_item:
+            if item is None:
                 continue
             rel_path = item.data(Qt.ItemDataRole.UserRole + 1)
             tags = self._tag_cache.get(rel_path, set())
@@ -1314,13 +1319,12 @@ class MainWindow(QMainWindow):
                 item.setBackground(brush)
 
     def _clear_highlight(self) -> None:
-        """TagListWidgetの全アイテムのハイライトを解除する。選択中アイテムはスキップする。"""
+        """TagListWidgetの全アイテムのハイライトを解除する。"""
         from PySide6.QtGui import QBrush
         default_brush = QBrush()
-        current_item = self.image_list.currentItem()
         for i in range(self.image_list.count()):
             item = self.image_list.item(i)
-            if item is not None and item is not current_item:
+            if item is not None:
                 item.setBackground(default_brush)
 
     def _update_undo_redo_buttons(self):

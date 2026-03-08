@@ -63,6 +63,7 @@ STYLE_BTN_GREEN = "QPushButton { font-size: 16pt; padding: 10px; background-colo
 STYLE_BTN_BLUE = "QPushButton { font-size: 16pt; padding: 10px; background-color: #2196F3; color: white; }"
 STYLE_BTN_ORANGE = "QPushButton { font-size: 16pt; padding: 10px; background-color: #FF9800; color: white; }"
 STYLE_BTN_RED = "QPushButton { font-size: 16pt; padding: 10px; background-color: #F44336; color: white; }"
+STYLE_LIST_ITEM_SELECTED_DARK = "QListWidget::item:selected { background-color: #1a6b9a; color: #ffffff; }"
 
 # Light Theme Colors (current colors)
 COLOR_LOG_SUCCESS_LIGHT = "#00AA00"
