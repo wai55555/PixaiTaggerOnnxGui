@@ -118,6 +118,7 @@ class MainWindow(QMainWindow):
         
         self.language_combo.currentIndexChanged.connect(self.toggle_tag_language)
 
+        self._apply_image_list_selection_style()
         self._install_event_filters()
 
         write_debug_log(self.locale_manager.get_string("MainWindow", "MainWindow_Init_Complete"))
@@ -213,6 +214,13 @@ class MainWindow(QMainWindow):
         self.reload_image_list()
         self.reload_tags_only()
         self._update_undo_redo_buttons()
+
+    def _apply_image_list_selection_style(self):
+        """ダークモード時にファイルリストの選択色を見やすい色に上書きする。"""
+        if self._is_dark_theme:
+            self.image_list.setStyleSheet(
+                "QListWidget::item:selected { background-color: #1a6b9a; color: #ffffff; }"
+            )
 
     def _install_event_filters(self):
         """Installs event filters on widgets to intercept specific key presses."""
@@ -369,7 +377,7 @@ class MainWindow(QMainWindow):
             self._clear_image_display()
             self.image_label.setText(self.locale_manager.get_string("MainWindow", "Image_Display_Error", image_relative_path=image_path.name, e=e))
 
-    def _load_image_tags(self, image_path: Path):
+    def _load_image_tags(self, image_path: Path, preserve_page: bool = False):
         """Loads tags from the corresponding .txt file for a given image."""
         txt_path = image_path.with_suffix('.txt')
         tag_content = ""
@@ -380,7 +388,15 @@ class MainWindow(QMainWindow):
                 self.update_log(self.locale_manager.get_string("MainWindow", "Error_Tag_File_Load_Failed", e=e, txt_path_name=txt_path.name), "red")
         
         self._current_image_tags = [tag.strip() for tag in tag_content.split(',') if tag.strip()]
-        self._current_image_tag_page = 0
+        
+        if preserve_page:
+            # タグ数変化に応じてページ番号をクランプする
+            tags_per_page = max(1, self.settings.window.tag_display_cols * self.settings.window.tag_display_rows)
+            total_pages = max(1, (len(self._current_image_tags) + tags_per_page - 1) // tags_per_page)
+            self._current_image_tag_page = min(self._current_image_tag_page, total_pages - 1)
+        else:
+            self._current_image_tag_page = 0
+        
         self._display_image_tag_page()
 
     def _clear_image_display(self):
@@ -402,6 +418,7 @@ class MainWindow(QMainWindow):
         self._all_tags = all_tags
         self._current_page = 0
         self.display_current_tag_page()
+        self._build_tag_cache()
 
     # ヘルパーメソッドを追加（クラス内に追加してください）
     def _get_translation_index(self, language: str) -> int:
@@ -823,7 +840,9 @@ class MainWindow(QMainWindow):
             
             self.update_log(self.locale_manager.get_string("MainWindow", "Tags_Added_To_File", txt_path_name=txt_path.name), "green")
             self.add_single_tag_line.clear()
-            self._load_image_tags(image_path)
+            self._load_image_tags(image_path, preserve_page=True)
+            rel_path = current_item.data(Qt.ItemDataRole.UserRole + 1)
+            self._update_tag_cache_entry(rel_path)
             self.reload_tags_only()
         except Exception as e:
             self.update_log(self.locale_manager.get_string("MainWindow", "Error_Adding_Tags", txt_path_name=txt_path.name, e=e), "red")
@@ -864,7 +883,9 @@ class MainWindow(QMainWindow):
                 self._update_undo_redo_buttons()
                 
                 self.update_log(self.locale_manager.get_string("MainWindow", "Tag_Deleted_From_File", tag_name=tag_to_delete, file_name=txt_path.name), "green")
-                self._load_image_tags(image_path)
+                self._load_image_tags(image_path, preserve_page=True)
+                rel_path = current_item.data(Qt.ItemDataRole.UserRole + 1)
+                self._update_tag_cache_entry(rel_path)
                 write_debug_log("[_delete_image_tag] UI updated after tag deletion.")
             else:
                 write_debug_log(f"[_delete_image_tag] Tag '{tag_to_delete}' not found in file: {txt_path}")
@@ -1113,6 +1134,10 @@ class MainWindow(QMainWindow):
             action = BulkAddTagsAction(file_paths=file_paths, added_tags=added_tags, position=position)
             self.undo_manager.push(action)
             self._update_undo_redo_buttons()
+            input_dir = Path(self.settings.paths.input_dir)
+            for fp in file_paths:
+                rel_path = str(fp.relative_to(input_dir))
+                self._update_tag_cache_entry(rel_path)
             write_debug_log(f"Bulk add action recorded: {len(file_paths)} files, {len(added_tags)} tags")
     
     @Slot(str, list)
@@ -1122,6 +1147,10 @@ class MainWindow(QMainWindow):
             action = BulkRemoveTagsAction(removed_tag=removed_tag, file_tag_positions=file_tag_positions)
             self.undo_manager.push(action)
             self._update_undo_redo_buttons()
+            input_dir = Path(self.settings.paths.input_dir)
+            for fp, _ in file_tag_positions:
+                rel_path = str(fp.relative_to(input_dir))
+                self._update_tag_cache_entry(rel_path)
             write_debug_log(f"Bulk delete action recorded: {len(file_tag_positions)} files")
     
     @Slot(Path, list)
@@ -1270,13 +1299,14 @@ class MainWindow(QMainWindow):
         self._tag_cache[rel_path] = set(tags)
 
     def _highlight_files_for_tag(self, tag_name: str) -> None:
-        """指定タグを持つファイルをTagListWidgetでハイライトする。"""
+        """指定タグを持つファイルをTagListWidgetでハイライトする。選択中アイテムはスキップする。"""
         from PySide6.QtGui import QColor, QBrush
         color = QColor("#4a5a2a") if self._is_dark_theme else QColor("#c8f0a0")
         brush = QBrush(color)
+        current_item = self.image_list.currentItem()
         for i in range(self.image_list.count()):
             item = self.image_list.item(i)
-            if item is None:
+            if item is None or item is current_item:
                 continue
             rel_path = item.data(Qt.ItemDataRole.UserRole + 1)
             tags = self._tag_cache.get(rel_path, set())
@@ -1284,12 +1314,13 @@ class MainWindow(QMainWindow):
                 item.setBackground(brush)
 
     def _clear_highlight(self) -> None:
-        """TagListWidgetの全アイテムのハイライトを解除する。"""
+        """TagListWidgetの全アイテムのハイライトを解除する。選択中アイテムはスキップする。"""
         from PySide6.QtGui import QBrush
         default_brush = QBrush()
+        current_item = self.image_list.currentItem()
         for i in range(self.image_list.count()):
             item = self.image_list.item(i)
-            if item is not None:
+            if item is not None and item is not current_item:
                 item.setBackground(default_brush)
 
     def _update_undo_redo_buttons(self):
@@ -1344,6 +1375,9 @@ class MainWindow(QMainWindow):
         if current_item:
             image_path = Path(self.settings.paths.input_dir) / current_item.data(Qt.ItemDataRole.UserRole + 1)
             self._load_image_tags(image_path)
+        
+        # Rebuild tag cache to reflect undo/redo changes
+        self._build_tag_cache()
         
         # Refresh bulk tag list
         self.reload_tags_only()
