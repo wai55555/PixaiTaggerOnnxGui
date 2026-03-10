@@ -26,12 +26,15 @@ def filter_images_by_tag(
     """タグキャッシュを使って、search_text を部分一致で含むタグを持つ画像のみを返す。
 
     - search_text が空の場合は image_paths をそのまま返す
+    - カンマ区切りで複数キーワードを指定した場合は AND 検索
     - 大文字・小文字を区別しない
     - tag_cache のキーは相対パス、image_paths は絶対パスなので base_dir で変換する
     """
     if not search_text:
         return list(image_paths)
-    needle = search_text.lower()
+    needles = [t.strip().lower() for t in search_text.split(",") if t.strip()]
+    if not needles:
+        return list(image_paths)
     result: list[Path] = []
     for img_path in image_paths:
         try:
@@ -39,7 +42,9 @@ def filter_images_by_tag(
         except ValueError:
             continue
         tags = tag_cache.get(rel_key, set())
-        if any(needle in t.lower() for t in tags):
+        tags_lower = {t.lower() for t in tags}
+        # AND 検索: 全キーワードがいずれかのタグに部分一致する場合のみ含める
+        if all(any(needle in tag for tag in tags_lower) for needle in needles):
             result.append(img_path)
     return result
 
@@ -197,13 +202,14 @@ class ImageEditCellWidget(QWidget):
             
             btn = QPushButton(display_text)
             btn.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Expanding)
-            # ハイライト判定: 検索文字列が非空かつタグ名に部分一致する場合
-            if self._search_text and self._search_text.lower() in tag.lower():
+            # ハイライト判定: 検索文字列が非空かつタグ名に部分一致する場合（AND検索の各キーワードで判定）
+            needles = [t.strip().lower() for t in self._search_text.split(",") if t.strip()]
+            style = "font-size: 11pt; text-align: left; padding-left: 3px;"
+            if needles and any(n in tag.lower() for n in needles):
                 is_dark = self.palette().window().color().lightness() < 128
                 hl_color = "#4a5a2a" if is_dark else "#c8f0a0"
-                btn.setStyleSheet(f"font-size: 11pt; text-align: left; padding-left: 3px; background-color: {hl_color};")
-            else:
-                btn.setStyleSheet("font-size: 11pt; text-align: left; padding-left: 3px;")
+                style += f" background-color: {hl_color};"
+            btn.setStyleSheet(style)
             btn.setToolTip(tag) # Tooltip always shows English tag
             btn.setProperty("original_tag", tag)
             btn.clicked.connect(lambda checked=False, t=tag: self._remove_tag(t))
