@@ -918,9 +918,9 @@ class MainWindow(QMainWindow):
             self.update_log(self.locale_manager.get_string("MainWindow", "Error_Deleting_Tag", tag_name=tag_to_delete, file_name=txt_path.name, e=e), "red")
     
     def _copy_tag_to_clipboard(self, tag_name: str):
-        """Copies the tag to clipboard."""
+        """Copies the tag with a trailing comma to clipboard."""
         clipboard = QApplication.clipboard()
-        clipboard.setText(tag_name)
+        clipboard.setText(tag_name + ", ")
         self.update_log(self.locale_manager.get_string("MainWindow", "Tag_Copied_To_Clipboard", tag_name=tag_name), "blue")
         write_debug_log(f"Tag copied to clipboard: {tag_name}")
 
@@ -1185,6 +1185,7 @@ class MainWindow(QMainWindow):
         self._update_undo_redo_buttons()
         write_debug_log(f"GridView add action recorded: {len(added_tags)} tags to {file_path.name}")
         self._build_tag_cache()
+        self.grid_view_widget.update_tag_cache(self._tag_cache)
     
     @Slot(Path, str, int)
     def _on_gridview_tag_removed(self, file_path: Path, removed_tag: str, original_index: int):
@@ -1194,6 +1195,7 @@ class MainWindow(QMainWindow):
         self._update_undo_redo_buttons()
         write_debug_log(f"GridView remove action recorded: '{removed_tag}' from {file_path.name}")
         self._build_tag_cache()
+        self.grid_view_widget.update_tag_cache(self._tag_cache)
 
    
 
@@ -1501,7 +1503,7 @@ class MainWindow(QMainWindow):
 
         self.central_widget.setCurrentWidget(self.grid_view_widget)
         self.setWindowTitle(f"{constants.MSG_WINDOW_TITLE} - Grid View")
-        self.grid_view_widget.load_images(image_paths)
+        self.grid_view_widget.load_images(image_paths, self._tag_cache, Path(self.settings.paths.input_dir))
         self.showMaximized()
         self.update_log(self.locale_manager.get_string("MainWindow", "Switched_To_Grid_View"), "blue")
 

@@ -16,9 +16,38 @@ from custom_dialogs import ClickableLabel, ImageViewerDialog
 
 TAGS_PER_PAGE_GRID = 14
 
-class ImageEditCellWidget(QWidget):
-    # --- ADDED: Signal to request image enlargement with its global index ---
-    image_enlarge_requested = Signal(int)
+
+def filter_images_by_tag(
+    image_paths: list[Path],
+    tag_cache: dict[str, set[str]],
+    search_text: str,
+    base_dir: Path,
+) -> list[Path]:
+    """タグキャッシュを使って、search_text を部分一致で含むタグを持つ画像のみを返す。
+
+    - search_text が空の場合は image_paths をそのまま返す
+    - カンマ区切りで複数キーワードを指定した場合は AND 検索
+    - 大文字・小文字を区別しない
+    - tag_cache のキーは相対パス、image_paths は絶対パスなので base_dir で変換する
+    """
+    if not search_text:
+        return list(image_paths)
+    needles = [t.strip().lower() for t in search_text.split(",") if t.strip()]
+    if not needles:
+        return list(image_paths)
+    result: list[Path] = []
+    for img_path in image_paths:
+        try:
+            rel_key = str(img_path.relative_to(base_dir))
+        except ValueError:
+            continue
+        tags = tag_cache.get(rel_key, set())
+        tags_lower = {t.lower() for t in tags}
+        # AND 検索: 全キーワードがいずれかのタグに部分一致する場合のみ含める
+        if all(any(needle in tag for tag in tags_lower) for needle in needles):
+            result.append(img_path)
+    return result
+
 
 class ImageEditCellWidget(QWidget):
     # --- ADDED: Signal to request image enlargement with its global index ---
@@ -40,6 +69,7 @@ class ImageEditCellWidget(QWidget):
         
         self.tag_translation_map: dict[str, list[str]] = {}
         self._tag_display_language: str = "English"
+        self._search_text: str = ""
 
         self.setMinimumSize(300, 300)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
@@ -103,9 +133,12 @@ class ImageEditCellWidget(QWidget):
 
     # --- MODIFIED: load_data now accepts the global index ---
     def load_data(self, image_path: Path, global_index: int):
+        prev_path = self._image_path
         self._image_path = image_path
         self._global_index = global_index
-        self._current_tag_page = 0
+        # 同じ画像の場合はタグページを保持、異なる画像の場合のみリセット
+        if prev_path != image_path:
+            self._current_tag_page = 0
         self._update_tag_display()
     
     def _get_translation_index(self, language: str) -> int:
@@ -144,6 +177,10 @@ class ImageEditCellWidget(QWidget):
         txt_path = tag_utils.get_txt_path(self._image_path)
         tags = tag_utils.read_tags(txt_path)
         total_tags = len(tags)
+        # ページ範囲チェック（タグ削除等でページが範囲外になった場合の補正）
+        total_pages = max(1, (total_tags + TAGS_PER_PAGE_GRID - 1) // TAGS_PER_PAGE_GRID)
+        if self._current_tag_page >= total_pages:
+            self._current_tag_page = max(0, total_pages - 1)
         start_index = self._current_tag_page * TAGS_PER_PAGE_GRID
         end_index = min(start_index + TAGS_PER_PAGE_GRID, total_tags)
         current_page_tags = tags[start_index:end_index]
@@ -165,7 +202,14 @@ class ImageEditCellWidget(QWidget):
             
             btn = QPushButton(display_text)
             btn.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Expanding)
-            btn.setStyleSheet("font-size: 11pt; text-align: left; padding-left: 3px;")
+            # ハイライト判定: 検索文字列が非空かつタグ名に部分一致する場合（AND検索の各キーワードで判定）
+            needles = [t.strip().lower() for t in self._search_text.split(",") if t.strip()]
+            style = "font-size: 11pt; text-align: left; padding-left: 3px;"
+            if needles and any(n in tag.lower() for n in needles):
+                is_dark = self.palette().window().color().lightness() < 128
+                hl_color = "#4a5a2a" if is_dark else "#c8f0a0"
+                style += f" background-color: {hl_color};"
+            btn.setStyleSheet(style)
             btn.setToolTip(tag) # Tooltip always shows English tag
             btn.setProperty("original_tag", tag)
             btn.clicked.connect(lambda checked=False, t=tag: self._remove_tag(t))
@@ -257,18 +301,15 @@ class ImageEditCellWidget(QWidget):
         return super().eventFilter(watched, event)
     
     def _copy_tag_to_clipboard(self, tag_name: str):
-        """Copies the tag to clipboard."""
+        """Copies the tag with a trailing comma to clipboard."""
         from PySide6.QtGui import QCursor
         from PySide6.QtCore import QTimer
         clipboard = QApplication.clipboard()
-        clipboard.setText(tag_name)
+        clipboard.setText(tag_name + ", ")
         # Show a tooltip to indicate success at the current cursor position
         cursor_pos = QCursor.pos()
         tooltip_text = self.locale_manager.get_string("MainWindow", "Copied_Tag_Tooltip", tag_name=tag_name)
-        # Show tooltip with self as the widget to keep it visible regardless of mouse button state
         QToolTip.showText(cursor_pos, tooltip_text, self)
-        
-        # Keep the tooltip visible for 2 seconds
         QTimer.singleShot(2000, QToolTip.hideText)
     
     def clear_data(self):
@@ -287,6 +328,11 @@ class ImageEditCellWidget(QWidget):
         self.tag_translation_map = translation_map
         self._update_tag_display()
 
+    def set_search_text(self, text: str):
+        """検索文字列を設定し、タグ表示を更新する。"""
+        self._search_text = text
+        self._update_tag_display()
+
 class GridViewWidget(QWidget):
     back_to_main_requested = Signal()
     # Signals for undo/redo
@@ -301,7 +347,11 @@ class GridViewWidget(QWidget):
         self.settings = settings
         self.locale_manager = locale_manager
         self._image_paths: List[Path] = []
+        self._filtered_image_paths: list[Path] = []
         self._current_page = 0
+        self._tag_cache: dict[str, set[str]] = {}
+        self._search_text: str = ""
+        self._base_dir: Path | None = None
         self.cells: List[ImageEditCellWidget] = []
         
         # --- ADDED: State management for the dialog ---
@@ -319,9 +369,18 @@ class GridViewWidget(QWidget):
         
         self.back_button = QPushButton(self.locale_manager.get_string("GridView", "Back_To_Main_View"))
         self.back_button.clicked.connect(self.back_to_main_requested.emit)
-        top_bar_layout.addStretch(1)
+
+        # Search bar (placed in top bar, left of back button)
+        self.search_line_edit = QLineEdit()
+        self.search_line_edit.setPlaceholderText(self.locale_manager.get_string("GridView", "Search_By_Tag"))
+        self.search_line_edit.setClearButtonEnabled(True)
+        self.search_line_edit.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.search_line_edit.textChanged.connect(self._on_search_changed)
+
+        top_bar_layout.addWidget(self.search_line_edit, 1)
         top_bar_layout.addWidget(self.back_button)
         main_layout.addLayout(top_bar_layout)
+
         self.grid_layout = QGridLayout()
         self.grid_layout.setSpacing(2)
         main_layout.addLayout(self.grid_layout, 1)
@@ -382,15 +441,33 @@ class GridViewWidget(QWidget):
         pagination_layout.addStretch(3)
         main_layout.addLayout(pagination_layout)
 
+    @Slot(str)
+    def _on_search_changed(self, text: str):
+        """検索欄のテキスト変更時に呼ばれるスロット。"""
+        self._search_text = text
+        self._apply_filter()
+        self._current_page = 0
+        self._display_page()
+
+    def _apply_filter(self):
+        """_search_text と _tag_cache を使って _filtered_image_paths を生成する。"""
+        if not self._search_text or not self._tag_cache or self._base_dir is None:
+            self._filtered_image_paths = list(self._image_paths)
+        else:
+            self._filtered_image_paths = filter_images_by_tag(
+                self._image_paths, self._tag_cache, self._search_text, self._base_dir
+            )
+
     def _display_page(self):
         start_index = self._current_page * 9
-        page_paths = self._image_paths[start_index : start_index + 9]
+        page_paths = self._filtered_image_paths[start_index : start_index + 9]
 
         for i, cell in enumerate(self.cells):
             if i < len(page_paths):
                 # --- MODIFIED: Pass the global index to the cell ---
                 global_index = start_index + i
                 cell.load_data(page_paths[i], global_index)
+                cell.set_search_text(self._search_text)
                 cell.show()
             else:
                 cell.clear_data()
@@ -464,8 +541,15 @@ class GridViewWidget(QWidget):
             event.accept()
         else:
             super().wheelEvent(event)
-    def load_images(self, image_paths: List[Path]):
+    def load_images(self, image_paths: List[Path], tag_cache: dict[str, set[str]] | None = None, base_dir: Path | None = None):
         self._image_paths = image_paths
+        if tag_cache is not None:
+            self._tag_cache = tag_cache
+        if base_dir is not None:
+            self._base_dir = base_dir
+        self._search_text = ""
+        self.search_line_edit.clear()
+        self._filtered_image_paths = list(image_paths)
         self._current_page = 0
         self._display_page()
     def prev_page(self):
@@ -473,15 +557,20 @@ class GridViewWidget(QWidget):
             self._current_page -= 1
             self._display_page()
     def next_page(self):
-        if (self._current_page + 1) * 9 < len(self._image_paths):
+        if (self._current_page + 1) * 9 < len(self._filtered_image_paths):
             self._current_page += 1
             self._display_page()
     def _update_pagination_controls(self):
-        total_pages = (len(self._image_paths) + 8) // 9
+        if self._search_text and not self._filtered_image_paths:
+            self.page_label.setText("0 / 0")
+            self.prev_page_btn.setEnabled(False)
+            self.next_page_btn.setEnabled(False)
+            return
+        total_pages = (len(self._filtered_image_paths) + 8) // 9
         total_pages = max(1, total_pages)
         self.page_label.setText(f"Page {self._current_page + 1} / {total_pages}")
         self.prev_page_btn.setEnabled(self._current_page > 0)
-        self.next_page_btn.setEnabled((self._current_page + 1) * 9 < len(self._image_paths))
+        self.next_page_btn.setEnabled((self._current_page + 1) * 9 < len(self._filtered_image_paths))
 
     def set_tag_display_language(self, language: str, translation_map: dict[str, list[str]]):
         for cell in self.cells:
@@ -504,4 +593,11 @@ class GridViewWidget(QWidget):
     
     def refresh_current_page(self):
         """Refreshes the current page display after undo/redo operations."""
+        self._apply_filter()
+        self._display_page()
+
+    def update_tag_cache(self, tag_cache: dict[str, set[str]]):
+        """タグキャッシュを更新し、現在の検索条件でフィルタリングを再適用する。"""
+        self._tag_cache = tag_cache
+        self._apply_filter()
         self._display_page()
