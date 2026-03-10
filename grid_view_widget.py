@@ -26,6 +26,9 @@ class ImageEditCellWidget(QWidget):
     # Signals for undo/redo
     tags_added = Signal(Path, list)  # (file_path, added_tags)
     tag_removed = Signal(Path, str, int)  # (file_path, removed_tag, original_index)
+    # Signals for tag hover highlight
+    tag_hovered = Signal(str)       # ホバー開始: タグ名を渡す
+    tag_hover_cleared = Signal()    # ホバー解除
 
     def __init__(self, locale_manager: LocaleManager, parent: QWidget | None = None):
         super().__init__(parent)
@@ -230,7 +233,7 @@ class ImageEditCellWidget(QWidget):
             self._current_tag_page += 1
             self._update_tag_display()
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:
-        """Filters events from watched objects to handle right-click on tag buttons."""
+        """Filters events from watched objects to handle right-click and hover on tag buttons."""
         if event.type() == QEvent.Type.MouseButtonRelease:
             from PySide6.QtGui import QMouseEvent
             assert isinstance(event, QMouseEvent)
@@ -240,6 +243,16 @@ class ImageEditCellWidget(QWidget):
                     tag_name = watched.property("original_tag")
                     self._copy_tag_to_clipboard(tag_name)
                     return True # Event handled
+
+        elif event.type() == QEvent.Type.Enter:
+            if isinstance(watched, QPushButton) and watched.property("original_tag"):
+                self.tag_hovered.emit(watched.property("original_tag"))
+                return False
+
+        elif event.type() == QEvent.Type.Leave:
+            if isinstance(watched, QPushButton) and watched.property("original_tag"):
+                self.tag_hover_cleared.emit()
+                return False
         
         return super().eventFilter(watched, event)
     
@@ -279,6 +292,9 @@ class GridViewWidget(QWidget):
     # Signals for undo/redo
     tags_added = Signal(Path, list)  # (file_path, added_tags)
     tag_removed = Signal(Path, str, int)  # (file_path, removed_tag, original_index)
+    # Signals for tag hover highlight
+    tag_hovered = Signal(str)
+    tag_hover_cleared = Signal()
     
     def __init__(self, settings: AppSettings, locale_manager: LocaleManager, parent: QWidget | None = None):
         super().__init__(parent)
@@ -317,6 +333,8 @@ class GridViewWidget(QWidget):
             # Connect undo/redo signals
             cell.tags_added.connect(self.tags_added.emit)
             cell.tag_removed.connect(self.tag_removed.emit)
+            cell.tag_hovered.connect(self.tag_hovered.emit)
+            cell.tag_hover_cleared.connect(self.tag_hover_cleared.emit)
             self.cells.append(cell)
             row, col = divmod(i, 3)
             self.grid_layout.addWidget(cell, row, col)
