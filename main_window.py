@@ -298,12 +298,22 @@ class MainWindow(QMainWindow):
         
         return selected_item
 
-    def reload_tags_only(self):
+    def reload_tags_only(self, preserve_page: bool = False):
         """Reloads the aggregated tag list for bulk editing asynchronously."""
+        if preserve_page:
+            self._saved_bulk_page = self._current_page
+        else:
+            self._saved_bulk_page = None
+
         if self.tag_thread and self.tag_thread.isRunning():
             # Stop the existing thread gracefully
             if self.tag_worker:
                 self.tag_worker.stop()
+                # 古いスレッドのシグナルを切断して二重発火を防ぐ
+                try:
+                    self.tag_worker.tags_loaded.disconnect(self._update_bulk_tag_buttons)
+                except RuntimeError:
+                    pass
             self.tag_thread.quit()
             self.tag_thread.wait(1000) # Wait up to 1 second for the thread to finish
             if self.tag_thread.isRunning():
@@ -413,7 +423,15 @@ class MainWindow(QMainWindow):
             self.loading_timer.stop()
         self._is_bulk_deleting = False
         self._all_tags = all_tags
-        self._current_page = 0
+
+        saved_page = getattr(self, '_saved_bulk_page', None)
+        if saved_page is not None:
+            total_pages = max(1, (len(all_tags) + constants.TAGS_PER_PAGE - 1) // constants.TAGS_PER_PAGE)
+            self._current_page = min(saved_page, total_pages - 1)
+        else:
+            self._current_page = 0
+        self._saved_bulk_page = None
+
         self.display_current_tag_page()
         self._build_tag_cache()
 
@@ -1124,7 +1142,7 @@ class MainWindow(QMainWindow):
         if self._is_shutting_down:
             return
 
-        self.reload_tags_only() # This will re-enable controls on finish
+        self.reload_tags_only(preserve_page=True) # This will re-enable controls on finish
         if self._bulk_tag_thread:
             self._bulk_tag_thread.quit()
             self._bulk_tag_thread.wait()
@@ -1166,6 +1184,7 @@ class MainWindow(QMainWindow):
         self.undo_manager.push(action)
         self._update_undo_redo_buttons()
         write_debug_log(f"GridView add action recorded: {len(added_tags)} tags to {file_path.name}")
+        self._build_tag_cache()
     
     @Slot(Path, str, int)
     def _on_gridview_tag_removed(self, file_path: Path, removed_tag: str, original_index: int):
@@ -1174,6 +1193,7 @@ class MainWindow(QMainWindow):
         self.undo_manager.push(action)
         self._update_undo_redo_buttons()
         write_debug_log(f"GridView remove action recorded: '{removed_tag}' from {file_path.name}")
+        self._build_tag_cache()
 
    
 
@@ -1305,13 +1325,14 @@ class MainWindow(QMainWindow):
         self._tag_cache[rel_path] = set(tags)
 
     def _highlight_files_for_tag(self, tag_name: str) -> None:
-        """指定タグを持つファイルをTagListWidgetでハイライトする。"""
+        """指定タグを持つファイルをTagListWidgetでハイライトする。選択中アイテムはスキップする。"""
         from PySide6.QtGui import QColor, QBrush
         color = QColor("#4a5a2a") if self._is_dark_theme else QColor("#c8f0a0")
         brush = QBrush(color)
+        current_item = self.image_list.currentItem()
         for i in range(self.image_list.count()):
             item = self.image_list.item(i)
-            if item is None:
+            if item is None or item is current_item:
                 continue
             rel_path = item.data(Qt.ItemDataRole.UserRole + 1)
             tags = self._tag_cache.get(rel_path, set())
@@ -1374,17 +1395,17 @@ class MainWindow(QMainWindow):
     
     def _refresh_ui_after_undo_redo(self):
         """Refreshes UI elements after undo/redo operations."""
-        # Refresh current image tags
+        # Refresh current image tags (preserve page to avoid jumping back to page 0)
         current_item = self.image_list.currentItem()
         if current_item:
             image_path = Path(self.settings.paths.input_dir) / current_item.data(Qt.ItemDataRole.UserRole + 1)
-            self._load_image_tags(image_path)
+            self._load_image_tags(image_path, preserve_page=True)
         
         # Rebuild tag cache to reflect undo/redo changes
         self._build_tag_cache()
         
         # Refresh bulk tag list
-        self.reload_tags_only()
+        self.reload_tags_only(preserve_page=True)
         
         # Refresh grid view
         self.grid_view_widget.refresh_current_page()

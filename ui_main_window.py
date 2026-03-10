@@ -68,6 +68,8 @@ class Ui_MainWindow(object):
         main_window.grid_view_widget.redo_button.clicked.connect(main_window._perform_redo)  # type: ignore
         main_window.grid_view_widget.tags_added.connect(main_window._on_gridview_tags_added)  # type: ignore
         main_window.grid_view_widget.tag_removed.connect(main_window._on_gridview_tag_removed)  # type: ignore
+        main_window.grid_view_widget.tag_hovered.connect(main_window._highlight_files_for_tag)  # type: ignore
+        main_window.grid_view_widget.tag_hover_cleared.connect(main_window._clear_highlight)  # type: ignore
         main_window._resize_timer.timeout.connect(main_window._handle_resize_debounced)  # type: ignore
         main_window.overwrite_dialog_requested.connect(main_window._handle_overwrite_request)
 
