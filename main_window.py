@@ -918,9 +918,9 @@ class MainWindow(QMainWindow):
             self.update_log(self.locale_manager.get_string("MainWindow", "Error_Deleting_Tag", tag_name=tag_to_delete, file_name=txt_path.name, e=e), "red")
     
     def _copy_tag_to_clipboard(self, tag_name: str):
-        """Copies the tag to clipboard."""
+        """Copies the tag with a trailing comma to clipboard."""
         clipboard = QApplication.clipboard()
-        clipboard.setText(tag_name)
+        clipboard.setText(tag_name + ", ")
         self.update_log(self.locale_manager.get_string("MainWindow", "Tag_Copied_To_Clipboard", tag_name=tag_name), "blue")
         write_debug_log(f"Tag copied to clipboard: {tag_name}")
 

@@ -295,18 +295,15 @@ class ImageEditCellWidget(QWidget):
         return super().eventFilter(watched, event)
     
     def _copy_tag_to_clipboard(self, tag_name: str):
-        """Copies the tag to clipboard."""
+        """Copies the tag with a trailing comma to clipboard."""
         from PySide6.QtGui import QCursor
         from PySide6.QtCore import QTimer
         clipboard = QApplication.clipboard()
-        clipboard.setText(tag_name)
+        clipboard.setText(tag_name + ", ")
         # Show a tooltip to indicate success at the current cursor position
         cursor_pos = QCursor.pos()
         tooltip_text = self.locale_manager.get_string("MainWindow", "Copied_Tag_Tooltip", tag_name=tag_name)
-        # Show tooltip with self as the widget to keep it visible regardless of mouse button state
         QToolTip.showText(cursor_pos, tooltip_text, self)
-        
-        # Keep the tooltip visible for 2 seconds
         QTimer.singleShot(2000, QToolTip.hideText)
     
     def clear_data(self):
