@@ -9,7 +9,10 @@ from typing import Any, Callable, TYPE_CHECKING
 
 from utils import log_dbg, GetString
 from app_settings import AppSettings
-from tagging_core import _normalize_np_chw, BASE_DIR
+from tagging_core import (
+    _normalize_np_chw, BASE_DIR, ExistingFileMode, FileChange, OverwriteDecision,
+    parse_existing_file_mode,
+)
 
 if TYPE_CHECKING:
     import numpy as np
@@ -223,6 +226,7 @@ def setup_captioner_from_settings(app_settings: AppSettings, get_string: GetStri
         settings_dict: dict[str, Any] = {
             "INPUT_DIR": Path(app_settings.paths.input_dir),
             "TASK": app_settings.caption.task,
+            "EXISTING_FILE_MODE": parse_existing_file_mode(app_settings.behavior.existing_file_mode),
         }
         captioner = Florence2Captioner(captioner_config, get_string=_get_string_internal)
         return captioner, settings_dict
@@ -236,18 +240,29 @@ def process_caption_loop(
     captioner: Florence2Captioner,
     settings: dict[str, Any],
     image_paths: list[Path],
-    overwrite_checker: Callable[[Path], bool] | None,
+    decision_resolver: Callable[[Path], OverwriteDecision] | None,
     log_gui: Callable[[str, str], None] | None,
     stop_checker: Callable[[], bool] | None,
     get_string: GetString | None,
-):
-    """Captioner counterpart of tagging_core.process_image_loop."""
+) -> list[FileChange]:
+    """Captioner counterpart of tagging_core.process_image_loop.
+
+    既存ファイルの扱いは ASK / OVERWRITE / SKIP に対応する。APPEND はキャプション
+    （自由文）に対して意味を成さない — 生成文を既存文に連結しても読めるものにならず、
+    タグのような重複判定もできない — ため、APPEND が設定されている場合は ASK に
+    フォールバックし、ユーザーにファイル単位で判断してもらう。
+    """
 
     def core_log_gui(message: str, color: str = "black") -> None:
         if log_gui:
             log_gui(message, color)
 
     _get_string_internal = get_string if get_string else _get_string
+    mode: ExistingFileMode = settings.get("EXISTING_FILE_MODE", ExistingFileMode.ASK)
+    if mode is ExistingFileMode.APPEND:
+        log_dbg("captioner: APPEND はキャプションに適用できないため ASK にフォールバックします")
+        mode = ExistingFileMode.ASK
+    changed_files: list[FileChange] = []
     task_key = settings.get("TASK", captioner.config.default_task)
     task_prompt = captioner.config.tasks.get(task_key, captioner.config.tasks.get(captioner.config.default_task, "Describe with a paragraph what is shown in the image."))
 
@@ -261,9 +276,17 @@ def process_caption_loop(
         relative_path = image_path.relative_to(settings["INPUT_DIR"])
         current_index_str = f"[{i+1}/{len(image_paths)}]"
 
-        if output_path.is_file() and overwrite_checker and not overwrite_checker(output_path):
-            core_log_gui(_get_string_internal("TaggerCore", "Tag_Skipped_Existing_File_Short", current_index_str=current_index_str, output_path_name=output_path.name), "orange")
-            continue
+        if output_path.is_file():
+            if mode is ExistingFileMode.SKIP:
+                core_log_gui(_get_string_internal("TaggerCore", "Tag_Skipped_Existing_File_Short", current_index_str=current_index_str, output_path_name=output_path.name), "orange")
+                continue
+            if mode is ExistingFileMode.ASK:
+                if decision_resolver is None:
+                    log_dbg("process_caption_loop: ASK モードだが decision_resolver が未設定のためスキップします")
+                    continue
+                if decision_resolver(output_path) is OverwriteDecision.SKIP:
+                    core_log_gui(_get_string_internal("TaggerCore", "Tag_Skipped_Existing_File_Short", current_index_str=current_index_str, output_path_name=output_path.name), "orange")
+                    continue
 
         core_log_gui(_get_string_internal("TaggerCore", "Processing_Image", current_index_str=current_index_str, relative_path=str(relative_path)), "black")
 
@@ -290,12 +313,24 @@ def process_caption_loop(
             core_log_gui(_get_string_internal("TaggerCore", "Caption_Cancelled_Short", current_index_str=current_index_str, relative_path_name=relative_path.name), "orange")
             break
 
+        previous_content: str | None = None
+        if output_path.is_file():
+            try:
+                previous_content = output_path.read_text(encoding="utf-8")
+            except Exception:
+                previous_content = None
+
         try:
             resolved_path = output_path.resolve()
             long_path_str = f"\\\\?\\{resolved_path}" if sys.platform == "win32" else str(resolved_path)
             with open(long_path_str, "w", encoding="utf-8") as f:
                 f.write(caption)
+            changed_files.append(FileChange(
+                path=output_path, previous_content=previous_content,
+                new_content=caption, was_append=False))
             core_log_gui(_get_string_internal("TaggerCore", "Tag_Output_Success", current_index_str=current_index_str, output_path_name=output_path.name), "green")
         except Exception as e:
             log_dbg(f"Caption save failed for {output_path.name}: {type(e).__name__}: {e}")
             core_log_gui(_get_string_internal("TaggerCore", "Save_Failed_Short", current_index_str=current_index_str, output_path_name=output_path.name), "red")
+
+    return changed_files

@@ -132,6 +132,16 @@ class ModelModeController:
         mw.caption_text_edit.setVisible(is_captioner)
         mw.task_combo.setVisible(is_captioner)
 
+        # captioner では APPEND を選べないようにする。自由文のキャプションに生成文を
+        # 連結しても読めるものにならず、タグのような重複判定もできないため
+        # （process_caption_loop 側でも APPEND は ASK にフォールバックする）。
+        if hasattr(mw, "existing_mode_combo"):
+            append_index = mw.existing_mode_combo.findData("APPEND")
+            if append_index >= 0:
+                item = mw.existing_mode_combo.model().item(append_index)
+                if item is not None:
+                    item.setEnabled(not is_captioner)
+
         if is_captioner:
             # Default to the model's verbose task (MORE_DETAILED_CAPTION) on every switch
             # to a captioner - the shorter caption levels are rarely what's wanted

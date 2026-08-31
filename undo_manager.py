@@ -233,6 +233,104 @@ class EditCaptionAction(UndoAction):
 
 
 @dataclass
+class OverwriteFileAction(UndoAction):
+    """タグ付けバッチによる1ファイルの上書き / 新規作成（spec.md 4.1節）。
+
+    previous_content が None のときは「変更前にファイルが存在しなかった」ことを表し、
+    undo はファイル削除まで行う。undo / redo とも全文スナップショットの復元で対称。
+    """
+    file_path: Path
+    previous_content: str | None
+    new_content: str
+
+    def _write(self, text: str) -> bool:
+        try:
+            self.file_path.write_text(text, encoding='utf-8')
+            return True
+        except Exception as e:
+            write_debug_log(f"OverwriteFileAction write failed for {self.file_path}: {e}")
+            return False
+
+    def undo(self) -> bool:
+        if self.previous_content is None:
+            try:
+                self.file_path.unlink(missing_ok=True)
+                return True
+            except Exception as e:
+                write_debug_log(f"OverwriteFileAction undo unlink failed for {self.file_path}: {e}")
+                return False
+        return self._write(self.previous_content)
+
+    def redo(self) -> bool:
+        return self._write(self.new_content)
+
+    def description(self) -> str:
+        return f"「{self.file_path.name}」の上書き"
+
+
+@dataclass
+class AppendTagsActionV2(UndoAction):
+    """タグ付けバッチによる1ファイルへの追記（spec.md 4.1節）。
+
+    undo/redo は OverwriteFileAction と同じ全文スナップショット方式で行い、
+    added_tags は説明文・ログ用のメタ情報として保持する。
+    """
+    file_path: Path
+    previous_content: str | None
+    new_content: str
+    added_tags: list[str]
+
+    def _write(self, text: str) -> bool:
+        try:
+            self.file_path.write_text(text, encoding='utf-8')
+            return True
+        except Exception as e:
+            write_debug_log(f"AppendTagsActionV2 write failed for {self.file_path}: {e}")
+            return False
+
+    def undo(self) -> bool:
+        if self.previous_content is None:
+            try:
+                self.file_path.unlink(missing_ok=True)
+                return True
+            except Exception as e:
+                write_debug_log(f"AppendTagsActionV2 undo unlink failed for {self.file_path}: {e}")
+                return False
+        return self._write(self.previous_content)
+
+    def redo(self) -> bool:
+        return self._write(self.new_content)
+
+    def description(self) -> str:
+        return f"「{self.file_path.name}」へ{len(self.added_tags)}件のタグを追記"
+
+
+@dataclass
+class CompositeUndoAction(UndoAction):
+    """バッチ1回分の複数ファイル変更を、Undo履歴上の1エントリとして扱う（spec.md 4.2節）。
+
+    undo は逆順、redo は元の順で実行する。max_history=50 が大量画像処理で
+    即座に消費されるのを防ぐのが目的。
+    """
+    actions: list[UndoAction]
+    label: str = ""
+
+    def undo(self) -> bool:
+        # 逆順に戻す。1つでも成功していれば「元に戻した」とみなす（部分成功を許容）
+        results = [action.undo() for action in reversed(self.actions)]
+        return any(results)
+
+    def redo(self) -> bool:
+        results = [action.redo() for action in self.actions]
+        return any(results)
+
+    def description(self) -> str:
+        if self.label:
+            return self.label
+        return f"タグ付けによる{len(self.actions)}ファイルの変更"
+
+
+@dataclass
 class BulkAddTagsAction(UndoAction):
     """Action for adding tags to multiple images."""
     file_paths: list[Path]

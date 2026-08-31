@@ -74,7 +74,6 @@ class Ui_MainWindow(object):
         main_window.grid_view_widget.tag_hovered.connect(main_window._highlight_files_for_tag)  # type: ignore
         main_window.grid_view_widget.tag_hover_cleared.connect(main_window._clear_highlight)  # type: ignore
         main_window._resize_timer.timeout.connect(main_window._handle_resize_debounced)  # type: ignore
-        main_window.overwrite_dialog_requested.connect(main_window._handle_overwrite_request)
 
     def _create_main_view(self, main_window: 'MainWindow') -> QWidget:
         """Constructs the main view widget with its layout and components."""
@@ -399,7 +398,31 @@ class Ui_MainWindow(object):
         layout.addWidget(thresh_group, 1)
         layout.addWidget(limit_group, 1)
         layout.addWidget(main_window.category_settings_button, 0)
-        return widget
+
+        # 既存 .txt の扱い（ASK / OVERWRITE / SKIP / APPEND）。スライダー行は既に
+        # 混み合っているので、独立した行に置く（spec.md 6.1節）。
+        outer = QVBoxLayout()
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.addWidget(widget)
+
+        mode_row = QHBoxLayout()
+        mode_row.addWidget(QLabel(main_window.locale_manager.get_string("MainWindow", "Existing_Mode_Label")))
+        main_window.existing_mode_combo = QComboBox()
+        for key, label_key in (("ASK", "Existing_Mode_Ask"), ("OVERWRITE", "Existing_Mode_Overwrite"),
+                               ("SKIP", "Existing_Mode_Skip"), ("APPEND", "Existing_Mode_Append")):
+            main_window.existing_mode_combo.addItem(
+                main_window.locale_manager.get_string("MainWindow", label_key), key)
+        current = str(main_window.settings.behavior.existing_file_mode).upper()
+        idx = main_window.existing_mode_combo.findData(current)
+        main_window.existing_mode_combo.setCurrentIndex(idx if idx >= 0 else 0)
+        main_window.existing_mode_combo.currentIndexChanged.connect(main_window._on_existing_mode_changed)  # type: ignore
+        mode_row.addWidget(main_window.existing_mode_combo)
+        mode_row.addStretch(1)
+        outer.addLayout(mode_row)
+
+        container = QWidget()
+        container.setLayout(outer)
+        return container
 
     def _create_log_group(self, main_window: 'MainWindow') -> QGroupBox:
         """Creates the group for the execution log."""

@@ -70,6 +70,9 @@ class Limits:
 class Behavior:
     enable_solo_character_limit: bool
     convert_underscore_to_space: bool
+    # 既存 .txt が存在する場合の処理方針: ASK / OVERWRITE / SKIP / APPEND。
+    # 既定値により、このキーを持たない旧 config.ini でも従来どおり動作する。
+    existing_file_mode: str = "ASK"
 
 @dataclass
 class Window:
@@ -112,7 +115,7 @@ def get_default_config() -> configparser.ConfigParser:
         'Paths': {'input_dir': str(BASE_DIR / "inputs"), 'model_dir': MODEL_DIR_NAME, 'model_filename': 'model.onnx'},
         'Thresholds': {'general': '0.40', 'character': '0.65', 'rating': '0.50', 'copyright': '0.50', 'artist': '0.50', 'meta': '0.50', 'model': '0.50', 'quality': '0.50', 'year': '0.50', 'touched': ''},
         'Limits': {'general': '55', 'character': '1', 'rating': '0', 'copyright': '0', 'artist': '0', 'meta': '0', 'model': '0', 'quality': '0', 'year': '0', 'touched': ''},
-        'Behavior': {'enable_solo_character_limit': 'True', 'convert_underscore_to_space': 'True'},
+        'Behavior': {'enable_solo_character_limit': 'True', 'convert_underscore_to_space': 'True', 'existing_file_mode': 'ASK'},
         'Window': {'geometry': '986x976+50+50', 'tag_display_rows': '6', 'tag_display_cols': '5'},
         'Model': {'model_id': 'pixai-tagger-v0.9', 'verified_models': ''},
         'Caption': {'task': 'MORE_DETAILED_CAPTION'},
@@ -204,7 +207,8 @@ def load_settings(config: configparser.ConfigParser) -> AppSettings:
         ),
         behavior=Behavior(
             enable_solo_character_limit=config.getboolean('Behavior', 'enable_solo_character_limit', fallback=True),
-            convert_underscore_to_space=config.getboolean('Behavior', 'convert_underscore_to_space', fallback=True)
+            convert_underscore_to_space=config.getboolean('Behavior', 'convert_underscore_to_space', fallback=True),
+            existing_file_mode=config.get('Behavior', 'existing_file_mode', fallback='ASK')
         ),
         window=Window(
             geometry=config.get('Window', 'geometry', fallback='986x976+50+50'),

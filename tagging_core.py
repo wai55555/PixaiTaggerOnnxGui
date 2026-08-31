@@ -8,7 +8,7 @@ import traceback
 import os
 from pathlib import Path
 from dataclasses import dataclass, field
-from enum import IntEnum
+from enum import Enum, IntEnum, auto
 from typing import Mapping, Sequence, Any, Callable, TYPE_CHECKING
 from time import perf_counter
 
@@ -45,6 +45,71 @@ if not TYPE_CHECKING:
         if __name__ != "__main__":
             raise ImportError(_get_string("TaggerCore", "Error_Required_Libraries_NotFound"))
         sys.exit(1)
+
+@dataclass(frozen=True)
+class FileChange:
+    """1ファイル分の書き換え記録（design.md 2.2節）。
+
+    previous_content が None なら「変更前にファイルが存在しなかった」ことを表し、
+    Undo ではファイルを削除する。was_append は追記ログ / 説明用のメタ情報。
+    """
+    path: Path
+    previous_content: str | None
+    new_content: str
+    was_append: bool
+    added_tags: tuple[str, ...] = ()
+
+
+class ExistingFileMode(Enum):
+    """出力先の .txt が既に存在する場合の処理方針（spec.md 1.1節）。"""
+    ASK = auto()        # 都度確認
+    OVERWRITE = auto()  # 常に上書き
+    SKIP = auto()       # 常にスキップ
+    APPEND = auto()     # 常に追記
+
+
+class OverwriteDecision(Enum):
+    """ASK モードでユーザーが1ファイルに対して下した判断（spec.md 2.2節）。"""
+    OVERWRITE = auto()
+    SKIP = auto()
+    APPEND = auto()
+
+
+EXISTING_FILE_MODE_MAP: dict[str, ExistingFileMode] = {
+    "ASK": ExistingFileMode.ASK,
+    "OVERWRITE": ExistingFileMode.OVERWRITE,
+    "SKIP": ExistingFileMode.SKIP,
+    "APPEND": ExistingFileMode.APPEND,
+}
+
+
+def parse_existing_file_mode(raw: str) -> ExistingFileMode:
+    """config.ini の文字列を ExistingFileMode に変換する。不正値は ASK にフォールバック
+    し、警告をデバッグログに残す（spec.md 5.2節）。"""
+    mode = EXISTING_FILE_MODE_MAP.get(str(raw).strip().upper())
+    if mode is None:
+        log_dbg(f"existing_file_mode の値が不正です: {raw!r} -> ASK にフォールバックします")
+        return ExistingFileMode.ASK
+    return mode
+
+
+def merge_tags(existing_tags: list[str], generated_tags: list[str]) -> list[str]:
+    """既存タグを先頭に保持し、含まれていない生成タグだけを末尾に追加する（spec.md 3.1節）。
+
+    - 重複判定は大文字小文字を無視した完全一致
+    - 既存タグ同士の重複や表記ゆれ（`long hair` vs `long_hair`）は正規化しない
+    - 純粋関数。呼び出し側は戻り値が existing_tags と等しいかで書き込み要否を判断する
+    """
+    seen = {tag.lower() for tag in existing_tags}
+    appended: list[str] = []
+    for tag in generated_tags:
+        key = tag.lower()
+        if key in seen:
+            continue
+        seen.add(key)          # 生成タグ側の重複も1回だけ採用する
+        appended.append(tag)
+    return existing_tags + appended
+
 
 class TagCategory(IntEnum):
     GENERAL = 0
@@ -653,6 +718,7 @@ def setup_tagger_from_settings(app_settings: AppSettings, get_string: GetString 
             'MAX_TAGS_PER_CATEGORY': max_tags_per_category,
             'ENABLE_SOLO_LIMIT': app_settings.behavior.enable_solo_character_limit,
             'CONVERT_UNDERSCORE': app_settings.behavior.convert_underscore_to_space,
+            'EXISTING_FILE_MODE': parse_existing_file_mode(app_settings.behavior.existing_file_mode),
         }
         tagger = OnnxTagger(model_path=settings_dict['MODEL_PATH'], tags_csv=tags_csv_path, get_string=_get_string_internal, inference_config=inference_config)
 
@@ -676,18 +742,27 @@ def process_image_loop(
     tagger: OnnxTagger,
     settings: dict[str, Any],
     image_paths: list[Path],
-    overwrite_checker: Callable[[Path], bool] | None,
+    decision_resolver: Callable[[Path], OverwriteDecision] | None,
     log_gui: Callable[[str, str], None] | None,
     stop_checker: Callable[[], bool] | None,
     get_string: GetString | None
-):
-    """Processes a list of images, applying tags based on the provided settings."""
-    
+) -> list[FileChange]:
+    """設定に従って画像へタグを付け、既存 .txt の扱いを EXISTING_FILE_MODE で分岐する。
+
+    `decision_resolver` は ASK モードのときだけ呼ばれる（spec.md 1.2節）。ASK 以外の
+    モードでは、既存ファイル検出時にワーカースレッドから GUI への往復は一切発生しない。
+
+    戻り値: 実際に書き換えたファイルの FileChange リスト。呼び出し側はこれを1つの
+    Undo エントリ（CompositeUndoAction）にまとめる（design.md 4.4節）。
+    """
+
     def core_log_gui(message: str, color: str = "black") -> None:
         if log_gui:
             log_gui(message, color)
 
     _get_string_internal = get_string if get_string else _get_string
+    mode: ExistingFileMode = settings.get('EXISTING_FILE_MODE', ExistingFileMode.ASK)
+    changed_files: list[FileChange] = []
 
     for i, image_path in enumerate(image_paths):
         if stop_checker:
@@ -705,10 +780,25 @@ def process_image_loop(
         relative_path = image_path.relative_to(settings['INPUT_DIR'])
         current_index_str = f"[{i+1}/{len(image_paths)}]"
 
-        if output_path.is_file() and overwrite_checker and not overwrite_checker(output_path):
-            log_dbg(_get_string_internal("TaggerCore", "Tag_Output_Skipped_Existing_File", current_index_str=current_index_str, relative_path=str(relative_path)))
-            core_log_gui(_get_string_internal("TaggerCore", "Tag_Skipped_Existing_File_Short", current_index_str=current_index_str, output_path_name=output_path.name), "orange")
-            continue
+        will_append = False
+        if output_path.is_file():
+            if mode is ExistingFileMode.SKIP:
+                log_dbg(_get_string_internal("TaggerCore", "Tag_Output_Skipped_Existing_File", current_index_str=current_index_str, relative_path=str(relative_path)))
+                core_log_gui(_get_string_internal("TaggerCore", "Tag_Skipped_Existing_File_Short", current_index_str=current_index_str, output_path_name=output_path.name), "orange")
+                continue
+            if mode is ExistingFileMode.ASK:
+                if decision_resolver is None:
+                    # 防御: resolver 未設定なら既存ファイルには触らない
+                    log_dbg("process_image_loop: ASK モードだが decision_resolver が未設定のためスキップします")
+                    continue
+                decision = decision_resolver(output_path)
+                if decision is OverwriteDecision.SKIP:
+                    log_dbg(_get_string_internal("TaggerCore", "Tag_Output_Skipped_Existing_File", current_index_str=current_index_str, relative_path=str(relative_path)))
+                    core_log_gui(_get_string_internal("TaggerCore", "Tag_Skipped_Existing_File_Short", current_index_str=current_index_str, output_path_name=output_path.name), "orange")
+                    continue
+                will_append = decision is OverwriteDecision.APPEND
+            else:
+                will_append = mode is ExistingFileMode.APPEND
 
         core_log_gui(_get_string_internal("TaggerCore", "Processing_Image", current_index_str=current_index_str, relative_path=str(relative_path)), "black")
         
@@ -745,8 +835,35 @@ def process_image_loop(
         tag_result.series_tags = tuple(sorted(list(all_series_tags)))
         
         formatted_tags = format_tags(tag_result, settings['CONVERT_UNDERSCORE'])
-        
-        # The check has been moved to the top, so we just write the file here.
+
+        previous_content: str | None = None
+        added_tags: tuple[str, ...] = ()
+        if will_append:
+            try:
+                previous_content = output_path.read_text(encoding='utf-8')
+            except Exception as e:
+                # 既存内容が読めないファイルは触らずスキップする（spec.md 3.3節）
+                log_dbg(f"append: 既存ファイルの読み込みに失敗したためスキップします {output_path.name}: {type(e).__name__}: {e}")
+                core_log_gui(_get_string_internal("TaggerCore", "Save_Failed_Short", current_index_str=current_index_str, output_path_name=output_path.name), "red")
+                continue
+            existing_tags = [t.strip() for t in previous_content.split(",") if t.strip()]
+            generated_tags = [t.strip() for t in formatted_tags.split(",") if t.strip()]
+            merged = merge_tags(existing_tags, generated_tags)
+            if merged == existing_tags:
+                # 追加できる新規タグが無い場合は mtime も変えない（spec.md 3.3節）
+                core_log_gui(_get_string_internal("TaggerCore", "Log_No_New_Tags", current_index_str=current_index_str, file_name=output_path.name), "black")
+                continue
+            added_tags = tuple(merged[len(existing_tags):])
+            new_content = ", ".join(merged)
+        else:
+            # 新規作成（previous_content=None）または上書き
+            if output_path.is_file():
+                try:
+                    previous_content = output_path.read_text(encoding='utf-8')
+                except Exception:
+                    previous_content = None
+            new_content = formatted_tags
+
         try:
             resolved_path = output_path.resolve()
             if sys.platform == "win32":
@@ -755,14 +872,22 @@ def process_image_loop(
                 long_path_str = str(resolved_path)
 
             with open(long_path_str, 'w', encoding='utf-8') as f:
-                f.write(formatted_tags)
+                f.write(new_content)
 
-            core_log_gui(_get_string_internal("TaggerCore", "Tag_Output_Success", current_index_str=current_index_str, output_path_name=output_path.name), "green")
+            changed_files.append(FileChange(
+                path=output_path, previous_content=previous_content,
+                new_content=new_content, was_append=will_append, added_tags=added_tags))
+            if will_append:
+                core_log_gui(_get_string_internal("TaggerCore", "Log_Appended", current_index_str=current_index_str, count=len(added_tags), file_name=output_path.name), "green")
+            else:
+                core_log_gui(_get_string_internal("TaggerCore", "Tag_Output_Success", current_index_str=current_index_str, output_path_name=output_path.name), "green")
             log_dbg(_get_string_internal("TaggerCore", "Tagging_Result_Output", current_index_str=current_index_str, output_path_name=output_path.name))
         except Exception as e:
             log_dbg(_get_string_internal("TaggerCore", "Save_Failed", current_index_str=current_index_str, relative_path=str(relative_path), type_e_name=type(e).__name__, e=str(e)))
             
             core_log_gui(_get_string_internal("TaggerCore", "Save_Failed_Short", current_index_str=current_index_str, output_path_name=output_path.name), "red")
+
+    return changed_files
 
 def filter_tags_by_solo_rule(
     tag_result: TagResult,
@@ -808,7 +933,7 @@ def filter_tags_by_solo_rule(
 
     return final_tags, all_series_tags
 
-def main(overwrite_checker: Callable[[Path], bool] | None = None, log_gui: Callable[[str, str], None] | None = None, stop_checker: Callable[[], bool] | None = None, get_string: GetString | None = None):
+def main(decision_resolver: Callable[[Path], OverwriteDecision] | None = None, log_gui: Callable[[str, str], None] | None = None, stop_checker: Callable[[], bool] | None = None, get_string: GetString | None = None):
     start_time = perf_counter()
     
     def core_log_gui(message: str, color: str = "black") -> None:
@@ -842,7 +967,7 @@ def main(overwrite_checker: Callable[[Path], bool] | None = None, log_gui: Calla
 
     core_log_gui(_get_string_internal("TaggerCore", "Total_Image_Files_Found", count=len(image_paths)), "blue")
     
-    process_image_loop(tagger, settings_dict, image_paths, overwrite_checker, log_gui, stop_checker, _get_string_internal)
+    process_image_loop(tagger, settings_dict, image_paths, decision_resolver, log_gui, stop_checker, _get_string_internal)
 
     end_time = perf_counter()
     log_dbg(_get_string_internal("TaggerCore", "Total_Processing_Time", time=f"{end_time - start_time:.2f}"))
