@@ -6,25 +6,9 @@ from pathlib import Path
 from typing import Any, Literal
 
 import constants
-from utils import write_debug_log
+from utils import config_mapping, write_debug_log
 
 ModelType = Literal["tagger", "captioner"]
-
-
-def config_mapping(config: Any, *keys: str) -> dict[str, Any]:
-    """Walks `config` through `keys`, returning {} as soon as anything is not a mapping.
-
-    model_config.json is hand-authored, so a key may be present but null (`"network":
-    null`) - plain `cfg.get("network", {}).get("files", {})` raises AttributeError in
-    that case, which would abort discover_models() entirely instead of skipping one
-    bad manifest.
-    """
-    current = config
-    for key in keys:
-        if not isinstance(current, dict):
-            return {}
-        current = current.get(key)
-    return current if isinstance(current, dict) else {}
 
 
 @dataclass(frozen=True)
@@ -143,11 +127,23 @@ def discover_models() -> list[ModelEntry]:
             write_debug_log(f"model_registry: {config_path} must contain a JSON object; skipping.")
             continue
 
+        # model_id ends up as a dict key in _sort_by_display_order() and is compared all
+        # over the app, so a non-string (or empty) value has to be rejected here rather
+        # than blowing up discovery later with an unhashable-key TypeError.
         model_id = cfg.get("model_id", config_dir.name)
+        if not isinstance(model_id, str) or not model_id.strip():
+            write_debug_log(f"model_registry: {config_path} has an invalid model_id {model_id!r}; skipping.")
+            continue
+        model_id = model_id.strip()
+
         model_type = cfg.get("model_type", "tagger")
         if model_type not in ("tagger", "captioner"):
             write_debug_log(f"model_registry: {config_path} has unknown model_type '{model_type}', skipping.")
             continue
+
+        model_name = cfg.get("model_name", model_id)
+        if not isinstance(model_name, str) or not model_name.strip():
+            model_name = model_id
 
         # Downloaded model.onnx files always live under the user-writable MODELS_DIR, even
         # when the config was read from the bundled resource copy.
@@ -164,7 +160,7 @@ def discover_models() -> list[ModelEntry]:
 
         entries.append(ModelEntry(
             model_id=model_id,
-            model_name=cfg.get("model_name", model_id),
+            model_name=model_name,
             model_type=model_type,
             model_dir=model_dir,
             config=cfg,

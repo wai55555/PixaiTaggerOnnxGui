@@ -443,6 +443,15 @@ class ImageEditCellWidget(QWidget):
         self.tag_translation_map = translation_map
         self._update_tag_display()
 
+    def set_editing_enabled(self, enabled: bool):
+        """Lock the cell's editing widgets while a worker rewrites the same .txt files.
+        The image and its tag/caption text stay visible - only edits are blocked."""
+        if not enabled:
+            # Commit anything still inside the autosave debounce before locking.
+            self._save_caption()
+        self._tag_area_widget.setEnabled(enabled)
+        self.caption_edit.setReadOnly(not enabled)
+
     def set_search_text(self, text: str):
         """検索文字列を設定し、タグ表示を更新する。"""
         self._search_text = text
@@ -473,6 +482,7 @@ class GridViewWidget(QWidget):
         self._search_text: str = ""
         self._base_dir: Path | None = None
         self._caption_mode: bool = False
+        self._editing_enabled: bool = True
         self.cells: List[ImageEditCellWidget] = []
         
         # --- ADDED: State management for the dialog ---
@@ -712,10 +722,20 @@ class GridViewWidget(QWidget):
         for cell in self.cells:
             cell.set_tag_display_language(language, translation_map)
     
+    def set_editing_enabled(self, enabled: bool):
+        """Called while a tagging/captioning run is active. Deliberately leaves the
+        "back to main view" button and the page navigation alive so the user is not
+        trapped in the grid - only the controls that write .txt files are locked."""
+        self._editing_enabled = enabled
+        for cell in self.cells:
+            cell.set_editing_enabled(enabled)
+        self.undo_button.setEnabled(enabled and self.undo_button.isEnabled())
+        self.redo_button.setEnabled(enabled and self.redo_button.isEnabled())
+
     def update_undo_redo_buttons(self, can_undo: bool, can_redo: bool, undo_desc: str, redo_desc: str):
         """Updates the enabled state and tooltips of undo/redo buttons in grid view."""
-        self.undo_button.setEnabled(can_undo)
-        self.redo_button.setEnabled(can_redo)
+        self.undo_button.setEnabled(can_undo and self._editing_enabled)
+        self.redo_button.setEnabled(can_redo and self._editing_enabled)
         
         if can_undo:
             self.undo_button.setToolTip(self.locale_manager.get_string("MainWindow", "Undo_Action", desc=undo_desc))

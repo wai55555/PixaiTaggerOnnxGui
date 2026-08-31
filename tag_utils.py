@@ -54,7 +54,7 @@ def remove_tag_from_file(txt_path: Path, tag_to_remove: str) -> bool:
 # on a case-sensitive filesystem the lowercase forms silently fail to load.
 _TRANSLATION_LANGUAGE_SUFFIXES = ["jp", "fr", "de", "es", "ru", "zh_CN", "zh_TW", "ko"]
 
-def load_tag_translation_map(model_dir: Path) -> dict[str, list[str]]:
+def load_tag_translation_map(model_dir: Path, *fallback_dirs: Path | None) -> dict[str, list[str]]:
     """
     指定されたディレクトリの `selected_tags.csv`（英語, PixAI形式）を基準に、
     `selected_tags_<lang>.csv` が存在する言語だけ翻訳を持たせた辞書を作る。
@@ -78,12 +78,28 @@ def load_tag_translation_map(model_dir: Path) -> dict[str, list[str]]:
     """
     mapping: dict[str, list[str]] = {}
 
-    english_csv_path = model_dir / "selected_tags.csv"
-    if not english_csv_path.is_file():
+    # 探索先は「渡されたディレクトリ → fallback_dirs」の順。frozen ビルドでは同梱CSVが
+    # models/pixai-tagger-v0.9 に配置される一方、旧レイアウトのインストールでは
+    # MODEL_PATH.parent が pixai-tagger-v0.9-onnx/ を指すことがあり、両者が食い違う。
+    # ファイル単位でフォールバックすることで、配置がどちらでも翻訳が効く。
+    search_dirs: list[Path] = [model_dir]
+    for extra in fallback_dirs:
+        if extra is not None and extra not in search_dirs:
+            search_dirs.append(extra)
+
+    def _find(file_name: str) -> Path | None:
+        for directory in search_dirs:
+            candidate = directory / file_name
+            if candidate.is_file():
+                return candidate
+        return None
+
+    english_csv_path = _find("selected_tags.csv")
+    if english_csv_path is None:
         return mapping
 
-    language_paths = [model_dir / f"selected_tags_{suffix}.csv" for suffix in _TRANSLATION_LANGUAGE_SUFFIXES]
-    if not any(p.is_file() for p in language_paths):
+    language_paths = [_find(f"selected_tags_{suffix}.csv") for suffix in _TRANSLATION_LANGUAGE_SUFFIXES]
+    if not any(p is not None for p in language_paths):
         # このモデルには翻訳ファイルが一切無い（PixAI以外の全モデルはこちらに該当する）。
         # 呼び出し側は空辞書に対して英語タグへフォールバックするので、これ以上何もしなくてよい。
         return mapping
@@ -104,7 +120,7 @@ def load_tag_translation_map(model_dir: Path) -> dict[str, list[str]]:
         all_translations: list[list[str]] = []
         for lang_path in language_paths:
             translations: list[str] = []
-            if lang_path.is_file():
+            if lang_path is not None:
                 with open(lang_path, 'r', encoding='utf-8') as f:
                     reader = csv.reader(f)
                     next(reader)  # ヘッダーをスキップ

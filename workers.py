@@ -17,6 +17,39 @@ from tagging_core import setup_tagger_from_settings, process_image_loop, get_ima
 import model_registry
 import caption_core
 
+def ensure_pixai_tags_csv(get_string: GetString, log: Callable[[str, str], None] | None = None) -> bool:
+    """Make sure PixAI's selected_tags.csv is present, downloading just that file if not.
+
+    tag_utils.load_tag_translation_map() uses it as the English key list that every
+    selected_tags_<lang>.csv is matched against, and the app deliberately reads
+    translations from PixAI's directory no matter which model is selected. It is
+    normally fetched as part of the PixAI model download, so a user who only ever
+    downloads a different model would get no tag translations at all even though the
+    eight translation CSVs ship with the app. It is ~0.6MB, so fetch it on demand.
+
+    Returns True when the file is available afterwards.
+    """
+    if TAGS_CSV_PATH.is_file():
+        return True
+    url = DOWNLOAD_URLS.get(TAGS_CSV_PATH)
+    if not url:
+        return False
+    try:
+        write_debug_log("Fetching PixAI selected_tags.csv (tag-translation key list).")
+        if log:
+            log(get_string("Workers", "Fetching_Translation_Base_Csv"), "blue")
+        response = requests.get(url, timeout=30)
+        response.raise_for_status()
+        TAGS_CSV_PATH.parent.mkdir(parents=True, exist_ok=True)
+        TAGS_CSV_PATH.write_bytes(response.content)
+        write_debug_log(f"selected_tags.csv saved to {TAGS_CSV_PATH}")
+        return True
+    except Exception as e:
+        # Translations simply fall back to English tag names - not worth failing over.
+        write_debug_log(f"Could not fetch selected_tags.csv: {type(e).__name__}: {e}")
+        return False
+
+
 class DownloaderWorker(QObject):
     """Downloads model files and verifies their integrity."""
     log_message = Signal(str, str)
@@ -192,7 +225,7 @@ class DownloaderWorker(QObject):
             self.download_finished.emit(False)
             return
 
-        self._download_from_manifest(entry.model_dir, entry.config.get("network", {}))
+        self._download_from_manifest(entry.model_dir, model_registry.config_mapping(entry.config, "network"))
 
     def _run_download_pixai_legacy(self):
         """Unchanged PixAI download path (design.md 5章, NFR-3: byte-for-byte the same as before multi-model support)."""
@@ -272,6 +305,11 @@ class DownloaderWorker(QObject):
                 self._file_sizes[file_path] = expected_size
             else:
                 write_debug_log(f"DownloaderWorker: could not resolve pointer info for {name} ({pointer_url}); will download without hash verification.")
+
+        # Fetch the shared tag-translation key list first: it is tiny, and doing it here
+        # means translations work even if the (much larger) model download is aborted.
+        if not self.is_stopped():
+            ensure_pixai_tags_csv(self.get_string, self.log_message.emit)
 
         all_success = True
         for file_name, url in files.items():
@@ -356,6 +394,10 @@ class TaggerThreadWorker(QObject):
                 return
 
             self.log_message.emit(self.get_string("Workers", "TaggerThreadWorker_Loading_Model"), "black")
+
+            # Whichever model is tagging, tag translations are looked up against PixAI's
+            # selected_tags.csv - grab it here if a previous run never pulled it in.
+            ensure_pixai_tags_csv(self.get_string, self.log_message.emit)
 
             input_dir = Path(settings_dict['INPUT_DIR'])
             image_paths = get_image_paths_recursive(input_dir)
@@ -451,6 +493,10 @@ class CaptionerThreadWorker(QObject):
                 return  # finally block emits running_state_changed / reload / finished
 
             self.log_message.emit(self.get_string("Workers", "TaggerThreadWorker_Loading_Model"), "black")
+
+            # Whichever model is tagging, tag translations are looked up against PixAI's
+            # selected_tags.csv - grab it here if a previous run never pulled it in.
+            ensure_pixai_tags_csv(self.get_string, self.log_message.emit)
 
             input_dir = Path(settings_dict['INPUT_DIR'])
             image_paths = get_image_paths_recursive(input_dir)

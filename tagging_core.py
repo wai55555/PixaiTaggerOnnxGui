@@ -33,7 +33,7 @@ BASE_DIR = Path(sys.executable).parent if getattr(sys, 'frozen', False) else Pat
 LOG_FILE_PATH = BASE_DIR / "debug_log.txt"
 CONFIG_PATH = BASE_DIR / "config.ini"
 
-from utils import log_dbg, GetString
+from utils import config_mapping, log_dbg, GetString
 from app_settings import AppSettings, load_settings
 
 
@@ -106,17 +106,6 @@ _CATEGORY_LOOKUP: dict[str, int] = {
 }
 
 TagsCsvFormat = str  # "pixai6col" | "simple3col" | "wd4col" | "idx_json" | "camie_metadata_json"
-
-def _config_mapping(config: Any, *keys: str) -> dict[str, Any]:
-    """Local mirror of model_registry.config_mapping (importing that module at import
-    time would be circular). Walks nested keys, yielding {} for a missing/null level."""
-    current = config
-    for key in keys:
-        if not isinstance(current, dict):
-            return {}
-        current = current.get(key)
-    return current if isinstance(current, dict) else {}
-
 
 def _resolve_category(category_str: str) -> int | None:
     try:
@@ -572,7 +561,7 @@ def build_inference_config(model_config: dict[str, Any]) -> InferenceConfig:
     (PixAI-matching) default, so a partially-specified model_config.json is safe.
     """
     inference = model_config.get("inference", {})
-    tags_csv = _config_mapping(model_config, "tags_csv")
+    tags_csv = config_mapping(model_config, "tags_csv")
     defaults = InferenceConfig()
 
     def _tuple3(value: Any) -> tuple[float, float, float] | None:
@@ -630,23 +619,30 @@ def setup_tagger_from_settings(app_settings: AppSettings, get_string: GetString 
             # Models whose tag-metadata file isn't named selected_tags*.csv (camie's
             # own metadata JSON, cl_tagger's tag_mapping.json) must say so explicitly -
             # discover_labels_csv()'s glob would never find them otherwise.
-            tags_file_name = _config_mapping(entry.config, "tags_csv").get("file_name")
+            tags_file_name = config_mapping(entry.config, "tags_csv").get("file_name")
             if tags_file_name:
                 tags_csv_path = entry.model_dir / tags_file_name
 
-        # Per-category thresholds / limits. Only the categories this model actually
-        # produces (ui.categories, default: general + character) are passed; a limit
-        # of 0 means "emit nothing from this category". Passing an explicit limit for
-        # every listed category keeps hard_cap well-defined and stops an unset
-        # category from being treated as unbounded.
-        ui_cfg = _config_mapping(entry.config, "ui") if entry is not None else {}
+        # Per-category thresholds / limits.
+        #
+        # EVERY category is seeded as "blocked" (threshold above any possible score,
+        # limit 0) and only the categories this model declares in ui.categories are then
+        # given the user's settings. Leaving a category out of these dicts is NOT safe:
+        # infer_batch_prepared() falls back to the general threshold for an unlisted
+        # category and treats a missing limit as unbounded, and filter_tags_by_solo_rule()
+        # now passes non-general/character predictions straight through - so an undeclared
+        # category would silently reach the output file with no user-visible control.
+        ui_cfg = config_mapping(entry.config, "ui") if entry is not None else {}
         model_categories: list[str] = list(ui_cfg.get("categories", ["general", "character"]))
-        tag_thresholds: dict[TagCategory, float] = {}
-        max_tags_per_category: dict[TagCategory, int] = {}
+        tag_thresholds: dict[TagCategory, float] = {cat: 1.1 for cat in TagCategory}
+        max_tags_per_category: dict[TagCategory, int] = {cat: 0 for cat in TagCategory}
+        declared: set[TagCategory] = set()
         for name in model_categories:
             cat = CATEGORY_NAME_TO_ENUM.get(name)
             if cat is None:
+                log_dbg(f"setup_tagger_from_settings: model '{model_id}' declares unknown category {name!r}; ignoring.")
                 continue
+            declared.add(cat)
             tag_thresholds[cat] = float(getattr(app_settings.thresholds, name, app_settings.thresholds.general))
             max_tags_per_category[cat] = int(getattr(app_settings.limits, name, 0))
 
@@ -659,6 +655,16 @@ def setup_tagger_from_settings(app_settings: AppSettings, get_string: GetString 
             'CONVERT_UNDERSCORE': app_settings.behavior.convert_underscore_to_space,
         }
         tagger = OnnxTagger(model_path=settings_dict['MODEL_PATH'], tags_csv=tags_csv_path, get_string=_get_string_internal, inference_config=inference_config)
+
+        # Surface a model_config.json whose ui.categories does not cover what its tag file
+        # actually contains: those tags are blocked above (limit 0), so without this log
+        # the omission would be invisible.
+        undeclared = {TagCategory(t.category) for t in tagger.tags} - declared
+        if undeclared:
+            log_dbg(f"setup_tagger_from_settings: model '{model_id}' has tags in "
+                    f"{sorted(c.name for c in undeclared)} but does not declare them in "
+                    f"ui.categories - those tags will not be emitted.")
+
         return tagger, settings_dict
     except Exception as e:
         log_dbg(f"Error during Tagger initialization: {type(e).__name__}: {e}")

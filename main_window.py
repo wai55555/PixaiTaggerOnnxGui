@@ -196,6 +196,9 @@ class MainWindow(QMainWindow):
         # Set True while pushing model-default / dialog values into the main sliders so
         # their valueChanged handler doesn't mis-flag those as user edits ("touched").
         self._suppress_slider_touch: bool = False
+        # False while a download/tagging run holds the UI lock; consulted by
+        # _update_undo_redo_buttons so a mid-run action push cannot re-enable Undo.
+        self._controls_enabled: bool = True
         self._category_settings_dialog: QDialog | None = None
         self._image_viewer_dialog: ImageViewerDialog | None = None
         
@@ -223,7 +226,9 @@ class MainWindow(QMainWindow):
 
     def initial_load(self):
         """Performs the initial loading of images and tags after the main window is shown."""
-        self.tag_translation_map = load_tag_translation_map(constants.MODEL_PATH.parent)
+        self.tag_translation_map = load_tag_translation_map(constants.MODEL_PATH.parent,
+                                                       constants.MODELS_DIR / constants.MODEL_DIR_NAME,
+                                                       constants.MODELS_RESOURCE_DIR / constants.MODEL_DIR_NAME)
         self.reload_image_list()
         self.reload_tags_only()
         self._update_undo_redo_buttons()
@@ -680,6 +685,7 @@ class MainWindow(QMainWindow):
             # Commit a pending caption edit before locking the editor, so it isn't lost
             # (and can't race the worker that is about to rewrite the same .txt).
             self._save_current_caption()
+        self._controls_enabled = enabled
         self.input_line.setEnabled(enabled)
         self.grid_view_button.setEnabled(enabled)
         self.image_list.setEnabled(enabled)
@@ -687,8 +693,12 @@ class MainWindow(QMainWindow):
         # settings/UI away from the model the active worker is using.
         self.model_combo.setEnabled(enabled)
         self.task_combo.setEnabled(enabled)
-        # The captioner worker rewrites the same .txt files - an editable box would race it.
+        # The worker rewrites the same .txt files, so every path that can also write them
+        # has to be locked: the main caption box, the grid-view cells, and Undo/Redo.
         self.caption_text_edit.setEnabled(enabled)
+        self.grid_view_widget.set_editing_enabled(enabled)
+        self.undo_button.setEnabled(enabled and self.undo_manager.can_undo())
+        self.redo_button.setEnabled(enabled and self.undo_manager.can_redo())
         self._set_bulk_controls_enabled(enabled)
 
     def _set_bulk_controls_enabled(self, enabled: bool):
@@ -1203,7 +1213,9 @@ class MainWindow(QMainWindow):
 
         if not self.tag_translation_map:
             # The worker may have just fetched PixAI's selected_tags.csv on our behalf.
-            self.tag_translation_map = load_tag_translation_map(constants.MODEL_PATH.parent)
+            self.tag_translation_map = load_tag_translation_map(constants.MODEL_PATH.parent,
+                                                       constants.MODELS_DIR / constants.MODEL_DIR_NAME,
+                                                       constants.MODELS_RESOURCE_DIR / constants.MODEL_DIR_NAME)
             self.grid_view_widget.set_tag_display_language(self._tag_display_language, self.tag_translation_map)
 
         self.reload_image_list(auto_select_path=path_to_reselect)
@@ -1231,7 +1243,9 @@ class MainWindow(QMainWindow):
             self._check_model_status_and_update_ui() # On success, check status to show "TAG" button
             
             # Reload tag translation map as files are now available
-            self.tag_translation_map = load_tag_translation_map(constants.MODEL_PATH.parent)
+            self.tag_translation_map = load_tag_translation_map(constants.MODEL_PATH.parent,
+                                                       constants.MODELS_DIR / constants.MODEL_DIR_NAME,
+                                                       constants.MODELS_RESOURCE_DIR / constants.MODEL_DIR_NAME)
             
             # Update UI with new translation map
             self.display_current_tag_page()
@@ -1605,8 +1619,8 @@ class MainWindow(QMainWindow):
         can_undo = self.undo_manager.can_undo()
         can_redo = self.undo_manager.can_redo()
         
-        self.undo_button.setEnabled(can_undo)
-        self.redo_button.setEnabled(can_redo)
+        self.undo_button.setEnabled(can_undo and self._controls_enabled)
+        self.redo_button.setEnabled(can_redo and self._controls_enabled)
         
         if can_undo:
             desc = self.undo_manager.get_undo_description()

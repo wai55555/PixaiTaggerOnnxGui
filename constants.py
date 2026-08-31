@@ -1,3 +1,4 @@
+import os
 import shutil
 import sys
 from pathlib import Path
@@ -62,7 +63,17 @@ def _seed_bundled_model_files() -> None:
         if dest.exists():
             continue
         dest.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(src, dest)
+        # Copy to a sibling temp file and rename into place: os.replace() is atomic on the
+        # same volume, so an interrupted startup can never leave a truncated
+        # model_config.json behind. A partial file would otherwise satisfy the
+        # `dest.exists()` check above forever and hide that model from the picker.
+        tmp = dest.with_name(dest.name + ".part")
+        try:
+            shutil.copy2(src, tmp)
+            os.replace(tmp, dest)
+        finally:
+            if tmp.exists():
+                tmp.unlink(missing_ok=True)
 
 
 try:

@@ -75,3 +75,20 @@ def calculate_sha256(file_path: Path, chunk_size: int = 8192) -> str:
         return sha256.hexdigest()
     except (FileNotFoundError, OSError):
         return ""
+
+
+def config_mapping(config: Any, *keys: str) -> dict[str, Any]:
+    """Walks `config` through `keys`, returning {} as soon as anything is not a mapping.
+
+    model_config.json is hand-authored, so a key may be present but null (`"network":
+    null`) - plain `cfg.get("network", {}).get("files", {})` raises AttributeError in
+    that case, which would abort discover_models() entirely instead of skipping one
+    bad manifest. Lives here (a leaf module both model_registry and tagging_core already
+    import) so there is exactly one implementation to keep correct.
+    """
+    current = config
+    for key in keys:
+        if not isinstance(current, dict):
+            return {}
+        current = current.get(key)
+    return current if isinstance(current, dict) else {}

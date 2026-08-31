@@ -49,7 +49,9 @@ class ModelModeController:
     def _reload_translation_map(self, entry: ModelEntry) -> None:
         """Regardless of which model is currently selected, look up by tag name from there."""
         mw = self.mw
-        mw.tag_translation_map = load_tag_translation_map(constants.MODEL_PATH.parent)
+        mw.tag_translation_map = load_tag_translation_map(constants.MODEL_PATH.parent,
+                                                       constants.MODELS_DIR / constants.MODEL_DIR_NAME,
+                                                       constants.MODELS_RESOURCE_DIR / constants.MODEL_DIR_NAME)
         mw.display_current_tag_page()
         mw._display_image_tag_page()
         mw.grid_view_widget.set_tag_display_language(mw._tag_display_language, mw.tag_translation_map)
