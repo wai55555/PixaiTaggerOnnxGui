@@ -1,0 +1,44 @@
+{
+  "model_id": "wd_eva02_large_v3",
+  "model_name": "wd-eva02-large-tagger-v3",
+  "model_type": "tagger",
+  "license": "Apache-2.0",
+  "network": {
+    "files": {
+      "model.onnx": "https://huggingface.co/SmilingWolf/wd-eva02-large-tagger-v3/resolve/main/model.onnx",
+      "selected_tags.csv": "https://huggingface.co/SmilingWolf/wd-eva02-large-tagger-v3/resolve/main/selected_tags.csv"
+    },
+    "hash_verified_file": "model.onnx"
+  },
+  "inference": {
+    "input_size": 448,
+    "layout": "nhwc",
+    "channel_order": "bgr",
+    "rescale_to_unit": false,
+    "pad_color_rgb": [
+      255,
+      255,
+      255
+    ],
+    "normalize_mean": null,
+    "normalize_std": null,
+    "extra_inputs": [],
+    "output_name": "output",
+    "output_activation": "none"
+  },
+  "tags_csv": {
+    "format": "wd4col",
+    "default_category": "general"
+  },
+  "ui": {
+    "supports_character_tag": true,
+    "supports_threshold_slider": true,
+    "default_threshold": 0.35,
+    "default_character_threshold": 0.85,
+    "categories": [
+      "general",
+      "character",
+      "rating"
+    ]
+  }
+}

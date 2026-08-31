@@ -50,36 +50,59 @@ def remove_tag_from_file(txt_path: Path, tag_to_remove: str) -> bool:
         return True
     return False
 
-def load_tag_translation_map(
-    english_csv_path: Path, 
-    japanese_csv_path: Path, 
-    french_csv_path: Path, 
-    german_csv_path: Path, 
-    spanish_csv_path: Path, 
-    russian_csv_path: Path, 
-    zh_cn_csv_path: Path, 
-    zh_tw_csv_path: Path, 
-    korean_csv_path: Path
-    ) -> dict[str, list[str]]:
+# Must match the shipped filenames exactly (selected_tags_zh_CN.csv / _zh_TW.csv) -
+# on a case-sensitive filesystem the lowercase forms silently fail to load.
+_TRANSLATION_LANGUAGE_SUFFIXES = ["jp", "fr", "de", "es", "ru", "zh_CN", "zh_TW", "ko"]
+
+def load_tag_translation_map(model_dir: Path, *fallback_dirs: Path | None) -> dict[str, list[str]]:
     """
-    すべての言語のCSVを読み込み、英語タグをキー、各言語の翻訳リストを値とする辞書を作成します。
+    指定されたディレクトリの `selected_tags.csv`（英語, PixAI形式）を基準に、
+    `selected_tags_<lang>.csv` が存在する言語だけ翻訳を持たせた辞書を作る。
     戻り値の形式: { 'english_tag': ['Japanese', 'French', 'German', 'Spanish', 'Russian', 'Zh_CN', 'Zh_TW', 'Korean'] }
-    
+
+    キーはタグ名文字列そのものなので、この辞書はPixAI以外のモデルのタグにも
+    そのままlookupできる（2026-08-31、design.md 6.7節改訂）。呼び出し側
+    （main_window.py / model_mode_controller.py）は常にPixAI自身のディレクトリ
+    （`constants.MODEL_PATH.parent`）を渡す運用にし、モデルごとに翻訳CSVを
+    個別管理することはしない。danbooru系タグ語彙はモデル間でかなり重複するため
+    大半のタグは翻訳が効き、PixAI側に無いタグ（他モデル固有の語彙）は英語表示に
+    フォールバックする。
+
+    以前は9ファイル全部が揃っていないと（1つでも欠けると）全言語分を空で返す
+    「全部か無か」のゲートだったが、言語ごとに独立して存在チェックする方式に
+    変更した。存在しない言語の翻訳は英語タグ名でフォールバックする。
+
     CSVファイルの構造:
-    - English: id,tag_id,name,category,count,ips (nameが3列目、インデックス2)
-    - Japanese: japanese tag (1列目、インデックス0)
-    - その他の言語: id,name (nameが2列目、インデックス1)
+    - English (selected_tags.csv): id,tag_id,name,category,count,ips (nameが3列目、インデックス2)
+    - 各言語 (selected_tags_<lang>.csv): 1列目（インデックス0）に翻訳が格納されている
     """
     mapping: dict[str, list[str]] = {}
-    
-    # 全てのパスが存在するか確認
-    paths = [english_csv_path, japanese_csv_path, french_csv_path, german_csv_path, 
-             spanish_csv_path, russian_csv_path, zh_cn_csv_path, zh_tw_csv_path, korean_csv_path]
-    
-    for p in paths:
-        if not p.is_file():
-            print(f"File not found: {p}")
-            return mapping
+
+    # 探索先は「渡されたディレクトリ → fallback_dirs」の順。frozen ビルドでは同梱CSVが
+    # models/pixai-tagger-v0.9 に配置される一方、旧レイアウトのインストールでは
+    # MODEL_PATH.parent が pixai-tagger-v0.9-onnx/ を指すことがあり、両者が食い違う。
+    # ファイル単位でフォールバックすることで、配置がどちらでも翻訳が効く。
+    search_dirs: list[Path] = [model_dir]
+    for extra in fallback_dirs:
+        if extra is not None and extra not in search_dirs:
+            search_dirs.append(extra)
+
+    def _find(file_name: str) -> Path | None:
+        for directory in search_dirs:
+            candidate = directory / file_name
+            if candidate.is_file():
+                return candidate
+        return None
+
+    english_csv_path = _find("selected_tags.csv")
+    if english_csv_path is None:
+        return mapping
+
+    language_paths = [_find(f"selected_tags_{suffix}.csv") for suffix in _TRANSLATION_LANGUAGE_SUFFIXES]
+    if not any(p is not None for p in language_paths):
+        # このモデルには翻訳ファイルが一切無い（PixAI以外の全モデルはこちらに該当する）。
+        # 呼び出し側は空辞書に対して英語タグへフォールバックするので、これ以上何もしなくてよい。
+        return mapping
 
     try:
         # 英語版CSVを読み込む（ベースとなる）
@@ -92,35 +115,24 @@ def load_tag_translation_map(
                     # 3列目（インデックス2）がタグ名、アンダースコアをスペースに変換
                     tag = row[2].strip().replace('_', ' ')
                     english_tags.append(tag)
-        
-        # 各翻訳ファイルを読み込む
-        # すべての翻訳ファイルは1列目（インデックス0）に翻訳が格納されている
-        translation_files = [
-            (japanese_csv_path, 0),
-            (french_csv_path, 0),
-            (german_csv_path, 0),
-            (spanish_csv_path, 0),
-            (russian_csv_path, 0),
-            (zh_cn_csv_path, 0),
-            (zh_tw_csv_path, 0),
-            (korean_csv_path, 0)
-        ]
-        
-        all_translations = []
-        for trans_path, col_index in translation_files:
-            translations = []
-            with open(trans_path, 'r', encoding='utf-8') as f:
-                reader = csv.reader(f)
-                next(reader)  # ヘッダーをスキップ
-                for row in reader:
-                    if len(row) > col_index:
-                        # カンマで終わる場合は削除
-                        trans = row[col_index].strip().rstrip(',')
-                        translations.append(trans if trans else '')
-                    else:
-                        translations.append('')
+
+        # 各翻訳ファイルを読み込む（存在しないファイルは空リストのまま＝全行フォールバック）
+        all_translations: list[list[str]] = []
+        for lang_path in language_paths:
+            translations: list[str] = []
+            if lang_path is not None:
+                with open(lang_path, 'r', encoding='utf-8') as f:
+                    reader = csv.reader(f)
+                    next(reader)  # ヘッダーをスキップ
+                    for row in reader:
+                        if len(row) > 0:
+                            # カンマで終わる場合は削除
+                            trans = row[0].strip().rstrip(',')
+                            translations.append(trans if trans else '')
+                        else:
+                            translations.append('')
             all_translations.append(translations)
-        
+
         # 英語タグと翻訳を対応付ける
         for i, en_tag in enumerate(english_tags):
             if en_tag:
@@ -132,10 +144,10 @@ def load_tag_translation_map(
                         # データがない場合は英語タグをそのまま使用
                         trans_list.append(en_tag)
                 mapping[en_tag] = trans_list
-                    
+
     except Exception as e:
         print(f"Error loading tag translations: {e}")
         import traceback
         traceback.print_exc()
-        
+
     return mapping

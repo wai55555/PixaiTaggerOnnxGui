@@ -1,0 +1,63 @@
+{
+  "model_id": "cl_tagger_v2_01a",
+  "model_name": "cl_tagger v2_01a",
+  "model_type": "tagger",
+  "license": "CL-Tagger-v2-Model-License-v1.0",
+  "manual_download": true,
+  "network": {
+    "files": {
+      "model.onnx": "https://huggingface.co/cella110n/cl_tagger_v2/resolve/main/v2_01a/model.onnx",
+      "model.onnx.data": "https://huggingface.co/cella110n/cl_tagger_v2/resolve/main/v2_01a/model.onnx.data",
+      "model_vocabulary.json": "https://huggingface.co/cella110n/cl_tagger_v2/resolve/main/v2_01a/model_vocabulary.json"
+    },
+    "hash_verified_file": [
+      "model.onnx",
+      "model.onnx.data"
+    ],
+    "_note": "cella110n/cl_tagger_v2 is a gated repo (license click-through) and 'v2_01a' is a provisional build overwritten in place. The in-app downloader sends no HF auth token, so \"manual_download\": true keeps this entry hidden from the model picker until the user has accepted the license on Hugging Face and placed every file above into this directory by hand. The URLs are kept only to document the source. model_metadata.json / model_ood_ref.npz / model_tag_metrics.npz from the same folder are not needed for inference."
+  },
+  "inference": {
+    "input_size": 384,
+    "layout": "nchw",
+    "channel_order": "rgb",
+    "rescale_to_unit": true,
+    "pad_color_rgb": [
+      255,
+      255,
+      255
+    ],
+    "normalize_mean": [
+      0.5,
+      0.5,
+      0.5
+    ],
+    "normalize_std": [
+      0.5,
+      0.5,
+      0.5
+    ],
+    "extra_inputs": [],
+    "output_name": "logits",
+    "output_activation": "sigmoid",
+    "_note": "From the model card: SigLIP2 SoViT-400m/14 @ fixed 384px, pixel_values [B,3,384,384], SigLIP2 normalization mean=std=0.5, output 'logits' -> sigmoid. SigLIP2's reference preprocessing is a non-aspect-preserving resize to 384x384; this pipeline instead does an aspect-preserving resize + centre pad (white), same as cl_tagger_1_02. Re-verify against labeled images once the gated files are in place."
+  },
+  "tags_csv": {
+    "format": "idx_json",
+    "file_name": "model_vocabulary.json",
+    "default_category": "general",
+    "_note": "model_vocabulary.json is gated and unverified. The idx_json loader now auto-detects several shapes: v1 {\"<idx>\":{\"tag\",\"category\"}}, a v2-style root {\"idx_to_tag\":{...},\"tag_to_category\":{...}}, and a flat [{\"tag\",\"category\"}] list. If the real file matches none of these, add a dedicated parser. v2 vocab categories: General/Character/Copyright/Meta/Rating/Quality (no Artist, no Model)."
+  },
+  "ui": {
+    "supports_character_tag": true,
+    "supports_threshold_slider": true,
+    "default_threshold": 0.5,
+    "categories": [
+      "general",
+      "character",
+      "copyright",
+      "rating",
+      "meta",
+      "quality"
+    ]
+  }
+}
