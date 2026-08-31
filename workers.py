@@ -536,9 +536,11 @@ class CaptionerThreadWorker(QObject):
 
             self.log_message.emit(self.get_string("Workers", "TaggerThreadWorker_Loading_Model"), "black")
 
-            # Whichever model is tagging, tag translations are looked up against PixAI's
-            # selected_tags.csv - grab it here if a previous run never pulled it in.
-            ensure_pixai_tags_csv(self.get_string, self.log_message.emit, self.is_stopped)
+            # No ensure_pixai_tags_csv() here on purpose: captions are free text and never
+            # go through the tag translation map, so fetching it would be unrelated network
+            # work - and because a failed fetch writes nothing, it would be retried (and pay
+            # the connect/read timeout) on every captioning run. The tagger worker and the
+            # downloader still fetch it, covering every path that actually needs it.
 
             input_dir = Path(settings_dict['INPUT_DIR'])
             image_paths = get_image_paths_recursive(input_dir)
