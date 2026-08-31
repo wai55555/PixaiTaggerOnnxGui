@@ -4,12 +4,13 @@ from typing import List
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
     QPushButton, QGridLayout, QSizePolicy, QScrollArea, QFrame, QToolTip,
-    QApplication
+    QApplication, QTextEdit
 )
-from PySide6.QtCore import Qt, Signal, Slot, QRect, QObject, QEvent
+from PySide6.QtCore import Qt, Signal, Slot, QRect, QObject, QEvent, QTimer
 from PySide6.QtGui import QPixmap, QWheelEvent, QResizeEvent
 
 import tag_utils
+from utils import write_debug_log
 from locale_manager import LocaleManager
 from app_settings import AppSettings
 from custom_dialogs import ClickableLabel, ImageViewerDialog
@@ -55,6 +56,8 @@ class ImageEditCellWidget(QWidget):
     # Signals for undo/redo
     tags_added = Signal(Path, list)  # (file_path, added_tags)
     tag_removed = Signal(Path, str, int)  # (file_path, removed_tag, original_index)
+    caption_edited = Signal(Path, str, str, bool)  # (txt_path, old_text, new_text, file_existed_before)
+    caption_save_failed = Signal(str)        # error text - surfaced in the main log
     # Signals for tag hover highlight
     tag_hovered = Signal(str)       # ホバー開始: タグ名を渡す
     tag_hover_cleared = Signal()    # ホバー解除
@@ -66,10 +69,12 @@ class ImageEditCellWidget(QWidget):
         self.tag_buttons: List[QPushButton] = []
         self._current_tag_page = 0
         self._global_index = -1  # To store the image's index in the main list
-        
+
         self.tag_translation_map: dict[str, list[str]] = {}
         self._tag_display_language: str = "English"
         self._search_text: str = ""
+        self._caption_mode: bool = False
+        self._caption_loaded_text: str = ""
 
         self.setMinimumSize(300, 300)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
@@ -123,7 +128,24 @@ class ImageEditCellWidget(QWidget):
         add_tag_layout.addWidget(self.add_tag_line)
         add_tag_layout.addWidget(add_button)
         tag_layout.addLayout(add_tag_layout)
+        self._tag_area_widget = tag_area_widget
         layout.addWidget(tag_area_widget, 1)
+
+        # Captioner-mode counterpart of the tag area: a single free-text editor bound to
+        # the image's .txt file, saved on focus-out. Hidden unless set_caption_mode(True).
+        self.caption_edit = QTextEdit()
+        self.caption_edit.setPlaceholderText(
+            self.locale_manager.get_string("GridView", "Caption_Placeholder"))
+        self.caption_edit.installEventFilter(self)
+        self.caption_edit.hide()
+        layout.addWidget(self.caption_edit, 1)
+        # Autosave ~1.2s after the last keystroke (mirrors MainWindow's caption editor),
+        # so the edit commits and Undo becomes available without waiting for focus-out.
+        self._caption_save_timer = QTimer(self)
+        self._caption_save_timer.setSingleShot(True)
+        self._caption_save_timer.setInterval(1200)
+        self._caption_save_timer.timeout.connect(self._save_caption)
+        self.caption_edit.textChanged.connect(self._caption_save_timer.start)
 
     # --- ADDED: Slot to handle the double click and emit the request ---
     @Slot()
@@ -134,6 +156,25 @@ class ImageEditCellWidget(QWidget):
     # --- MODIFIED: load_data now accepts the global index ---
     def load_data(self, image_path: Path, global_index: int):
         prev_path = self._image_path
+        if self._caption_mode:
+            # Flush a pending debounced edit for the outgoing image before switching.
+            if prev_path is not None and prev_path != image_path:
+                self._save_caption()
+            # Reload the .txt unless the user has unsaved edits for this same image.
+            # Skipping only while "dirty" protects text being typed during a re-render
+            # (resize, page refresh) while still picking up external changes - notably
+            # Undo/Redo, which rewrites the file and then refreshes the page. Keeping the
+            # stale editor there would let the next autosave write the undone text back.
+            is_dirty = self.caption_edit.toPlainText() != self._caption_loaded_text
+            self._image_path = image_path
+            self._global_index = global_index
+            self._rescale_image()
+            if prev_path != image_path:
+                self._current_tag_page = 0
+                self._load_caption_text()
+            elif not is_dirty:
+                self._load_caption_text()
+            return
         self._image_path = image_path
         self._global_index = global_index
         # 同じ画像の場合はタグページを保持、異なる画像の場合のみリセット
@@ -158,19 +199,85 @@ class ImageEditCellWidget(QWidget):
     # ... (rest of the class is unchanged) ...
     def resizeEvent(self, event: QResizeEvent):
         super().resizeEvent(event)
-        self._update_tag_display()
-    def _update_tag_display(self):
+        if self._caption_mode:
+            # Only rescale the image - never reload the .txt here, or a caption still in
+            # the autosave debounce window would be discarded on every resize.
+            self._rescale_image()
+        else:
+            self._update_tag_display()
+    def _rescale_image(self):
         if self._image_path and self.image_label.width() > 0 and self.image_label.height() > 0:
             pixmap = QPixmap(str(self._image_path))
             if not pixmap.isNull():
-                scaled_pixmap = pixmap.scaled(self.image_label.size(), 
-                                              Qt.AspectRatioMode.KeepAspectRatio, 
+                scaled_pixmap = pixmap.scaled(self.image_label.size(),
+                                              Qt.AspectRatioMode.KeepAspectRatio,
                                               Qt.TransformationMode.SmoothTransformation)
                 self.image_label.setPixmap(scaled_pixmap)
+
+    def _load_caption_text(self):
+        """Captioner mode: load the image's .txt as free text into caption_edit."""
+        self._caption_save_timer.stop()
+        if not self._image_path:
+            self.caption_edit.blockSignals(True)
+            self.caption_edit.clear()
+            self.caption_edit.blockSignals(False)
+            self._caption_loaded_text = ""
+            return
+        txt_path = tag_utils.get_txt_path(self._image_path)
+        text = ""
+        try:
+            if txt_path.is_file():
+                text = txt_path.read_text(encoding="utf-8")
+        except Exception:
+            text = ""
+        self.caption_edit.blockSignals(True)
+        self.caption_edit.setPlainText(text)
+        self.caption_edit.blockSignals(False)
+        self._caption_loaded_text = text
+
+    def _save_caption(self):
+        """Captioner mode: write caption_edit back to the .txt (focus-out or autosave); emit for undo."""
+        self._caption_save_timer.stop()
+        if not self._caption_mode or not self._image_path:
+            return
+        txt_path = tag_utils.get_txt_path(self._image_path)
+        new_text = self.caption_edit.toPlainText()
+        existed_before = txt_path.is_file()
+        old_text = ""
+        try:
+            if existed_before:
+                old_text = txt_path.read_text(encoding="utf-8")
+        except Exception:
+            old_text = ""
+        if new_text == old_text:
+            return
+        try:
+            txt_path.write_text(new_text, encoding="utf-8")
+        except Exception as e:
+            write_debug_log(f"grid caption save failed for {txt_path.name}: {type(e).__name__}: {e}")
+            self.caption_save_failed.emit(f"{txt_path.name}: {type(e).__name__}: {e}")
+            return
+        self._caption_loaded_text = new_text
+        self.caption_edited.emit(txt_path, old_text, new_text, existed_before)
+
+    def set_caption_mode(self, on: bool):
+        # Flush a pending caption edit while the save path is still active.
+        if self._caption_mode and not on:
+            self._save_caption()
+        self._caption_mode = on
+        self._tag_area_widget.setVisible(not on)
+        self.caption_edit.setVisible(on)
+        self._update_tag_display()
+
+    def _update_tag_display(self):
+        self._rescale_image()
+        if self._caption_mode:
+            self._load_caption_text()
+            return
         for btn in self.tag_buttons:
             btn.deleteLater()
         self.tag_buttons.clear()
-        if not self._image_path: 
+        if not self._image_path:
             self.prev_tag_page_btn.setEnabled(False)
             self.next_tag_page_btn.setEnabled(False)
             return
@@ -278,6 +385,10 @@ class ImageEditCellWidget(QWidget):
             self._update_tag_display()
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:
         """Filters events from watched objects to handle right-click and hover on tag buttons."""
+        if watched is self.caption_edit and event.type() == QEvent.Type.FocusOut:
+            self._save_caption()
+            return False
+
         if event.type() == QEvent.Type.MouseButtonRelease:
             from PySide6.QtGui import QMouseEvent
             assert isinstance(event, QMouseEvent)
@@ -322,22 +433,40 @@ class ImageEditCellWidget(QWidget):
         self.tag_buttons.clear()
         self.prev_tag_page_btn.setEnabled(False)
         self.next_tag_page_btn.setEnabled(False)
+        self.caption_edit.blockSignals(True)
+        self.caption_edit.clear()
+        self.caption_edit.blockSignals(False)
+        self._caption_loaded_text = ""
 
     def set_tag_display_language(self, language: str, translation_map: dict[str, list[str]]):
         self._tag_display_language = language
         self.tag_translation_map = translation_map
         self._update_tag_display()
 
+    def set_editing_enabled(self, enabled: bool):
+        """Lock the cell's editing widgets while a worker rewrites the same .txt files.
+        The image and its tag/caption text stay visible - only edits are blocked."""
+        if not enabled:
+            # Commit anything still inside the autosave debounce before locking.
+            self._save_caption()
+        self._tag_area_widget.setEnabled(enabled)
+        self.caption_edit.setReadOnly(not enabled)
+
     def set_search_text(self, text: str):
         """検索文字列を設定し、タグ表示を更新する。"""
         self._search_text = text
-        self._update_tag_display()
+        # In caption mode the search bar is hidden and irrelevant; skipping the refresh
+        # here avoids reloading the .txt (and losing an unsaved edit) on every page render.
+        if not self._caption_mode:
+            self._update_tag_display()
 
 class GridViewWidget(QWidget):
     back_to_main_requested = Signal()
     # Signals for undo/redo
     tags_added = Signal(Path, list)  # (file_path, added_tags)
     tag_removed = Signal(Path, str, int)  # (file_path, removed_tag, original_index)
+    caption_edited = Signal(Path, str, str, bool)  # (txt_path, old_text, new_text, file_existed_before)
+    caption_save_failed = Signal(str)
     # Signals for tag hover highlight
     tag_hovered = Signal(str)
     tag_hover_cleared = Signal()
@@ -352,6 +481,8 @@ class GridViewWidget(QWidget):
         self._tag_cache: dict[str, set[str]] = {}
         self._search_text: str = ""
         self._base_dir: Path | None = None
+        self._caption_mode: bool = False
+        self._editing_enabled: bool = True
         self.cells: List[ImageEditCellWidget] = []
         
         # --- ADDED: State management for the dialog ---
@@ -392,6 +523,8 @@ class GridViewWidget(QWidget):
             # Connect undo/redo signals
             cell.tags_added.connect(self.tags_added.emit)
             cell.tag_removed.connect(self.tag_removed.emit)
+            cell.caption_edited.connect(self.caption_edited.emit)
+            cell.caption_save_failed.connect(self.caption_save_failed.emit)
             cell.tag_hovered.connect(self.tag_hovered.emit)
             cell.tag_hover_cleared.connect(self.tag_hover_cleared.emit)
             self.cells.append(cell)
@@ -449,9 +582,22 @@ class GridViewWidget(QWidget):
         self._current_page = 0
         self._display_page()
 
+    def set_caption_mode(self, on: bool):
+        """Switch every cell between tag-editing and free-text caption editing.
+        The tag search bar is tag-based, so it is hidden in caption mode."""
+        self._caption_mode = on
+        self.search_line_edit.setVisible(not on)
+        if on:
+            self._search_text = ""
+            self.search_line_edit.clear()
+        for cell in self.cells:
+            cell.set_caption_mode(on)
+        self._apply_filter()
+        self._display_page()
+
     def _apply_filter(self):
         """_search_text と _tag_cache を使って _filtered_image_paths を生成する。"""
-        if not self._search_text or not self._tag_cache or self._base_dir is None:
+        if self._caption_mode or not self._search_text or not self._tag_cache or self._base_dir is None:
             self._filtered_image_paths = list(self._image_paths)
         else:
             self._filtered_image_paths = filter_images_by_tag(
@@ -576,10 +722,24 @@ class GridViewWidget(QWidget):
         for cell in self.cells:
             cell.set_tag_display_language(language, translation_map)
     
+    def set_editing_enabled(self, enabled: bool):
+        """Called while a tagging/captioning run is active. Deliberately leaves the
+        "back to main view" button and the page navigation alive so the user is not
+        trapped in the grid - only the controls that write .txt files are locked."""
+        self._editing_enabled = enabled
+        for cell in self.cells:
+            cell.set_editing_enabled(enabled)
+        if not enabled:
+            # Only force them off here. Turning editing back on must NOT read the buttons'
+            # own disabled state (that can never recover) - MainWindow re-drives them from
+            # the UndoManager via update_undo_redo_buttons().
+            self.undo_button.setEnabled(False)
+            self.redo_button.setEnabled(False)
+
     def update_undo_redo_buttons(self, can_undo: bool, can_redo: bool, undo_desc: str, redo_desc: str):
         """Updates the enabled state and tooltips of undo/redo buttons in grid view."""
-        self.undo_button.setEnabled(can_undo)
-        self.redo_button.setEnabled(can_redo)
+        self.undo_button.setEnabled(can_undo and self._editing_enabled)
+        self.redo_button.setEnabled(can_redo and self._editing_enabled)
         
         if can_undo:
             self.undo_button.setToolTip(self.locale_manager.get_string("MainWindow", "Undo_Action", desc=undo_desc))

@@ -1,0 +1,45 @@
+{
+  "model_id": "wd14_convnextv2",
+  "model_name": "wd-14 (convnextv2-tagger-v2)",
+  "model_type": "tagger",
+  "license": "Apache-2.0",
+  "network": {
+    "files": {
+      "model.onnx": "https://huggingface.co/SmilingWolf/wd-v1-4-convnextv2-tagger-v2/resolve/main/model.onnx",
+      "selected_tags.csv": "https://huggingface.co/SmilingWolf/wd-v1-4-convnextv2-tagger-v2/resolve/main/selected_tags.csv"
+    },
+    "hash_verified_file": "model.onnx"
+  },
+  "inference": {
+    "input_size": 448,
+    "layout": "nhwc",
+    "channel_order": "bgr",
+    "rescale_to_unit": false,
+    "pad_color_rgb": [
+      255,
+      255,
+      255
+    ],
+    "normalize_mean": null,
+    "normalize_std": null,
+    "extra_inputs": [],
+    "output_name": "predictions_sigmoid",
+    "output_activation": "none",
+    "_note": "Verified 2026-08-31 against the real model.onnx via onnxruntime: input 'input_1:0' [1,448,448,3] (NHWC), single output 'predictions_sigmoid' [1,9083] (sigmoid already applied in-graph). The wd-v1-4 Keras/TF export names its output differently from the wd_eva02_* timm exports ('output')."
+  },
+  "tags_csv": {
+    "format": "wd4col",
+    "default_category": "general"
+  },
+  "ui": {
+    "supports_character_tag": true,
+    "supports_threshold_slider": true,
+    "default_threshold": 0.35,
+    "default_character_threshold": 0.85,
+    "categories": [
+      "general",
+      "character",
+      "rating"
+    ]
+  }
+}

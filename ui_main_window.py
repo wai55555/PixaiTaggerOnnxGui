@@ -14,6 +14,7 @@ from PySide6.QtGui import (
 
 
 import constants
+import model_registry
 
 from custom_widgets import PathLineEdit, TagListWidget
 from custom_dialogs import ClickableLabel
@@ -68,6 +69,8 @@ class Ui_MainWindow(object):
         main_window.grid_view_widget.redo_button.clicked.connect(main_window._perform_redo)  # type: ignore
         main_window.grid_view_widget.tags_added.connect(main_window._on_gridview_tags_added)  # type: ignore
         main_window.grid_view_widget.tag_removed.connect(main_window._on_gridview_tag_removed)  # type: ignore
+        main_window.grid_view_widget.caption_edited.connect(main_window._on_gridview_caption_edited)  # type: ignore
+        main_window.grid_view_widget.caption_save_failed.connect(main_window._on_gridview_caption_save_failed)  # type: ignore
         main_window.grid_view_widget.tag_hovered.connect(main_window._highlight_files_for_tag)  # type: ignore
         main_window.grid_view_widget.tag_hover_cleared.connect(main_window._clear_highlight)  # type: ignore
         main_window._resize_timer.timeout.connect(main_window._handle_resize_debounced)  # type: ignore
@@ -143,10 +146,27 @@ class Ui_MainWindow(object):
         main_window.grid_view_button = QPushButton("3x3 edit")
         main_window.grid_view_button.setToolTip(main_window.locale_manager.get_string("MainWindow", "Switch_To_Grid_View"))
         main_window.grid_view_button.clicked.connect(main_window._show_grid_view)  # type: ignore
-        
+
+        main_window.model_combo = QComboBox()
+        current_model_id = main_window.settings.model.model_id
+        selected_index = 0
+        selected_description = ""
+        for i, entry in enumerate(model_registry.discover_models()):
+            main_window.model_combo.addItem(entry.model_name, entry.model_id)
+            description = main_window.locale_manager.get_string("ModelDescriptions", entry.model_id)
+            main_window.model_combo.setItemData(i, description, Qt.ItemDataRole.ToolTipRole)
+            if entry.model_id == current_model_id:
+                selected_index = i
+                selected_description = description
+        main_window.model_combo.setCurrentIndex(selected_index)
+        # The combo's own tooltip (shown while the dropdown is closed) tracks whichever
+        # model is currently selected; _on_model_combo_changed() keeps it in sync.
+        main_window.model_combo.setToolTip(selected_description)
+
         controls_layout.addWidget(main_window.input_line)
         controls_layout.addWidget(browse_button)
         controls_layout.addWidget(main_window.grid_view_button)
+        controls_layout.addWidget(main_window.model_combo)
         layout.addLayout(controls_layout)
         return group
 
@@ -198,14 +218,34 @@ class Ui_MainWindow(object):
         
         tag_panel.addLayout(header_layout)
         
-        tag_grid_container = QWidget()
-        main_window.tag_display_grid = QGridLayout(tag_grid_container)
-        tag_grid_container.setLayout(main_window.tag_display_grid)
+        main_window.tag_grid_container = QWidget()
+        main_window.tag_display_grid = QGridLayout(main_window.tag_grid_container)
+        main_window.tag_grid_container.setLayout(main_window.tag_display_grid)
         min_grid_height = main_window.settings.window.tag_display_rows * (main_window._tag_button_min_height + 5)  # type: ignore
-        tag_grid_container.setMinimumHeight(min_grid_height)
-        tag_grid_container.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
-        tag_panel.addWidget(tag_grid_container)
-        
+        main_window.tag_grid_container.setMinimumHeight(min_grid_height)
+        main_window.tag_grid_container.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+        tag_panel.addWidget(main_window.tag_grid_container)
+
+        # Caption mode (Florence-2, model_type="captioner"): free-text editor shown instead
+        # of the tag button grid above. Hidden by default; ModelModeController toggles
+        # visibility based on the active model's model_type (design.md 8.5節).
+        main_window.caption_text_edit = QTextEdit()
+        main_window.caption_text_edit.setPlaceholderText(main_window.locale_manager.get_string("MainWindow", "Caption_Placeholder"))
+        main_window.caption_text_edit.setVisible(False)
+        tag_panel.addWidget(main_window.caption_text_edit)
+
+        main_window.task_combo = QComboBox()
+        main_window.task_combo.setToolTip(main_window.locale_manager.get_string("MainWindow", "Task_Combo_Tooltip"))
+        # "More Detailed Caption" first: it's the usual choice, and it becomes the
+        # fallback when settings.caption.task is unset/unknown (findData -> -1 -> index 0).
+        for task_key in ("MORE_DETAILED_CAPTION", "DETAILED_CAPTION", "CAPTION"):
+            main_window.task_combo.addItem(
+                main_window.locale_manager.get_string("MainWindow", f"Task_Label_{task_key}"), task_key)
+        current_task_index = max(0, main_window.task_combo.findData(main_window.settings.caption.task))
+        main_window.task_combo.setCurrentIndex(current_task_index)
+        main_window.task_combo.setVisible(False)
+        tag_panel.addWidget(main_window.task_combo)
+
         page_nav_layout = QHBoxLayout()
         main_window.image_tag_prev_page_btn = QPushButton(main_window.locale_manager.get_string("MainWindow", "Previous_Page"))
         main_window.image_tag_prev_page_btn.clicked.connect(lambda: main_window._change_image_tag_page(-1))  # type: ignore
@@ -214,8 +254,9 @@ class Ui_MainWindow(object):
         page_nav_layout.addWidget(main_window.image_tag_prev_page_btn)
         page_nav_layout.addWidget(main_window.image_tag_next_page_btn)
         tag_panel.addLayout(page_nav_layout)
-        
-        tag_panel.addWidget(QLabel(main_window.locale_manager.get_string("MainWindow", "Add_Single_Tag_Label")))
+
+        main_window.add_single_tag_label = QLabel(main_window.locale_manager.get_string("MainWindow", "Add_Single_Tag_Label"))
+        tag_panel.addWidget(main_window.add_single_tag_label)
         add_tag_layout = QHBoxLayout()
         main_window.add_single_tag_line = QLineEdit()
         main_window.add_single_tag_line.setPlaceholderText(main_window.locale_manager.get_string("MainWindow", "Tags_Comma_Separated_Placeholder"))
@@ -237,10 +278,10 @@ class Ui_MainWindow(object):
         layout.setContentsMargins(0, 0, 0, 0)
         
         bulk_edit_layout = QHBoxLayout()
-        bulk_delete_group = self._create_bulk_delete_group(main_window)
-        bulk_add_group = self._create_bulk_add_group(main_window)
-        bulk_edit_layout.addWidget(bulk_delete_group, 3)
-        bulk_edit_layout.addWidget(bulk_add_group, 1)
+        main_window.bulk_delete_group = self._create_bulk_delete_group(main_window)
+        main_window.bulk_add_group = self._create_bulk_add_group(main_window)
+        bulk_edit_layout.addWidget(main_window.bulk_delete_group, 3)
+        bulk_edit_layout.addWidget(main_window.bulk_add_group, 1)
         layout.addLayout(bulk_edit_layout)
 
         settings_group = self._create_settings_group(main_window)
@@ -334,13 +375,30 @@ class Ui_MainWindow(object):
         thresh_group = QGroupBox(main_window.locale_manager.get_string("MainWindow", "Tag_Threshold"))
         thresh_layout = QGridLayout(thresh_group)
         main_window.create_slider_group(thresh_layout, 'Thresholds', 0.0, 1.0, 0.01, {'general': 0, 'character': 1})
-        
+
         limit_group = QGroupBox(main_window.locale_manager.get_string("MainWindow", "Max_Tags"))
         limit_layout = QGridLayout(limit_group)
-        main_window.create_slider_group(limit_layout, 'Limits', 1, 150, 1, {'general': 0})
-        main_window.create_slider_group(limit_layout, 'Limits', 1, 10, 1, {'character': 1})
-        layout.addWidget(thresh_group)
-        layout.addWidget(limit_group)
+        # Minimum is 0, not 1: inference treats a 0 max-tag count as "emit nothing from
+        # this category", and the per-category dialog offers 0. With a minimum of 1 the
+        # slider silently clamped a stored 0 back up to 1 when the two were synced.
+        main_window.create_slider_group(limit_layout, 'Limits', 0, 150, 1, {'general': 0})
+        main_window.create_slider_group(limit_layout, 'Limits', 0, 10, 1, {'character': 1})
+
+        # Opens the per-category (rating / copyright / artist / meta ...) threshold &
+        # max-tag dialog. Per user request (2026-08-31, after several layout attempts):
+        # a full-row-height button at the right with a matching larger font, so it fills
+        # the vertical space instead of leaving a gap under a small button.
+        main_window.category_settings_button = QPushButton(
+            main_window.locale_manager.get_string("MainWindow", "Category_Settings_Button"))
+        main_window.category_settings_button.setToolTip(
+            main_window.locale_manager.get_string("MainWindow", "Category_Settings_Tooltip"))
+        main_window.category_settings_button.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
+        main_window.category_settings_button.setStyleSheet("font-size: 12pt; padding: 4px 10px;")
+        main_window.category_settings_button.clicked.connect(main_window._open_category_settings_dialog)
+
+        layout.addWidget(thresh_group, 1)
+        layout.addWidget(limit_group, 1)
+        layout.addWidget(main_window.category_settings_button, 0)
         return widget
 
     def _create_log_group(self, main_window: 'MainWindow') -> QGroupBox:

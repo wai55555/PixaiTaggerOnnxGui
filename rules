@@ -14,3 +14,5 @@
 12. **Code Quality**: Keep code DRY (Don't Repeat Yourself) and modular. (コードはDRY原則を守り、モジュール化せよ)
 13. **Security**: Do not hardcode secrets (API keys, passwords). Use environment variables. (シークレット（APIキー、パスワード）をハードコードするな。環境変数を使用せよ)
 14. **Documentation**: When adding new features, remind the user to update the README or documentation if necessary. (新機能追加時は、必要に応じてREADMEやドキュメントの更新をユーザーにリマインドせよ)
+15. **Review Verification**: When judging an AI code-review finding, verify it against **the commit the reviewer actually looked at** (`git show <sha>:<file>`), not the working tree. (AIコードレビューの指摘を検証するときは、作業ツリーではなく**レビュー対象のコミット**に対して確認せよ。未コミットの修正があると「誤検知」と誤判定する)
+16. **Repeat-Offender Check**: Before adding code that writes a file or runs a long/network operation, re-read `AGENT.md` の "File & State Safety". 同じ種類の不具合を3回作り込んだ実績がある。(ファイル書き込み・長時間処理を追加する前に AGENT.md の該当節を読み直せ)

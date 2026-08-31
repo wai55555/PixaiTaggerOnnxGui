@@ -1,0 +1,46 @@
+{
+  "model_id": "florence2_base_ft",
+  "model_name": "Florence-2 (base-ft, caption)",
+  "model_type": "captioner",
+  "license": "MIT",
+  "network": {
+    "files": {
+      "onnx/vision_encoder_quantized.onnx": "https://huggingface.co/onnx-community/Florence-2-base-ft/resolve/main/onnx/vision_encoder_quantized.onnx",
+      "onnx/embed_tokens_quantized.onnx": "https://huggingface.co/onnx-community/Florence-2-base-ft/resolve/main/onnx/embed_tokens_quantized.onnx",
+      "onnx/encoder_model_quantized.onnx": "https://huggingface.co/onnx-community/Florence-2-base-ft/resolve/main/onnx/encoder_model_quantized.onnx",
+      "onnx/decoder_model_merged_quantized.onnx": "https://huggingface.co/onnx-community/Florence-2-base-ft/resolve/main/onnx/decoder_model_merged_quantized.onnx",
+      "tokenizer.json": "https://huggingface.co/onnx-community/Florence-2-base-ft/resolve/main/tokenizer.json",
+      "vocab.json": "https://huggingface.co/onnx-community/Florence-2-base-ft/resolve/main/vocab.json",
+      "merges.txt": "https://huggingface.co/onnx-community/Florence-2-base-ft/resolve/main/merges.txt",
+      "tokenizer_config.json": "https://huggingface.co/onnx-community/Florence-2-base-ft/resolve/main/tokenizer_config.json",
+      "added_tokens.json": "https://huggingface.co/onnx-community/Florence-2-base-ft/resolve/main/added_tokens.json",
+      "special_tokens_map.json": "https://huggingface.co/onnx-community/Florence-2-base-ft/resolve/main/special_tokens_map.json",
+      "preprocessor_config.json": "https://huggingface.co/onnx-community/Florence-2-base-ft/resolve/main/preprocessor_config.json",
+      "generation_config.json": "https://huggingface.co/onnx-community/Florence-2-base-ft/resolve/main/generation_config.json",
+      "config.json": "https://huggingface.co/onnx-community/Florence-2-base-ft/resolve/main/config.json"
+    },
+    "hash_verified_file": [
+      "onnx/vision_encoder_quantized.onnx",
+      "onnx/embed_tokens_quantized.onnx",
+      "onnx/encoder_model_quantized.onnx",
+      "onnx/decoder_model_merged_quantized.onnx"
+    ]
+  },
+  "captioner": {
+    "image_size": 768,
+    "normalize_mean": [0.485, 0.456, 0.406],
+    "normalize_std": [0.229, 0.224, 0.225],
+    "image_seq_length": 577,
+    "bos_token_id": 0,
+    "eos_token_id": 2,
+    "pad_token_id": 1,
+    "decoder_start_token_id": 2,
+    "max_new_tokens": 200,
+    "tasks": {
+      "CAPTION": "What does the image describe?",
+      "DETAILED_CAPTION": "Describe in detail what is shown in the image.",
+      "MORE_DETAILED_CAPTION": "Describe with a paragraph what is shown in the image."
+    },
+    "default_task": "MORE_DETAILED_CAPTION"
+  }
+}

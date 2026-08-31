@@ -1,6 +1,6 @@
 import configparser
 from typing import Any
-from dataclasses import dataclass, is_dataclass, fields
+from dataclasses import dataclass, field, is_dataclass, fields
 from pathlib import Path
 
 from utils import write_debug_log, GetString, default_get_string_fallback
@@ -18,15 +18,53 @@ class Paths:
     model_dir: str
     model_filename: str
 
+# The tag categories that can carry their own threshold / max-count. Order is the
+# order rows appear in the "詳細" (per-category) dialog. "general" and "character"
+# also have sliders in the main window; the rest are dialog-only.
+TAG_CATEGORY_NAMES: tuple[str, ...] = (
+    "general", "character", "rating", "copyright", "artist", "meta", "model", "quality", "year",
+)
+
+
+def parse_touched(raw: str) -> set[str]:
+    """Splits a `Thresholds.touched` / `Limits.touched` comma list into a set."""
+    return {c.strip() for c in raw.split(",") if c.strip()}
+
+
+def add_touched(raw: str, category: str) -> str:
+    """Returns `raw` with `category` added to its comma list (sorted, de-duped)."""
+    marked = parse_touched(raw)
+    marked.add(category)
+    return ",".join(sorted(marked))
+
 @dataclass
 class Thresholds:
     general: float
     character: float
+    rating: float = 0.50
+    copyright: float = 0.50
+    artist: float = 0.50
+    meta: float = 0.50
+    model: float = 0.50
+    quality: float = 0.50
+    year: float = 0.50
+    # Comma-separated category names the user has adjusted by hand. On a model switch
+    # a category NOT listed here is reset to the new model's recommended default; a
+    # listed one is left as the user set it (design: 2026-08-31 user decision).
+    touched: str = ""
 
 @dataclass
 class Limits:
     general: int
     character: int
+    rating: int = 0
+    copyright: int = 0
+    artist: int = 0
+    meta: int = 0
+    model: int = 0
+    quality: int = 0
+    year: int = 0
+    touched: str = ""
 
 @dataclass
 class Behavior:
@@ -41,7 +79,12 @@ class Window:
 
 @dataclass
 class Model:
-    verified: bool
+    model_id: str = "pixai-tagger-v0.9"
+    verified_models: dict[str, bool] = field(default_factory=dict)
+
+@dataclass
+class Caption:
+    task: str = "MORE_DETAILED_CAPTION"
 
 @dataclass
 class Debug:
@@ -55,6 +98,7 @@ class AppSettings:
     behavior: Behavior
     window: Window
     model: Model
+    caption: Caption
     debug: Debug
     language_code: str
 
@@ -66,11 +110,12 @@ def get_default_config() -> configparser.ConfigParser:
     config = configparser.ConfigParser()
     DEFAULT_CONFIG = {
         'Paths': {'input_dir': str(BASE_DIR / "inputs"), 'model_dir': MODEL_DIR_NAME, 'model_filename': 'model.onnx'},
-        'Thresholds': {'general': '0.40', 'character': '0.65'},
-        'Limits': {'general': '55', 'character': '1'},
+        'Thresholds': {'general': '0.40', 'character': '0.65', 'rating': '0.50', 'copyright': '0.50', 'artist': '0.50', 'meta': '0.50', 'model': '0.50', 'quality': '0.50', 'year': '0.50', 'touched': ''},
+        'Limits': {'general': '55', 'character': '1', 'rating': '0', 'copyright': '0', 'artist': '0', 'meta': '0', 'model': '0', 'quality': '0', 'year': '0', 'touched': ''},
         'Behavior': {'enable_solo_character_limit': 'True', 'convert_underscore_to_space': 'True'},
         'Window': {'geometry': '986x976+50+50', 'tag_display_rows': '6', 'tag_display_cols': '5'},
-        'Model': {'verified': 'False'},
+        'Model': {'model_id': 'pixai-tagger-v0.9', 'verified_models': ''},
+        'Caption': {'task': 'MORE_DETAILED_CAPTION'},
         'Debug': {'debug_log': 'False'},
         'General': {'language_code': ''}
     }
@@ -93,9 +138,40 @@ def load_config() -> configparser.ConfigParser:
             write_debug_log(_get_string("ConfigUtils", "Config_File_Creation_Failed", e=e), _get_string)
     return config
 
+def _parse_verified_models(config: configparser.ConfigParser) -> dict[str, bool]:
+    """
+    Parses the `[Model] verified_models` field ("model_id:True,other_id:False").
+
+    Back-compat: a config.ini written before multi-model support has a single
+    `[Model] verified` bool for the (implicit) PixAI tagger, and no `verified_models`
+    key at all. Migrate it into `{"pixai-tagger-v0.9": <that bool>}` in that case.
+
+    Note: `config.has_option('Model', 'model_id')` is NOT a reliable way to detect
+    this, because `get_default_config()` (called by `load_config()` before the file
+    is read) already seeds a `model_id` default into the same ConfigParser object -
+    so by the time we see it here, `model_id` is present whether or not the file on
+    disk ever had it. `verified`, on the other hand, is never added by the current
+    defaults, so its presence really does mean "this came from the file".
+    """
+    if config.has_option('Model', 'verified'):
+        legacy_verified = config.getboolean('Model', 'verified', fallback=False)
+        return {"pixai-tagger-v0.9": legacy_verified}
+
+    raw = config.get('Model', 'verified_models', fallback='')
+    result: dict[str, bool] = {}
+    for entry in raw.split(','):
+        entry = entry.strip()
+        if not entry or ':' not in entry:
+            continue
+        model_id, _, value = entry.partition(':')
+        model_id = model_id.strip()
+        if model_id:
+            result[model_id] = value.strip().lower() == 'true'
+    return result
+
 def load_settings(config: configparser.ConfigParser) -> AppSettings:
     """Loads settings from a ConfigParser object into an AppSettings dataclass."""
-        
+
     return AppSettings(
         paths=Paths(
             input_dir=config.get('Paths', 'input_dir', fallback=str(BASE_DIR / "inputs")),
@@ -104,11 +180,27 @@ def load_settings(config: configparser.ConfigParser) -> AppSettings:
         ),
         thresholds=Thresholds(
             general=config.getfloat('Thresholds', 'general', fallback=0.40),
-            character=config.getfloat('Thresholds', 'character', fallback=0.65)
+            character=config.getfloat('Thresholds', 'character', fallback=0.65),
+            rating=config.getfloat('Thresholds', 'rating', fallback=0.50),
+            copyright=config.getfloat('Thresholds', 'copyright', fallback=0.50),
+            artist=config.getfloat('Thresholds', 'artist', fallback=0.50),
+            meta=config.getfloat('Thresholds', 'meta', fallback=0.50),
+            model=config.getfloat('Thresholds', 'model', fallback=0.50),
+            quality=config.getfloat('Thresholds', 'quality', fallback=0.50),
+            year=config.getfloat('Thresholds', 'year', fallback=0.50),
+            touched=config.get('Thresholds', 'touched', fallback='')
         ),
         limits=Limits(
             general=config.getint('Limits', 'general', fallback=55),
-            character=config.getint('Limits', 'character', fallback=1)
+            character=config.getint('Limits', 'character', fallback=1),
+            rating=config.getint('Limits', 'rating', fallback=0),
+            copyright=config.getint('Limits', 'copyright', fallback=0),
+            artist=config.getint('Limits', 'artist', fallback=0),
+            meta=config.getint('Limits', 'meta', fallback=0),
+            model=config.getint('Limits', 'model', fallback=0),
+            quality=config.getint('Limits', 'quality', fallback=0),
+            year=config.getint('Limits', 'year', fallback=0),
+            touched=config.get('Limits', 'touched', fallback='')
         ),
         behavior=Behavior(
             enable_solo_character_limit=config.getboolean('Behavior', 'enable_solo_character_limit', fallback=True),
@@ -120,7 +212,11 @@ def load_settings(config: configparser.ConfigParser) -> AppSettings:
             tag_display_cols=config.getint('Window', 'tag_display_cols', fallback=5)
         ),
         model=Model(
-            verified=config.getboolean('Model', 'verified', fallback=False)
+            model_id=config.get('Model', 'model_id', fallback='pixai-tagger-v0.9'),
+            verified_models=_parse_verified_models(config)
+        ),
+        caption=Caption(
+            task=config.get('Caption', 'task', fallback='MORE_DETAILED_CAPTION')
         ),
         debug=Debug(
             debug_log=config.getboolean('Debug', 'debug_log', fallback=False) # Default is False for debug_log
@@ -149,6 +245,9 @@ def save_config(settings: AppSettings):
                     config_parser.set(section_name, field_info.name, f"{value:.2f}")
                 elif isinstance(value, Path):
                     config_parser.set(section_name, field_info.name, str(value))
+                elif isinstance(value, dict):
+                    # e.g. Model.verified_models -> "model_id:True,other_id:False"
+                    config_parser.set(section_name, field_info.name, ",".join(f"{k}:{v}" for k, v in value.items()))
                 else:
                     config_parser.set(section_name, field_info.name, str(value))
 
@@ -175,16 +274,17 @@ def save_config(settings: AppSettings):
         write_debug_log(_get_string("ConfigUtils", "Config_File_Save_Success", CONFIG_PATH=CONFIG_PATH), _get_string)
     except Exception as e:
         write_debug_log(_get_string("ConfigUtils", "Config_File_Save_Failed", e=e), _get_string)
-def update_model_verification_status(is_verified: bool, get_string: GetString):
+def update_model_verification_status(model_id: str, is_verified: bool, get_string: GetString):
     """
-    Loads config, sets model verification status, and saves it.
-    Used by worker threads to update model status.
+    Loads config, sets the verification status for a single model_id, and saves it.
+    Used by worker threads to update model status without clobbering settings the
+    GUI thread may have changed concurrently (config is reloaded fresh from disk).
     """
     try:
         config = load_config()
         settings = load_settings(config)
-        if settings.model.verified != is_verified:
-            settings.model.verified = is_verified
+        if settings.model.verified_models.get(model_id) != is_verified:
+            settings.model.verified_models[model_id] = is_verified
             save_config(settings)
             if is_verified:
                 write_debug_log(get_string("ConfigUtils", "ModelVerified_Success_Debug"), get_string)
