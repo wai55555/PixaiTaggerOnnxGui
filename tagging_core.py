@@ -53,6 +53,26 @@ class TagCategory(IntEnum):
     COPYRIGHT = 3
     CHARACTER = 4
     META = 5
+    # cl_tagger exposes "Model" and "Quality" as first-class categories (its defining
+    # feature); camie-tagger-v2 exposes "Year". Kept separate from META so each can carry
+    # its own threshold / max-count in the per-category dialog.
+    MODEL = 6
+    QUALITY = 7
+    YEAR = 8
+
+# Settings-side category name -> TagCategory. Mirrors app_settings.TAG_CATEGORY_NAMES;
+# kept here as a plain dict so tagging_core stays free of an app_settings import.
+CATEGORY_NAME_TO_ENUM: dict[str, "TagCategory"] = {
+    "general": TagCategory.GENERAL,
+    "character": TagCategory.CHARACTER,
+    "rating": TagCategory.RATING,
+    "copyright": TagCategory.COPYRIGHT,
+    "artist": TagCategory.ARTIST,
+    "meta": TagCategory.META,
+    "model": TagCategory.MODEL,
+    "quality": TagCategory.QUALITY,
+    "year": TagCategory.YEAR,
+}
 
 @dataclass(frozen=True)
 class TagPrediction:
@@ -79,13 +99,21 @@ _CATEGORY_LOOKUP: dict[str, int] = {
     "3": 3, "copyright": 3,
     "4": 4, "character": 4,
     "5": 5, "meta": 5,
+    "9": 2,           # wd-14 / wd-eva02-large-v3 / wd-eva02-2026-canary use "9" for rating
+    "6": 6, "model": 6,     # cl_tagger (Model tags - 25-26 of them)
+    "7": 7, "quality": 7,   # cl_tagger / cl_tagger v2 (best/normal/bad/worst quality)
+    "8": 8, "year": 8,      # camie-tagger-v2
 }
 
-def load_selected_tags(tags_csv: str | Path) -> list[TagMeta]:
-    tags_path = Path(tags_csv)
-    if not tags_path.is_file():
-        log_dbg(_get_string("TaggerCore", "Tag_CSV_File_Not_Found", tags_csv=str(tags_csv)))
-        raise FileNotFoundError(_get_string("TaggerCore", "Tag_CSV_File_Not_Found", tags_csv=str(tags_csv)))
+TagsCsvFormat = str  # "pixai6col" | "simple3col" | "wd4col" | "idx_json" | "camie_metadata_json"
+
+def _resolve_category(category_str: str) -> int | None:
+    try:
+        return _CATEGORY_LOOKUP[category_str.strip().lower()]
+    except KeyError:
+        return None
+
+def _load_selected_tags_pixai6col(tags_path: Path) -> list[TagMeta]:
     labels: list[TagMeta] = []
     with tags_path.open(encoding="utf-8", newline="") as fp:
         reader = csv.reader(fp)
@@ -97,13 +125,11 @@ def load_selected_tags(tags_csv: str | Path) -> list[TagMeta]:
             if len(cells) < 6:
                 continue
             tag_name = cells[2]
-            category_str = cells[3]
+            category = _resolve_category(cells[3])
+            if category is None:
+                continue
             count_str = cells[4]
             ips_json = cells[5]
-            try:
-                category = _CATEGORY_LOOKUP[category_str.lower()]
-            except KeyError:
-                continue
             try:
                 count = int(count_str) if count_str else None
             except ValueError:
@@ -118,6 +144,91 @@ def load_selected_tags(tags_csv: str | Path) -> list[TagMeta]:
                     pass
             labels.append(TagMeta(name=tag_name, category=category, count=count, ips=ips))
     return labels
+
+def _load_selected_tags_simple3col(tags_path: Path) -> list[TagMeta]:
+    """OppaiOracle: tag_id,name,category (3 columns, no count/ips)."""
+    labels: list[TagMeta] = []
+    with tags_path.open(encoding="utf-8", newline="") as fp:
+        reader = csv.reader(fp)
+        try:
+            next(reader)
+        except StopIteration:
+            return []
+        for cells in reader:
+            if len(cells) < 3:
+                continue
+            category = _resolve_category(cells[2])
+            if category is None:
+                continue
+            labels.append(TagMeta(name=cells[1], category=category, count=None, ips=()))
+    return labels
+
+def _load_selected_tags_wd4col(tags_path: Path) -> list[TagMeta]:
+    """wd-14 / wd-eva02-large-v3 / wd-eva02-2026-canary: tag_id,name,category,count."""
+    labels: list[TagMeta] = []
+    with tags_path.open(encoding="utf-8", newline="") as fp:
+        reader = csv.reader(fp)
+        try:
+            next(reader)
+        except StopIteration:
+            return []
+        for cells in reader:
+            if len(cells) < 4:
+                continue
+            category = _resolve_category(cells[2])
+            if category is None:
+                continue
+            try:
+                count = int(cells[3]) if cells[3] else None
+            except ValueError:
+                count = None
+            labels.append(TagMeta(name=cells[1], category=category, count=count, ips=()))
+    return labels
+
+def _load_selected_tags_idx_json(tags_path: Path) -> list[TagMeta]:
+    """cl_tagger: tag_mapping.json -> {"<idx>": {"tag": "...", "category": "General"|...}}."""
+    with tags_path.open(encoding="utf-8") as fp:
+        raw: dict[str, dict[str, str]] = json.load(fp)
+    labels: list[TagMeta] = []
+    for idx in sorted(raw.keys(), key=lambda k: int(k)):
+        entry = raw[idx]
+        category = _resolve_category(str(entry.get("category", "")))
+        if category is None:
+            continue
+        labels.append(TagMeta(name=str(entry.get("tag", "")), category=category, count=None, ips=()))
+    return labels
+
+def _load_selected_tags_camie_metadata_json(tags_path: Path) -> list[TagMeta]:
+    """camie-tagger-v2: camie-tagger-v2-metadata.json -> dataset_info.tag_mapping.{idx_to_tag,tag_to_category}."""
+    with tags_path.open(encoding="utf-8") as fp:
+        raw: dict[str, Any] = json.load(fp)
+    tag_mapping = raw.get("dataset_info", {}).get("tag_mapping", {})
+    idx_to_tag: dict[str, str] = tag_mapping.get("idx_to_tag", {})
+    tag_to_category: dict[str, str] = tag_mapping.get("tag_to_category", {})
+    labels: list[TagMeta] = []
+    for idx in sorted(idx_to_tag.keys(), key=lambda k: int(k)):
+        tag_name = idx_to_tag[idx]
+        category = _resolve_category(str(tag_to_category.get(tag_name, "")))
+        if category is None:
+            continue
+        labels.append(TagMeta(name=tag_name, category=category, count=None, ips=()))
+    return labels
+
+_TAGS_CSV_LOADERS: dict[str, Callable[[Path], list[TagMeta]]] = {
+    "pixai6col": _load_selected_tags_pixai6col,
+    "simple3col": _load_selected_tags_simple3col,
+    "wd4col": _load_selected_tags_wd4col,
+    "idx_json": _load_selected_tags_idx_json,
+    "camie_metadata_json": _load_selected_tags_camie_metadata_json,
+}
+
+def load_selected_tags(tags_csv: str | Path, csv_format: TagsCsvFormat = "pixai6col") -> list[TagMeta]:
+    tags_path = Path(tags_csv)
+    if not tags_path.is_file():
+        log_dbg(_get_string("TaggerCore", "Tag_CSV_File_Not_Found", tags_csv=str(tags_csv)))
+        raise FileNotFoundError(_get_string("TaggerCore", "Tag_CSV_File_Not_Found", tags_csv=str(tags_csv)))
+    loader = _TAGS_CSV_LOADERS.get(csv_format, _load_selected_tags_pixai6col)
+    return loader(tags_path)
 
 def discover_labels_csv(model_dir: Path, tags_csv: str | Path | None) -> Path | None:
     if tags_csv:
@@ -147,7 +258,29 @@ def _normalize_np_chw(x: NDArray[np.float32], mean: NDArray[np.float_], std: NDA
         x[c] = (x[c] - mean[c]) / std[c]
     return x
 
+@dataclass(frozen=True)
+class InferenceConfig:
+    """
+    Per-model preprocessing/postprocessing description (design.md 6.1〜6.5節, 7章).
+    Defaults match the original hardcoded PixAI OnnxTagger behavior exactly so that
+    OnnxTagger(model_path, tags_csv) with no inference_config is byte-for-byte
+    unchanged from before this class existed (NFR-3 regression guarantee).
+    """
+    input_size: int = 448
+    layout: str = "nchw"                 # "nchw" | "nhwc"
+    channel_order: str = "rgb"           # "rgb" | "bgr"
+    rescale_to_unit: bool = True         # divide by 255 before normalizing
+    pad_color_rgb: tuple[int, int, int] = (0, 0, 0)
+    normalize_mean: tuple[float, float, float] | None = (0.485, 0.456, 0.406)
+    normalize_std: tuple[float, float, float] | None = (0.229, 0.224, 0.225)
+    extra_inputs: tuple[str, ...] = ()   # e.g. ("padding_mask",)
+    output_name_hint: str | None = None
+    output_activation: str = "sigmoid"   # "sigmoid" | "none" (already applied in-graph)
+    tags_csv_format: TagsCsvFormat = "pixai6col"
+
 class OnnxTagger:
+    # Kept as class constants (matching InferenceConfig's own defaults) purely so any
+    # external code that still references OnnxTagger.INPUT_SIZE etc. keeps working.
     INPUT_SIZE = 448
     MODEL_MEAN: NDArray[np.float_] = np.array([0.485, 0.456, 0.406])
     MODEL_STD: NDArray[np.float_] = np.array([0.229, 0.224, 0.225])
@@ -157,9 +290,17 @@ class OnnxTagger:
     tag_meta_lookup: dict[str, TagMeta]
     session: ort.InferenceSession
     get_string: GetString
+    inference_config: InferenceConfig
 
-    def __init__(self, model_path: Path, tags_csv: Path | None = None, get_string: GetString | None = None):
+    def __init__(
+        self,
+        model_path: Path,
+        tags_csv: Path | None = None,
+        get_string: GetString | None = None,
+        inference_config: InferenceConfig | None = None,
+    ):
         self.get_string = get_string if get_string else _get_string
+        self.inference_config = inference_config if inference_config is not None else InferenceConfig()
 
         if not model_path.is_file():
             log_dbg(self.get_string("TaggerCore", "Model_File_Not_Found", model_path=str(model_path)))
@@ -175,28 +316,40 @@ class OnnxTagger:
         if not tags_path or not tags_path.is_file():
             log_dbg(self.get_string("TaggerCore", "Tag_CSV_File_Not_Found_Check_Dir", model_dir=str(model_dir)))
             raise FileNotFoundError(self.get_string("TaggerCore", "Tag_CSV_File_Not_Found_Check_Dir", model_dir=str(model_dir)))
-        self.tags = load_selected_tags(tags_path)
+        self.tags = load_selected_tags(tags_path, self.inference_config.tags_csv_format)
         self.tag_meta_lookup = {tag.name: tag for tag in self.tags}
         log_dbg(self.get_string("TaggerCore", "Loaded_Tags_Count", count=len(self.tags), tags_path=tags_path.name))
-        
+
         inputs: list[Any] = list(self.session.get_inputs()) # type: ignore
         self.input_name = inputs[0].name
-        
+
         outputs: list[Any] = list(self.session.get_outputs()) # type: ignore
         output_names: list[str] = [output.name for output in outputs]
 
-        preferred_order = ("prediction", "logits")
-        for name in preferred_order:
-            if name in output_names:
-                self.output_name = name
-                break
+        if self.inference_config.output_name_hint and self.inference_config.output_name_hint in output_names:
+            self.output_name = self.inference_config.output_name_hint
+        elif len(output_names) == 1:
+            # A single-output classifier is unambiguous: use it even when the config's
+            # output_name hint is absent or stale (e.g. a community re-export that renamed
+            # the tensor). Models with several outputs still require an accurate hint.
+            self.output_name = output_names[0]
         else:
-            log_dbg(self.get_string("TaggerCore", "ONNX_Prediction_Tensor_NotFound", output_names=str(output_names)))
-            raise RuntimeError(self.get_string("TaggerCore", "ONNX_Prediction_Tensor_NotFound", output_names=str(output_names)))
+            preferred_order = ("prediction", "logits")
+            for name in preferred_order:
+                if name in output_names:
+                    self.output_name = name
+                    break
+            else:
+                log_dbg(self.get_string("TaggerCore", "ONNX_Prediction_Tensor_NotFound", output_names=str(output_names)))
+                raise RuntimeError(self.get_string("TaggerCore", "ONNX_Prediction_Tensor_NotFound", output_names=str(output_names)))
 
-    def prepare_batch_from_rgb_np(self, images: Sequence[NDArray[np.uint8]]) -> NDArray[np.float32]:
+    def prepare_batch_from_rgb_np(self, images: Sequence[NDArray[np.uint8]]) -> tuple[NDArray[np.float32], dict[str, NDArray[Any]]]:
+        cfg = self.inference_config
+        target_size = cfg.input_size
         preprocessed_images: list[NDArray[np.float32]] = []
-        target_size = self.INPUT_SIZE
+        padding_masks: list[NDArray[np.bool_]] = []
+        needs_padding_mask = "padding_mask" in cfg.extra_inputs
+
         for img_array in images:
             image_pil = Image.fromarray(img_array)
             w, h = image_pil.size
@@ -204,25 +357,70 @@ class OnnxTagger:
             new_w = int(w * ratio)
             new_h = int(h * ratio)
             resized_image = image_pil.resize((new_w, new_h), Image.Resampling.LANCZOS)
-            canvas = Image.new("RGB", (target_size, target_size), (0, 0, 0))
+            canvas = Image.new("RGB", (target_size, target_size), cfg.pad_color_rgb)
             x_offset = (target_size - new_w) // 2
             y_offset = (target_size - new_h) // 2
             canvas.paste(resized_image, (x_offset, y_offset))
-            img_np = np.asarray(canvas, dtype=np.float32) / 255.0
-            img_chw = img_np.transpose((2, 0, 1))
-            normalized_chw = _normalize_np_chw(img_chw, self.MODEL_MEAN, self.MODEL_STD)
-            preprocessed_images.append(normalized_chw)
-        if not preprocessed_images:
-            return np.empty((0, 3, target_size, target_size), dtype=np.float32)
-        return np.stack(preprocessed_images, axis=0)
 
-    def infer_batch_prepared(self, batch: NDArray[np.float32], *, thresholds: Mapping[TagCategory, float] | None = None, max_tags: Mapping[TagCategory, int] | None = None) -> list[TagResult]:
+            if needs_padding_mask:
+                mask = np.ones((target_size, target_size), dtype=np.bool_)
+                mask[y_offset:y_offset + new_h, x_offset:x_offset + new_w] = False
+                padding_masks.append(mask)
+
+            img_np = np.asarray(canvas, dtype=np.float32)
+            if cfg.channel_order == "bgr":
+                img_np = img_np[:, :, ::-1]
+            if cfg.rescale_to_unit:
+                img_np = img_np / 255.0
+
+            if cfg.layout == "nhwc":
+                normalized = img_np
+                if cfg.normalize_mean is not None and cfg.normalize_std is not None:
+                    mean = np.asarray(cfg.normalize_mean, dtype=np.float32)
+                    std = np.asarray(cfg.normalize_std, dtype=np.float32)
+                    normalized = (normalized - mean) / std
+                normalized = normalized.astype(np.float32, copy=False)
+            else:
+                img_chw = img_np.transpose((2, 0, 1))
+                if cfg.normalize_mean is not None and cfg.normalize_std is not None:
+                    mean = np.asarray(cfg.normalize_mean, dtype=np.float32)
+                    std = np.asarray(cfg.normalize_std, dtype=np.float32)
+                    normalized = _normalize_np_chw(img_chw, mean, std)
+                else:
+                    normalized = img_chw.astype(np.float32, copy=False)
+            preprocessed_images.append(normalized)
+
+        extra_input_batches: dict[str, NDArray[Any]] = {}
+        if not preprocessed_images:
+            empty_shape = (0, target_size, target_size, 3) if cfg.layout == "nhwc" else (0, 3, target_size, target_size)
+            batch = np.empty(empty_shape, dtype=np.float32)
+        else:
+            batch = np.stack(preprocessed_images, axis=0)
+        if needs_padding_mask:
+            extra_input_batches["padding_mask"] = (
+                np.stack(padding_masks, axis=0) if padding_masks else np.empty((0, target_size, target_size), dtype=np.bool_)
+            )
+        return batch, extra_input_batches
+
+    def infer_batch_prepared(
+        self,
+        batch: NDArray[np.float32],
+        extra_inputs: Mapping[str, NDArray[Any]] | None = None,
+        *,
+        thresholds: Mapping[TagCategory, float] | None = None,
+        max_tags: Mapping[TagCategory, int] | None = None,
+    ) -> list[TagResult]:
         if batch.size == 0:
             return []
-        input_feed = {self.input_name: batch}
+        input_feed: dict[str, Any] = {self.input_name: batch}
+        if extra_inputs:
+            input_feed.update(extra_inputs)
         outputs = self.session.run([self.output_name], input_feed) # type: ignore
         output_array = np.asarray(outputs[0], dtype=np.float_)
-        scores_batch = _sigmoid(output_array)
+        if self.inference_config.output_activation == "none":
+            scores_batch = output_array
+        else:
+            scores_batch = _sigmoid(output_array)
         results: list[TagResult] = []
         
         cat_thresholds: Mapping[TagCategory, float] = thresholds if thresholds is not None else {}
@@ -267,8 +465,8 @@ class OnnxTagger:
 
     def infer_batch(self, images: Sequence[Image.Image], *, thresholds: Mapping[TagCategory, float] | None = None, max_tags: Mapping[TagCategory, int] | None = None) -> list[TagResult]:
         rgb_arrays = [np.asarray(image.convert("RGB"), dtype=np.uint8) for image in images]
-        batch = self.prepare_batch_from_rgb_np(rgb_arrays)
-        return self.infer_batch_prepared(batch, thresholds=thresholds, max_tags=max_tags)
+        batch, extra_inputs = self.prepare_batch_from_rgb_np(rgb_arrays)
+        return self.infer_batch_prepared(batch, extra_inputs, thresholds=thresholds, max_tags=max_tags)
 
 def get_image_paths_recursive(base_dir: Path) -> list[Path]:
     IMAGE_EXTENSIONS = [".png", ".jpg", ".jpeg", ".webp"]
@@ -278,52 +476,120 @@ def get_image_paths_recursive(base_dir: Path) -> list[Path]:
     return sorted(image_paths)
 
 def format_tags(tag_results: TagResult, convert_underscore: bool) -> str:
-    output_tags: list[str] = []
-    general_tags: list[TagPrediction] = []
-    character_tags: list[TagPrediction] = []
+    # Output order: artist, copyright, character, <series tags>, general, meta, rating.
+    # "character, <series>, general" is kept exactly as before, so models that only
+    # emit general + character tags (which was every model until per-category limits
+    # were added) produce byte-identical output. The other categories only appear
+    # when the user raises their max-count above 0 in the per-category dialog.
+    by_category: dict[TagCategory, list[TagPrediction]] = {}
     for pred in tag_results.tags:
-        if pred.category == TagCategory.GENERAL:
-            general_tags.append(pred)
-        elif pred.category == TagCategory.CHARACTER:
-            character_tags.append(pred)
-    character_tags.sort(key=lambda pred: pred.score, reverse=True)
-    for char_pred in character_tags:
-        tag_name = char_pred.name
-        if convert_underscore:
-            tag_name = tag_name.replace("_", " ")
-        output_tags.append(tag_name)
+        by_category.setdefault(TagCategory(pred.category), []).append(pred)
+
+    def _emit(preds: list[TagPrediction]) -> list[str]:
+        names: list[str] = []
+        for pred in sorted(preds, key=lambda p: p.score, reverse=True):
+            name = pred.name.replace("_", " ") if convert_underscore else pred.name
+            names.append(name)
+        return names
+
+    output_tags: list[str] = []
+    output_tags += _emit(by_category.get(TagCategory.ARTIST, []))
+    output_tags += _emit(by_category.get(TagCategory.COPYRIGHT, []))
+    output_tags += _emit(by_category.get(TagCategory.CHARACTER, []))
     for series_tag in tag_results.series_tags:
-        tag_name = series_tag
-        if convert_underscore:
-            tag_name = tag_name.replace("_", " ")
-        output_tags.append(tag_name)
-    general_tags.sort(key=lambda pred: pred.score, reverse=True)
-    for gen_pred in general_tags:
-        tag_name = gen_pred.name
-        if convert_underscore:
-            tag_name = tag_name.replace("_", " ")
-        output_tags.append(tag_name)
+        output_tags.append(series_tag.replace("_", " ") if convert_underscore else series_tag)
+    output_tags += _emit(by_category.get(TagCategory.GENERAL, []))
+    output_tags += _emit(by_category.get(TagCategory.META, []))
+    output_tags += _emit(by_category.get(TagCategory.MODEL, []))
+    output_tags += _emit(by_category.get(TagCategory.QUALITY, []))
+    output_tags += _emit(by_category.get(TagCategory.YEAR, []))
+    output_tags += _emit(by_category.get(TagCategory.RATING, []))
     return ", ".join(output_tags)
+
+def build_inference_config(model_config: dict[str, Any]) -> InferenceConfig:
+    """
+    Builds an InferenceConfig from a model_config.json dict's "inference"/"tags_csv"
+    blocks. Any key missing from the dict falls back to InferenceConfig's own
+    (PixAI-matching) default, so a partially-specified model_config.json is safe.
+    """
+    inference = model_config.get("inference", {})
+    tags_csv = model_config.get("tags_csv", {})
+    defaults = InferenceConfig()
+
+    def _tuple3(value: Any, fallback: tuple[float, float, float] | None) -> tuple[float, float, float] | None:
+        if value is None:
+            return None
+        return tuple(value)  # type: ignore[return-value]
+
+    pad_color = inference.get("pad_color_rgb")
+    normalize_mean = inference.get("normalize_mean", defaults.normalize_mean)
+    normalize_std = inference.get("normalize_std", defaults.normalize_std)
+    extra_inputs = inference.get("extra_inputs", list(defaults.extra_inputs))
+
+    return InferenceConfig(
+        input_size=inference.get("input_size", defaults.input_size),
+        layout=inference.get("layout", defaults.layout),
+        channel_order=inference.get("channel_order", defaults.channel_order),
+        rescale_to_unit=inference.get("rescale_to_unit", defaults.rescale_to_unit),
+        pad_color_rgb=tuple(pad_color) if pad_color is not None else defaults.pad_color_rgb,  # type: ignore[arg-type]
+        normalize_mean=_tuple3(normalize_mean, defaults.normalize_mean),
+        normalize_std=_tuple3(normalize_std, defaults.normalize_std),
+        extra_inputs=tuple(extra_inputs),
+        output_name_hint=inference.get("output_name", defaults.output_name_hint),
+        output_activation=inference.get("output_activation", defaults.output_activation),
+        tags_csv_format=tags_csv.get("format", defaults.tags_csv_format),
+    )
 
 def setup_tagger_from_settings(app_settings: AppSettings, get_string: GetString | None) -> tuple[OnnxTagger | None, dict[str, Any]]:
     """Initializes the tagger and extracts settings from the AppSettings object."""
     _get_string_internal = get_string if get_string else _get_string
     try:
+        import model_registry  # local import to avoid a hard import-time dependency for callers that never tag
+
+        model_id = app_settings.model.model_id
+        entry = model_registry.get_model_entry(model_id)
+
+        tags_csv_path: Path | None = None
+        if entry is None or model_id == "pixai-tagger-v0.9":
+            # Unknown model_id (e.g. stale config) falls back to the PixAI path,
+            # matching pre-multi-model behavior exactly (NFR-3).
+            model_path = BASE_DIR / app_settings.paths.model_dir / app_settings.paths.model_filename
+            inference_config = InferenceConfig()
+        else:
+            model_path = entry.model_dir / "model.onnx"
+            inference_config = build_inference_config(entry.config)
+            # Models whose tag-metadata file isn't named selected_tags*.csv (camie's
+            # own metadata JSON, cl_tagger's tag_mapping.json) must say so explicitly -
+            # discover_labels_csv()'s glob would never find them otherwise.
+            tags_file_name = entry.config.get("tags_csv", {}).get("file_name")
+            if tags_file_name:
+                tags_csv_path = entry.model_dir / tags_file_name
+
+        # Per-category thresholds / limits. Only the categories this model actually
+        # produces (ui.categories, default: general + character) are passed; a limit
+        # of 0 means "emit nothing from this category". Passing an explicit limit for
+        # every listed category keeps hard_cap well-defined and stops an unset
+        # category from being treated as unbounded.
+        ui_cfg = entry.config.get("ui", {}) if entry is not None else {}
+        model_categories: list[str] = list(ui_cfg.get("categories", ["general", "character"]))
+        tag_thresholds: dict[TagCategory, float] = {}
+        max_tags_per_category: dict[TagCategory, int] = {}
+        for name in model_categories:
+            cat = CATEGORY_NAME_TO_ENUM.get(name)
+            if cat is None:
+                continue
+            tag_thresholds[cat] = float(getattr(app_settings.thresholds, name, app_settings.thresholds.general))
+            max_tags_per_category[cat] = int(getattr(app_settings.limits, name, 0))
+
         settings_dict: dict[str, Any] = {
             'INPUT_DIR': Path(app_settings.paths.input_dir),
-            'MODEL_PATH': BASE_DIR / app_settings.paths.model_dir / app_settings.paths.model_filename,
-            'TAG_THRESHOLDS': {
-                TagCategory.GENERAL: app_settings.thresholds.general,
-                TagCategory.CHARACTER: app_settings.thresholds.character,
-            },
-            'MAX_TAGS_PER_CATEGORY': {
-                TagCategory.GENERAL: app_settings.limits.general,
-                TagCategory.CHARACTER: app_settings.limits.character,
-            },
+            'MODEL_PATH': model_path,
+            'TAG_THRESHOLDS': tag_thresholds,
+            'MAX_TAGS_PER_CATEGORY': max_tags_per_category,
             'ENABLE_SOLO_LIMIT': app_settings.behavior.enable_solo_character_limit,
             'CONVERT_UNDERSCORE': app_settings.behavior.convert_underscore_to_space,
         }
-        tagger = OnnxTagger(model_path=settings_dict['MODEL_PATH'], get_string=_get_string_internal)
+        tagger = OnnxTagger(model_path=settings_dict['MODEL_PATH'], tags_csv=tags_csv_path, get_string=_get_string_internal, inference_config=inference_config)
         return tagger, settings_dict
     except Exception as e:
         log_dbg(f"Error during Tagger initialization: {type(e).__name__}: {e}")

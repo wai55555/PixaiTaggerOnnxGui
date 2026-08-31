@@ -1,0 +1,150 @@
+from __future__ import annotations
+
+import json
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Literal
+
+import constants
+from utils import write_debug_log
+
+ModelType = Literal["tagger", "captioner"]
+
+
+@dataclass(frozen=True)
+class ModelEntry:
+    model_id: str
+    model_name: str
+    model_type: ModelType
+    model_dir: Path
+    config: dict[str, Any]
+
+
+# PixAI has no model_config.json on disk (its directory predates this feature and is
+# never touched). This dict is the synthesized equivalent, matching the current
+# hardcoded OnnxTagger class-constant defaults exactly (design.md 6.1節).
+_PIXAI_MODEL_ID = "pixai-tagger-v0.9"
+_PIXAI_CONFIG: dict[str, Any] = {
+    "model_id": _PIXAI_MODEL_ID,
+    "model_name": "PixAI Tagger v0.9",
+    "model_type": "tagger",
+    "license": "Apache-2.0",
+    "network": {
+        "files": {
+            "model.onnx": "https://huggingface.co/deepghs/pixai-tagger-v0.9-onnx/resolve/main/model.onnx",
+            "selected_tags.csv": "https://huggingface.co/deepghs/pixai-tagger-v0.9-onnx/resolve/main/selected_tags.csv",
+        },
+    },
+    "inference": {
+        "input_size": 448,
+        "layout": "nchw",
+        "channel_order": "rgb",
+        "rescale_to_unit": True,
+        "pad_color_rgb": [0, 0, 0],
+        "normalize_mean": [0.485, 0.456, 0.406],
+        "normalize_std": [0.229, 0.224, 0.225],
+        "extra_inputs": [],
+        "output_name": None,
+        "output_activation": "sigmoid",
+    },
+    "tags_csv": {
+        "format": "pixai6col",
+        "default_category": "general",
+    },
+    "ui": {
+        "supports_character_tag": True,
+        "supports_threshold_slider": True,
+        "default_threshold": 0.40,
+        "default_character_threshold": 0.85,
+        "categories": ["general", "character"],
+    },
+}
+
+
+# Curated model-picker order (user request 2026-08-31): roughly popularity order,
+# with the natural-language captioner pinned last. Any model_id not listed here still
+# loads, but sorts after these entries, alphabetically by model_id.
+_MODEL_DISPLAY_ORDER: tuple[str, ...] = (
+    "pixai-tagger-v0.9",
+    "wd_eva02_large_v3",
+    "oppaioracle_v1_1",
+    "camie_tagger_v2",
+    "cl_tagger_1_02",
+    "cl_tagger_v2_01a",
+    "wd14_convnextv2",
+    "wd_eva02_2026_canary",
+    "florence2_base_ft",
+)
+
+
+def _pixai_entry() -> ModelEntry:
+    return ModelEntry(
+        model_id=_PIXAI_MODEL_ID,
+        model_name=_PIXAI_CONFIG["model_name"],
+        model_type="tagger",
+        model_dir=constants.MODEL_PATH.parent,
+        config=_PIXAI_CONFIG,
+    )
+
+
+def discover_models() -> list[ModelEntry]:
+    """
+    Returns the PixAI pseudo-entry plus every model_config.json-bearing subdirectory of
+    MODELS_DIR, ordered by _MODEL_DISPLAY_ORDER (unlisted model_ids sort last, by model_id).
+    """
+    entries: list[ModelEntry] = [_pixai_entry()]
+
+    models_dir = constants.MODELS_DIR
+    if not models_dir.is_dir():
+        return _sort_by_display_order(entries)
+
+    for sub_dir in sorted(models_dir.iterdir(), key=lambda p: p.name):
+        if not sub_dir.is_dir():
+            continue
+        config_path = sub_dir / "model_config.json"
+        if not config_path.is_file():
+            continue
+        try:
+            with config_path.open("r", encoding="utf-8") as f:
+                cfg: dict[str, Any] = json.load(f)
+        except Exception as e:
+            write_debug_log(f"model_registry: failed to load {config_path}: {e}")
+            continue
+
+        model_id = cfg.get("model_id", sub_dir.name)
+        model_type = cfg.get("model_type", "tagger")
+        if model_type not in ("tagger", "captioner"):
+            write_debug_log(f"model_registry: {config_path} has unknown model_type '{model_type}', skipping.")
+            continue
+
+        # "manual_download" models have no working in-app download (e.g. a gated HF repo):
+        # stay hidden from the picker until the user has placed every required file here
+        # by hand. Once complete, the entry appears and behaves like any other model.
+        if cfg.get("manual_download", False):
+            required_files = cfg.get("network", {}).get("files", {})
+            if not required_files or not all((sub_dir / name).is_file() for name in required_files):
+                write_debug_log(f"model_registry: '{model_id}' is manual_download and its files are not all present yet; hiding it.")
+                continue
+
+        entries.append(ModelEntry(
+            model_id=model_id,
+            model_name=cfg.get("model_name", model_id),
+            model_type=model_type,
+            model_dir=sub_dir,
+            config=cfg,
+        ))
+
+    return _sort_by_display_order(entries)
+
+
+def _sort_by_display_order(entries: list[ModelEntry]) -> list[ModelEntry]:
+    order = {model_id: i for i, model_id in enumerate(_MODEL_DISPLAY_ORDER)}
+    return sorted(entries, key=lambda e: (order.get(e.model_id, len(order)), e.model_id))
+
+
+def get_model_entry(model_id: str) -> ModelEntry | None:
+    """Convenience lookup: returns the ModelEntry with the given model_id, or None."""
+    for entry in discover_models():
+        if entry.model_id == model_id:
+            return entry
+    return None

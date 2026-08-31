@@ -13,6 +13,8 @@ from constants import (
 from app_settings import AppSettings, update_model_verification_status
 from get_pointer_huggingface import get_model_info_from_pointer
 from tagging_core import setup_tagger_from_settings, process_image_loop, get_image_paths_recursive
+import model_registry
+import caption_core
 
 class DownloaderWorker(QObject):
     """Downloads model files and verifies their integrity."""
@@ -20,11 +22,13 @@ class DownloaderWorker(QObject):
     progress_update = Signal(int, float, float) # percentage, downloaded_mb, total_mb
     download_finished = Signal(bool) # success/failure
 
-    def __init__(self, get_string: GetString | None = None):
+    def __init__(self, get_string: GetString | None = None, model_id: str = "pixai-tagger-v0.9"):
         super().__init__()
         self.get_string: GetString = get_string if get_string else default_get_string_fallback
+        self.model_id = model_id
         self._stop_event = threading.Event()
         self._file_sizes: dict[Path, int] = {} # To store expected file sizes
+        self._hash_verified_files: set[Path] = set()  # Which file(s) get SHA256-checked for the current model
 
     def stop(self):
         write_debug_log(f"DEBUG: {type(self).__name__}.stop() called.")
@@ -58,7 +62,7 @@ class DownloaderWorker(QObject):
                     self.log_message.emit(self.get_string("Workers", "DownloaderWorker_Error_LocalFileTooLarge", file_name=file_path.name), "red")
                     return False
                 elif local_size == expected_final_size:
-                    if file_path == MODEL_PATH and expected_sha256:
+                    if file_path in self._hash_verified_files and expected_sha256:
                         self.log_message.emit(self.get_string("Workers", "DownloaderWorker_VerifyingHash", file_name=file_path.name), "blue")
                         local_sha256 = calculate_sha256(file_path)
                         if local_sha256.lower() == expected_sha256.lower():
@@ -134,7 +138,7 @@ class DownloaderWorker(QObject):
                  self.log_message.emit(self.get_string("Workers", "DownloaderWorker_Error_Size_Mismatch", downloaded_size=f"{final_size/1024/1024:.2f}", total_size=f"{content_length/1024/1024:.2f}"), "red")
                  return False
 
-            if file_path == MODEL_PATH and expected_sha256:
+            if file_path in self._hash_verified_files and expected_sha256:
                 self.log_message.emit(self.get_string("Workers", "DownloaderWorker_VerifyingHash", file_name=file_path.name), "blue")
                 local_sha256 = calculate_sha256(file_path)
                 if local_sha256.lower() != expected_sha256.lower():
@@ -164,7 +168,7 @@ class DownloaderWorker(QObject):
 
     def _mark_model_as_verified(self):
         try:
-            update_model_verification_status(True, self.get_string)
+            update_model_verification_status(self.model_id, True, self.get_string)
             self.log_message.emit(self.get_string("Workers", "DownloaderWorker_ModelVerified_Success"), "green")
             write_debug_log(str(self.get_string("Workers", "DownloaderWorker_ModelVerified_Success_Debug")), self.get_string)
 
@@ -175,7 +179,24 @@ class DownloaderWorker(QObject):
     @Slot()
     def run_download(self):
         write_debug_log(str(self.get_string("Workers", "DownloaderWorker_Start")), self.get_string)
+
+        if self.model_id == "pixai-tagger-v0.9":
+            self._run_download_pixai_legacy()
+            return
+
+        entry = model_registry.get_model_entry(self.model_id)
+        if entry is None:
+            write_debug_log(f"DownloaderWorker: unknown model_id '{self.model_id}', cannot download.")
+            self.log_message.emit(self.get_string("Workers", "DownloaderWorker_Error_NoPointerURL"), "red")
+            self.download_finished.emit(False)
+            return
+
+        self._download_from_manifest(entry.model_dir, entry.config.get("network", {}))
+
+    def _run_download_pixai_legacy(self):
+        """Unchanged PixAI download path (design.md 5章, NFR-3: byte-for-byte the same as before multi-model support)."""
         all_success = True
+        self._hash_verified_files = {MODEL_PATH}
 
         model_pointer_url = DOWNLOAD_URLS.get(MODEL_POINTER_PATH)
         if not model_pointer_url:
@@ -188,7 +209,7 @@ class DownloaderWorker(QObject):
             self.log_message.emit(self.get_string("Workers", "DownloaderWorker_Error_FailedToGetModelInfo"), "red")
             self.download_finished.emit(False)
             return
-        
+
         self._file_sizes[MODEL_PATH] = expected_size
 
         for file_path, url in DOWNLOAD_URLS.items():
@@ -203,7 +224,63 @@ class DownloaderWorker(QObject):
             if not success:
                 all_success = False
                 break
-        
+
+        self.download_finished.emit(all_success)
+        write_debug_log(str(self.get_string("Workers", "DownloaderWorker_Download_Thread_Exit")), self.get_string)
+
+    def _download_from_manifest(self, model_dir: Path, network_config: dict):
+        """
+        Generic downloader for any model described by a model_config.json "network" block
+        (spec.md 6.1節). Rather than requiring a separate pointer_url per file in the config,
+        the pointer URL is derived from each file's own resolve/main URL (every HF repo we've
+        checked follows this convention: .../resolve/main/<f> <-> .../raw/main/<f>), which also
+        lets a model with several hash_verified_file entries (e.g. Florence-2's 4 onnx files)
+        get one pointer lookup each, instead of assuming a single shared pointer_url.
+        """
+        files: dict[str, str] = network_config.get("files", {})
+        hash_verified_raw = network_config.get("hash_verified_file")
+        if isinstance(hash_verified_raw, str):
+            hash_verified_names: list[str] = [hash_verified_raw]
+        else:
+            hash_verified_names = list(hash_verified_raw) if hash_verified_raw else []
+        self._hash_verified_files = {model_dir / name for name in hash_verified_names}
+
+        expected_sha_by_path: dict[Path, str] = {}
+        for name in hash_verified_names:
+            url = files.get(name)
+            if not url:
+                continue
+            pointer_url = url.replace("/resolve/main/", "/raw/main/")
+            expected_sha256, expected_size = get_model_info_from_pointer(pointer_url, self.get_string)
+            if expected_sha256 and expected_size:
+                file_path = model_dir / name
+                expected_sha_by_path[file_path] = expected_sha256
+                self._file_sizes[file_path] = expected_size
+            else:
+                write_debug_log(f"DownloaderWorker: could not resolve pointer info for {name} ({pointer_url}); will download without hash verification.")
+
+        all_success = True
+        for file_name, url in files.items():
+            if self.is_stopped():
+                all_success = False
+                break
+            file_path = model_dir / file_name
+
+            if file_path not in self._hash_verified_files and file_path.is_file():
+                # Small metadata/tag JSON/CSV sidecars aren't hash-verified, and HF often
+                # serves them gzip-encoded with no Content-Length on HEAD, so there's no
+                # reliable expected size to compare against (unlike the LFS-backed
+                # hash-verified files, which always report an exact size via the pointer).
+                # If it's already present at all, trust it and skip - same policy as the
+                # existing TAGS_CSV_PATH special-case for the PixAI download path.
+                write_debug_log(f"DownloaderWorker: {file_name} already exists, skipping (not hash-verified).")
+                continue
+
+            success = self._download_single_file(file_path, url, expected_sha_by_path.get(file_path))
+            if not success:
+                all_success = False
+                break
+
         self.download_finished.emit(all_success)
         write_debug_log(str(self.get_string("Workers", "DownloaderWorker_Download_Thread_Exit")), self.get_string)
 
@@ -234,7 +311,7 @@ class TaggerThreadWorker(QObject):
 
     def _mark_model_as_unverified(self):
         try:
-            update_model_verification_status(False, self.get_string)
+            update_model_verification_status(self._settings.model.model_id, False, self.get_string)
             self.log_message.emit(self.get_string("Workers", "TaggerThreadWorker_ModelUnverified"), "orange")
             self.model_status_changed.emit()
         except Exception as e:
@@ -251,10 +328,11 @@ class TaggerThreadWorker(QObject):
             if not tagger or not settings_dict:
                 self.log_message.emit(self.get_string("Workers", "TaggerThreadWorker_Error_Tagger_Init_Failed"), "red")
                 self._mark_model_as_unverified()
-                self.running_state_changed.emit(False)
-                self.finished.emit()
+                # running_state_changed / reload / finished are all emitted once by the
+                # finally block below - do not emit them here too (double reload / double
+                # finished otherwise).
                 return
-            
+
             self.log_message.emit(self.get_string("Workers", "TaggerThreadWorker_Loading_Model"), "black")
 
             input_dir = Path(settings_dict['INPUT_DIR'])
@@ -266,9 +344,7 @@ class TaggerThreadWorker(QObject):
 
             if not image_paths:
                 self.log_message.emit(self.get_string("Workers", "TaggerThreadWorker_Warning_No_Image_Files", input_dir=input_dir), "orange")
-                self.running_state_changed.emit(False)
-                self.finished.emit()
-                return
+                return  # finally block emits running_state_changed / reload / finished
 
             self.log_message.emit(self.get_string("Workers", "TaggerThreadWorker_Total_Image_Files", count=len(image_paths)), "blue")
 
@@ -292,6 +368,97 @@ class TaggerThreadWorker(QObject):
             self.log_message.emit(error_message, "red")
             write_debug_log(str(self.get_string("Workers", "TaggerThreadWorker_Runtime_Exception", e=e, traceback_exc=traceback.format_exc())), self.get_string)
         
+        finally:
+            self.running_state_changed.emit(False)
+            self.reload_image_list_signal.emit()
+            self.finished.emit()
+            write_debug_log(str(self.get_string("Workers", "TaggerThreadWorker_Thread_Exit")), self.get_string)
+
+class CaptionerThreadWorker(QObject):
+    """
+    Florence-2 (captioner model_type) counterpart of TaggerThreadWorker (spec.md 6.2節).
+    Same signal shape and lifecycle so MainWindow's wiring is symmetric; internally it calls
+    caption_core.setup_captioner_from_settings / process_caption_loop instead of tagging_core's.
+    """
+    log_message = Signal(str, str)
+    model_status_changed = Signal()
+    finished = Signal()
+    running_state_changed = Signal(bool)
+    reload_image_list_signal = Signal()
+
+    def __init__(self, settings: AppSettings, overwrite_checker: Callable[[Path], bool], get_string: GetString | None = None, selected_file_path: Path | None = None):
+        super().__init__()
+        self._settings: AppSettings = settings
+        self._overwrite_checker = overwrite_checker
+        self._selected_file_path = selected_file_path
+        self._stop_event = threading.Event()
+        self.get_string: GetString = get_string if get_string else default_get_string_fallback
+
+    def stop(self):
+        write_debug_log(f"DEBUG: {type(self).__name__}.stop() called.")
+        self._stop_event.set()
+
+    def is_stopped(self) -> bool:
+        return self._stop_event.is_set()
+
+    def _mark_model_as_unverified(self):
+        try:
+            update_model_verification_status(self._settings.model.model_id, False, self.get_string)
+            self.log_message.emit(self.get_string("Workers", "TaggerThreadWorker_ModelUnverified"), "orange")
+            self.model_status_changed.emit()
+        except Exception as e:
+            write_debug_log(str(f"Debug: Failed to save model unverified status: {e}"), self.get_string)
+
+    @Slot()
+    def run_captioning(self):
+        write_debug_log(str(self.get_string("Workers", "TaggerThreadWorker_Start")), self.get_string)
+        self.running_state_changed.emit(True)
+
+        try:
+            captioner, settings_dict = caption_core.setup_captioner_from_settings(self._settings, self.get_string)
+            if not captioner or not settings_dict:
+                self.log_message.emit(self.get_string("Workers", "TaggerThreadWorker_Error_Tagger_Init_Failed"), "red")
+                if caption_core.ort is None or caption_core.Tokenizer is None or caption_core.Image is None:
+                    # Most common cause for a captioner: the optional deps aren't installed
+                    # in this environment (tokenizers was added to requirements.txt later).
+                    self.log_message.emit(self.get_string("CaptionCore", "Required_Libraries_NotFound"), "red")
+                self._mark_model_as_unverified()
+                return  # finally block emits running_state_changed / reload / finished
+
+            self.log_message.emit(self.get_string("Workers", "TaggerThreadWorker_Loading_Model"), "black")
+
+            input_dir = Path(settings_dict['INPUT_DIR'])
+            image_paths = get_image_paths_recursive(input_dir)
+
+            if self._selected_file_path and self._selected_file_path in image_paths:
+                image_paths.remove(self._selected_file_path)
+                image_paths.insert(0, self._selected_file_path)
+
+            if not image_paths:
+                self.log_message.emit(self.get_string("Workers", "TaggerThreadWorker_Warning_No_Image_Files", input_dir=input_dir), "orange")
+                return  # finally block emits running_state_changed / reload / finished
+
+            self.log_message.emit(self.get_string("Workers", "TaggerThreadWorker_Total_Image_Files", count=len(image_paths)), "blue")
+
+            def log_to_gui(message: str, color: str):
+                self.log_message.emit(message, color)
+
+            caption_core.process_caption_loop(
+                captioner=captioner,
+                settings=settings_dict,
+                image_paths=image_paths,
+                overwrite_checker=self._overwrite_checker,
+                log_gui=log_to_gui,
+                stop_checker=self.is_stopped,
+                get_string=self.get_string,
+            )
+
+        except Exception as e:
+            import traceback
+            error_message = self.get_string("Workers", "TaggerThreadWorker_Fatal_Exception", type_e_name=type(e).__name__, e=e, traceback_exc=traceback.format_exc())
+            self.log_message.emit(error_message, "red")
+            write_debug_log(str(self.get_string("Workers", "TaggerThreadWorker_Runtime_Exception", e=e, traceback_exc=traceback.format_exc())), self.get_string)
+
         finally:
             self.running_state_changed.emit(False)
             self.reload_image_list_signal.emit()

@@ -30,19 +30,30 @@ LOG_FILE_PATH = BASE_DIR / "debug_log.txt"
 
 # --- Model-related constants ---
 MODEL_SIZE_BYTES = 1271365853
-MODEL_DIR_NAME = "pixai-tagger-v0.9-onnx"
-MODEL_PATH = BASE_DIR / MODEL_DIR_NAME / "model.onnx"
-MODEL_POINTER_PATH = BASE_DIR / MODEL_DIR_NAME / "model_pointer.txt"
-TAGS_CSV_PATH = BASE_DIR / MODEL_DIR_NAME / "selected_tags.csv"
-TAGS_EN_CSV_PATH = BASE_DIR / MODEL_DIR_NAME / "selected_tags.csv"
-TAGS_JP_CSV_PATH = BASE_DIR / MODEL_DIR_NAME / "selected_tags_jp.csv"
-TAGS_FR_CSV_PATH = BASE_DIR / MODEL_DIR_NAME / "selected_tags_fr.csv"
-TAGS_DE_CSV_PATH = BASE_DIR / MODEL_DIR_NAME / "selected_tags_de.csv"
-TAGS_ES_CSV_PATH = BASE_DIR / MODEL_DIR_NAME / "selected_tags_es.csv"
-TAGS_RU_CSV_PATH = BASE_DIR / MODEL_DIR_NAME / "selected_tags_ru.csv"
-TAGS_ZH_CN_CSV_PATH = BASE_DIR / MODEL_DIR_NAME / "selected_tags_zh_cn.csv"
-TAGS_ZH_TW_CSV_PATH = BASE_DIR / MODEL_DIR_NAME / "selected_tags_zh_tw.csv"
-TAGS_KO_CSV_PATH = BASE_DIR / MODEL_DIR_NAME / "selected_tags_ko.csv"
+# Directory for additional (non-PixAI) tagger/captioner models, one subdirectory per model_id.
+# app_settings.Paths.model_dir/model_filename remain PixAI-only legacy fields (design.md 6.9節).
+MODELS_DIR = BASE_DIR / "models"
+# PixAI's own directory lives under MODELS_DIR like every other model (unified 2026-08-31),
+# but it still has no model_config.json - it stays the hardcoded pseudo-entry in
+# model_registry.py, so discover_models()'s directory scan skips it and there is no
+# duplicate model_combo entry.
+MODEL_DIR_NAME = "pixai-tagger-v0.9"
+_NEW_PIXAI_DIR = MODELS_DIR / MODEL_DIR_NAME
+_LEGACY_PIXAI_DIR = BASE_DIR / "pixai-tagger-v0.9-onnx"
+if not (_NEW_PIXAI_DIR / "model.onnx").is_file() and (_LEGACY_PIXAI_DIR / "model.onnx").is_file():
+    # An update replaces app code/assets in place but never touches a user's already-
+    # downloaded 1.2GB model file sitting at the pre-migration path - silently moving it
+    # would be an unnecessary risk (see task.md 2026-08-31 note), and a fresh redownload
+    # is wasteful, so fall back to wherever the model actually is. Once found there,
+    # everything derived from this directory (translation CSVs included) also comes
+    # from there, so an existing install keeps working exactly as before until the user
+    # deletes/redownloads it under the new path.
+    _PIXAI_DIR = _LEGACY_PIXAI_DIR
+else:
+    _PIXAI_DIR = _NEW_PIXAI_DIR
+MODEL_PATH = _PIXAI_DIR / "model.onnx"
+MODEL_POINTER_PATH = _PIXAI_DIR / "model_pointer.txt"
+TAGS_CSV_PATH = _PIXAI_DIR / "selected_tags.csv"
 DOWNLOAD_URLS: Mapping[Path, str] = {
     MODEL_PATH: "https://huggingface.co/deepghs/pixai-tagger-v0.9-onnx/resolve/main/model.onnx",
     MODEL_POINTER_PATH: "https://huggingface.co/deepghs/pixai-tagger-v0.9-onnx/raw/main/model.onnx",

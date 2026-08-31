@@ -1,0 +1,53 @@
+{
+  "model_id": "wd_eva02_2026_canary",
+  "model_name": "wd-eva02 Tagger 2026 Canary (Beta)",
+  "model_type": "tagger",
+  "license": "Apache-2.0",
+  "network": {
+    "files": {
+      "model.onnx": "https://huggingface.co/Misaka41Z/wd-eva02-tagger-2026-canary-onnx-v2/resolve/main/model.onnx",
+      "selected_tags.csv": "https://huggingface.co/Misaka41Z/wd-eva02-tagger-2026-canary-onnx-v2/resolve/main/selected_tags.csv"
+    },
+    "hash_verified_file": "model.onnx"
+  },
+  "inference": {
+    "input_size": 448,
+    "layout": "nchw",
+    "channel_order": "rgb",
+    "rescale_to_unit": true,
+    "pad_color_rgb": [
+      255,
+      255,
+      255
+    ],
+    "normalize_mean": [
+      0.5,
+      0.5,
+      0.5
+    ],
+    "normalize_std": [
+      0.5,
+      0.5,
+      0.5
+    ],
+    "extra_inputs": [],
+    "output_name": "output",
+    "output_activation": "sigmoid",
+    "_note": "Preprocessing is empirically inferred (no official docs, community ONNX re-export) - design.md 7.5節. Re-verify with labeled images before relying on this in production."
+  },
+  "tags_csv": {
+    "format": "wd4col",
+    "default_category": "general"
+  },
+  "ui": {
+    "supports_character_tag": true,
+    "supports_threshold_slider": true,
+    "default_threshold": 0.35,
+    "default_character_threshold": 0.85,
+    "categories": [
+      "general",
+      "character",
+      "rating"
+    ]
+  }
+}

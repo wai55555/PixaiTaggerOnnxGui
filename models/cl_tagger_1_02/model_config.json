@@ -1,0 +1,58 @@
+{
+  "model_id": "cl_tagger_1_02",
+  "model_name": "cl_tagger v1.02",
+  "model_type": "tagger",
+  "license": "Apache-2.0",
+  "network": {
+    "files": {
+      "model.onnx": "https://huggingface.co/Nonene/cl_tagger/resolve/main/cl_tagger_1_02/model.onnx",
+      "tag_mapping.json": "https://huggingface.co/Nonene/cl_tagger/resolve/main/cl_tagger_1_02/tag_mapping.json"
+    },
+    "hash_verified_file": "model.onnx"
+  },
+  "inference": {
+    "input_size": 448,
+    "layout": "nchw",
+    "channel_order": "rgb",
+    "rescale_to_unit": true,
+    "pad_color_rgb": [
+      255,
+      255,
+      255
+    ],
+    "normalize_mean": [
+      0.5,
+      0.5,
+      0.5
+    ],
+    "normalize_std": [
+      0.5,
+      0.5,
+      0.5
+    ],
+    "extra_inputs": [],
+    "output_name": "output0",
+    "output_activation": "sigmoid",
+    "_note": "Preprocessing is empirically inferred (no official docs) - design.md 7.2節. Re-verify with labeled images before relying on this in production."
+  },
+  "tags_csv": {
+    "format": "idx_json",
+    "file_name": "tag_mapping.json",
+    "default_category": "general"
+  },
+  "ui": {
+    "supports_character_tag": true,
+    "supports_threshold_slider": true,
+    "default_threshold": 0.5,
+    "categories": [
+      "general",
+      "character",
+      "copyright",
+      "artist",
+      "rating",
+      "meta",
+      "model",
+      "quality"
+    ]
+  }
+}

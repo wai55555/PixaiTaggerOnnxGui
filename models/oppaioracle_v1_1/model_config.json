@@ -1,0 +1,53 @@
+{
+  "model_id": "oppaioracle_v1_1",
+  "model_name": "OppaiOracle V1.1",
+  "model_type": "tagger",
+  "license": "Apache-2.0",
+  "network": {
+    "files": {
+      "model.onnx": "https://huggingface.co/Grio43/OppaiOracle/resolve/main/V1.1_onnx/model.onnx",
+      "selected_tags.csv": "https://huggingface.co/Grio43/OppaiOracle/resolve/main/V1.1_onnx/selected_tags.csv",
+      "vocabulary.json": "https://huggingface.co/Grio43/OppaiOracle/resolve/main/V1.1_onnx/vocabulary.json",
+      "pr_thresholds.json": "https://huggingface.co/Grio43/OppaiOracle/resolve/main/V1.1_onnx/pr_thresholds.json"
+    },
+    "hash_verified_file": "model.onnx"
+  },
+  "inference": {
+    "input_size": 448,
+    "layout": "nchw",
+    "channel_order": "rgb",
+    "rescale_to_unit": true,
+    "pad_color_rgb": [
+      114,
+      114,
+      114
+    ],
+    "normalize_mean": [
+      0.5,
+      0.5,
+      0.5
+    ],
+    "normalize_std": [
+      0.5,
+      0.5,
+      0.5
+    ],
+    "extra_inputs": [
+      "padding_mask"
+    ],
+    "output_name": "probabilities",
+    "output_activation": "none"
+  },
+  "tags_csv": {
+    "format": "simple3col",
+    "default_category": "general"
+  },
+  "ui": {
+    "supports_character_tag": false,
+    "supports_threshold_slider": true,
+    "default_threshold": 0.5,
+    "categories": [
+      "general"
+    ]
+  }
+}

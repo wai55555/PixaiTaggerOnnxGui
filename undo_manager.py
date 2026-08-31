@@ -194,6 +194,35 @@ class RemoveTagAction(UndoAction):
 
 
 @dataclass
+class EditCaptionAction(UndoAction):
+    """Action for editing an image's free-text caption (captioner models).
+
+    Unlike the tag actions this stores the whole before/after text - captions are
+    short and not comma-structured, so a positional diff would not help.
+    """
+    file_path: Path
+    old_text: str
+    new_text: str
+
+    def _write(self, text: str) -> bool:
+        try:
+            self.file_path.write_text(text, encoding='utf-8')
+            return True
+        except Exception as e:
+            write_debug_log(f"EditCaption write failed for {self.file_path}: {e}")
+            return False
+
+    def undo(self) -> bool:
+        return self._write(self.old_text)
+
+    def redo(self) -> bool:
+        return self._write(self.new_text)
+
+    def description(self) -> str:
+        return "キャプションの編集"
+
+
+@dataclass
 class BulkAddTagsAction(UndoAction):
     """Action for adding tags to multiple images."""
     file_paths: list[Path]

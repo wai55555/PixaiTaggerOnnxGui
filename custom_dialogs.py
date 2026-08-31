@@ -1,14 +1,145 @@
 from enum import IntFlag
+from typing import Any, Callable, Sequence
 
 from PySide6.QtCore import (
     Qt, Signal, QPoint, QRect, QEvent, QPointF
 )
 from PySide6.QtWidgets import (
-    QLabel, QDialog, QApplication, QVBoxLayout, QWidget
+    QLabel, QDialog, QApplication, QVBoxLayout, QHBoxLayout, QGridLayout,
+    QGroupBox, QSlider, QPushButton, QWidget
 )
 from PySide6.QtGui import (
     QMouseEvent, QPixmap, QKeyEvent, QWheelEvent, QResizeEvent, QPainter
 )
+
+import app_settings
+
+
+class CategoryTagSettingsDialog(QDialog):
+    """Per-category threshold / max-tag-count editor, reached from the "詳細" button.
+
+    Shows one row per tag category the selected model produces. Moving a slider writes
+    straight into the shared Thresholds / Limits settings objects, flags that category
+    as user-"touched" (so a later model switch won't overwrite it), and calls
+    `on_changed` so MainWindow can mirror the main sliders and persist.
+    """
+
+    _THRESHOLD_RES = 100  # slider steps per 1.0
+
+    def __init__(
+        self,
+        parent: QWidget | None,
+        *,
+        get_string: Callable[..., str],
+        categories: Sequence[str],
+        thresholds: Any,
+        limits: Any,
+        on_changed: Callable[[], None],
+        on_reset: Callable[[], None],
+        max_limit: int = 150,
+    ) -> None:
+        super().__init__(parent)
+        self._get_string = get_string
+        self._categories = list(categories)
+        self._thresholds = thresholds
+        self._limits = limits
+        self._on_changed = on_changed
+        self._on_reset = on_reset
+        self._max_limit = max_limit
+        self._loading = False
+        self._rows: dict[str, tuple[QSlider, QLabel, QSlider, QLabel]] = {}
+
+        self.setWindowTitle(get_string("CategoryDialog", "Title"))
+        self.setModal(False)
+
+        layout = QVBoxLayout(self)
+        hint = QLabel(get_string("CategoryDialog", "Hint"))
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+
+        grid_box = QGroupBox()
+        grid = QGridLayout(grid_box)
+        grid.addWidget(QLabel(get_string("CategoryDialog", "Header_Category")), 0, 0)
+        grid.addWidget(QLabel(get_string("CategoryDialog", "Header_Threshold")), 0, 1, 1, 2)
+        grid.addWidget(QLabel(get_string("CategoryDialog", "Header_MaxTags")), 0, 3, 1, 2)
+
+        for i, category in enumerate(self._categories, start=1):
+            grid.addWidget(QLabel(self._category_label(category)), i, 0)
+
+            thr_slider = QSlider(Qt.Orientation.Horizontal)
+            thr_slider.setRange(0, self._THRESHOLD_RES)
+            thr_value = QLabel()
+            thr_value.setFixedWidth(44)
+            thr_slider.valueChanged.connect(lambda v, c=category: self._on_threshold_changed(c, v))
+            grid.addWidget(thr_slider, i, 1)
+            grid.addWidget(thr_value, i, 2)
+
+            lim_slider = QSlider(Qt.Orientation.Horizontal)
+            lim_slider.setRange(0, self._max_limit)
+            lim_value = QLabel()
+            lim_value.setFixedWidth(44)
+            lim_slider.valueChanged.connect(lambda v, c=category: self._on_limit_changed(c, v))
+            grid.addWidget(lim_slider, i, 3)
+            grid.addWidget(lim_value, i, 4)
+
+            self._rows[category] = (thr_slider, thr_value, lim_slider, lim_value)
+
+        layout.addWidget(grid_box)
+
+        note = QLabel(get_string("CategoryDialog", "ZeroNote"))
+        note.setWordWrap(True)
+        layout.addWidget(note)
+
+        buttons = QHBoxLayout()
+        reset_btn = QPushButton(get_string("CategoryDialog", "Reset_Button"))
+        reset_btn.clicked.connect(self._handle_reset)
+        close_btn = QPushButton(get_string("CategoryDialog", "Close_Button"))
+        close_btn.clicked.connect(self.close)
+        buttons.addWidget(reset_btn)
+        buttons.addStretch(1)
+        buttons.addWidget(close_btn)
+        layout.addLayout(buttons)
+
+        self.reload_from_settings()
+
+    def _category_label(self, category: str) -> str:
+        label = self._get_string("CategoryDialog", f"Category_{category}")
+        # LocaleManager returns the key itself when a string is missing.
+        return category.capitalize() if label == f"Category_{category}" else label
+
+    def reload_from_settings(self) -> None:
+        """Re-sync every slider from the current Thresholds / Limits values."""
+        self._loading = True
+        try:
+            for category, (thr_slider, thr_value, lim_slider, lim_value) in self._rows.items():
+                thr = float(getattr(self._thresholds, category, 0.0))
+                lim = int(getattr(self._limits, category, 0))
+                thr_slider.setValue(int(round(thr * self._THRESHOLD_RES)))
+                thr_value.setText(f"{thr:.2f}")
+                lim_slider.setValue(max(0, min(self._max_limit, lim)))
+                lim_value.setText(str(lim))
+        finally:
+            self._loading = False
+
+    def _on_threshold_changed(self, category: str, raw: int) -> None:
+        value = raw / self._THRESHOLD_RES
+        self._rows[category][1].setText(f"{value:.2f}")
+        if self._loading:
+            return
+        setattr(self._thresholds, category, value)
+        self._thresholds.touched = app_settings.add_touched(self._thresholds.touched, category)
+        self._on_changed()
+
+    def _on_limit_changed(self, category: str, raw: int) -> None:
+        self._rows[category][3].setText(str(raw))
+        if self._loading:
+            return
+        setattr(self._limits, category, int(raw))
+        self._limits.touched = app_settings.add_touched(self._limits.touched, category)
+        self._on_changed()
+
+    def _handle_reset(self) -> None:
+        self._on_reset()
 
 class ClickableLabel(QLabel):
     """A QLabel that emits a 'doubleClicked' signal on a double-click."""

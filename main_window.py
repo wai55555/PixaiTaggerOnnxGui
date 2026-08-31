@@ -10,7 +10,7 @@ from PySide6.QtCore import (
 from PySide6.QtWidgets import (
     QMainWindow, QWidget,
     QGridLayout, QLabel, QLineEdit, QPushButton,
-    QSlider, QTextEdit, QFileDialog, QMessageBox,
+    QSlider, QTextEdit, QFileDialog, QMessageBox, QDialog,
     QStackedWidget, QApplication, QSplitter, QListWidgetItem, QComboBox
 )
 from PySide6.QtGui import (
@@ -26,12 +26,14 @@ from app_settings import load_config, load_settings, save_config # Updated impor
 from custom_widgets import PathLineEdit, TagListWidget
 import tag_utils
 from tag_utils import load_tag_translation_map
-from custom_dialogs import ClickableLabel, ImageViewerDialog
+from custom_dialogs import ClickableLabel, ImageViewerDialog, CategoryTagSettingsDialog
 from grid_view_widget import GridViewWidget
-from workers import DownloaderWorker, TaggerThreadWorker, TagLoader, BulkTagWorker
+from workers import DownloaderWorker, TaggerThreadWorker, CaptionerThreadWorker, TagLoader, BulkTagWorker
 from locale_manager import LocaleManager
 from ui_main_window import Ui_MainWindow
-from undo_manager import UndoManager, AddTagsAction, RemoveTagAction, BulkAddTagsAction, BulkRemoveTagsAction
+from undo_manager import UndoManager, AddTagsAction, RemoveTagAction, BulkAddTagsAction, BulkRemoveTagsAction, EditCaptionAction
+from model_registry import ModelEntry, discover_models, get_model_entry
+from model_mode_controller import ModelModeController
 
 def get_os_language() -> str:
     """
@@ -84,6 +86,9 @@ class MainWindow(QMainWindow):
     grid_view_button: QPushButton
     image_label: ClickableLabel
     tag_display_grid: QGridLayout
+    tag_grid_container: QWidget
+    caption_text_edit: QTextEdit
+    task_combo: QComboBox
     image_tag_prev_page_btn: QPushButton
     image_tag_next_page_btn: QPushButton
     add_single_tag_line: QLineEdit
@@ -92,6 +97,7 @@ class MainWindow(QMainWindow):
     loading_label: QLabel
     tag_button_grid: QGridLayout
     language_combo: QComboBox
+    model_combo: QComboBox
     prev_page_btn: QPushButton
     next_page_btn: QPushButton
     add_tag_line: QLineEdit
@@ -101,6 +107,8 @@ class MainWindow(QMainWindow):
     log_output: QTextEdit
     undo_button: QPushButton
     redo_button: QPushButton
+    bulk_delete_group: QWidget
+    bulk_add_group: QWidget
 
     # --- Signals ---
     request_overwrite_check = Signal(str, str)
@@ -117,6 +125,8 @@ class MainWindow(QMainWindow):
         self.ui.setup_ui(self)
         
         self.language_combo.currentIndexChanged.connect(self.toggle_tag_language)
+        self.model_combo.currentIndexChanged.connect(self._on_model_combo_changed)
+        self.task_combo.currentIndexChanged.connect(self._on_task_combo_changed)
 
         self._apply_image_list_selection_style()
         self._install_event_filters()
@@ -147,7 +157,7 @@ class MainWindow(QMainWindow):
         self._is_shutting_down = False # Flag to prevent race conditions on close
         # Thread and worker management
         self._tagger_thread: QThread | None = None
-        self._tagger_worker: TaggerThreadWorker | None = None
+        self._tagger_worker: TaggerThreadWorker | CaptionerThreadWorker | None = None
         self._download_thread: QThread | None = None
         self._downloader_worker: DownloaderWorker | None = None
         self._bulk_tag_thread: QThread | None = None
@@ -174,21 +184,35 @@ class MainWindow(QMainWindow):
         self._resize_timer = QTimer(self)
         self._resize_timer.setSingleShot(True)
         self._resize_timer.setInterval(100)
+        # Autosave for the caption editor: commit ~1.2s after the last keystroke so the
+        # edit is persisted and the Undo button lights up without waiting for focus-out.
+        self._caption_save_timer = QTimer(self)
+        self._caption_save_timer.setSingleShot(True)
+        self._caption_save_timer.setInterval(1200)
+        self._caption_save_timer.timeout.connect(self._save_current_caption)
         self.loading_timer: QTimer | None = None
         self.loading_state = 0
         self._sliders: dict[str, tuple[QSlider, QLabel]] = {}
+        # Set True while pushing model-default / dialog values into the main sliders so
+        # their valueChanged handler doesn't mis-flag those as user edits ("touched").
+        self._suppress_slider_touch: bool = False
+        self._category_settings_dialog: QDialog | None = None
         self._image_viewer_dialog: ImageViewerDialog | None = None
         
         self._overwrite_event_loop: QEventLoop | None = None
         
         # Undo/Redo Manager
         self.undo_manager = UndoManager(max_history=50)
+
+        # Consolidates all model-switch side effects (design.md 6.8節).
+        self._model_mode = ModelModeController(self)
         self._overwrite_response: bool | None = None
         self._worker_finished_event_loop: QEventLoop | None = None
         self._last_navigation_event_time: datetime | None = None # 追加
         
         self.tag_translation_map: dict[str, list[str]] = {}
         self._tag_display_language: str = "English"
+        self._current_caption_image_path: Path | None = None
 
         # Tag cache for hover highlight feature
         self._tag_cache: dict[str, set[str]] = {}
@@ -199,21 +223,17 @@ class MainWindow(QMainWindow):
 
     def initial_load(self):
         """Performs the initial loading of images and tags after the main window is shown."""
-        # ここで9個すべての引数を順番に渡します
-        self.tag_translation_map = load_tag_translation_map(
-            constants.TAGS_CSV_PATH,          # english_csv_path
-            constants.TAGS_JP_CSV_PATH,       # japanese_csv_path
-            constants.TAGS_FR_CSV_PATH,       # french_csv_path
-            constants.TAGS_DE_CSV_PATH,       # german_csv_path
-            constants.TAGS_ES_CSV_PATH,       # spanish_csv_path
-            constants.TAGS_RU_CSV_PATH,       # russian_csv_path
-            constants.TAGS_ZH_CN_CSV_PATH,    # zh_cn_csv_path
-            constants.TAGS_ZH_TW_CSV_PATH,    # zh_tw_csv_path
-            constants.TAGS_KO_CSV_PATH        # korean_csv_path
-        )
+        self.tag_translation_map = load_tag_translation_map(constants.MODEL_PATH.parent)
         self.reload_image_list()
         self.reload_tags_only()
         self._update_undo_redo_buttons()
+        # Apply the persisted model's full UI state exactly as if it had just been picked
+        # from the combo: tagger<->captioner layout, character-tag control visibility,
+        # this model's recommended threshold defaults, and the run/download button state.
+        # Without this, launching with a captioner (Florence-2) persisted shows the tagger
+        # UI (no caption box / task selector), and the threshold sliders keep whatever
+        # global value was last saved instead of the selected model's own defaults.
+        self._model_mode.on_model_changed(self._current_model_entry())
 
     def _apply_image_list_selection_style(self):
         """ダークモード時にファイルリストの選択色を見やすい色に上書きする。"""
@@ -226,6 +246,8 @@ class MainWindow(QMainWindow):
         self.add_single_tag_line.installEventFilter(self)
         self.add_tag_line.installEventFilter(self)
         self.add_tag_line_append.installEventFilter(self)
+        self.caption_text_edit.installEventFilter(self)
+        self.caption_text_edit.textChanged.connect(self._caption_save_timer.start)
 
     def reload_image_list(self, auto_select_path: str | None = None):
         """Reloads the list of images from the input directory."""
@@ -300,6 +322,12 @@ class MainWindow(QMainWindow):
 
     def reload_tags_only(self, preserve_page: bool = False):
         """Reloads the aggregated tag list for bulk editing asynchronously."""
+        if self._current_model_entry().model_type == "captioner":
+            # Bulk tag aggregation comma-splits every .txt file; running it on free-text
+            # captions would shred sentences into meaningless fragments (design.md 1.4節).
+            # The bulk add/delete UI is hidden in caption mode anyway (spec.md 8.3節).
+            return
+
         if preserve_page:
             self._saved_bulk_page = self._current_page
         else:
@@ -386,7 +414,11 @@ class MainWindow(QMainWindow):
             self.image_label.setText(self.locale_manager.get_string("MainWindow", "Image_Display_Error", image_relative_path=image_path.name, e=e))
 
     def _load_image_tags(self, image_path: Path, preserve_page: bool = False):
-        """Loads tags from the corresponding .txt file for a given image."""
+        """Loads tags (tagger mode) or free-text caption (captioner mode) for a given image."""
+        if self._current_model_entry().model_type == "captioner":
+            self._load_caption_for_image(image_path)
+            return
+
         txt_path = image_path.with_suffix('.txt')
         tag_content = ""
         if txt_path.is_file():
@@ -405,6 +437,59 @@ class MainWindow(QMainWindow):
             self._current_image_tag_page = 0
         
         self._display_image_tag_page()
+
+    def _load_caption_for_image(self, image_path: Path) -> None:
+        """Captioner mode: load the .txt file as free text, no comma-splitting (design.md 8.5節)."""
+        self._current_caption_image_path = image_path
+        txt_path = image_path.with_suffix('.txt')
+        content = ""
+        if txt_path.is_file():
+            try:
+                content = txt_path.read_text(encoding='utf-8')
+            except Exception as e:
+                self.update_log(self.locale_manager.get_string("MainWindow", "Error_Tag_File_Load_Failed", e=e, txt_path_name=txt_path.name), "red")
+        self._caption_save_timer.stop()
+        self.caption_text_edit.blockSignals(True)
+        self.caption_text_edit.setPlainText(content)
+        self.caption_text_edit.blockSignals(False)
+
+    def _save_current_caption(self) -> None:
+        """Saves caption_text_edit's content back to the currently loaded image's .txt file.
+        Called on focus-out (eventFilter) rather than on every keystroke. Records an
+        EditCaptionAction so the change is undoable, and only when something changed."""
+        self._caption_save_timer.stop()
+        if self._current_model_entry().model_type != "captioner":
+            return
+        image_path = self._current_caption_image_path
+        if image_path is None:
+            return
+        txt_path = image_path.with_suffix('.txt')
+        new_text = self.caption_text_edit.toPlainText()
+        old_text = ""
+        if txt_path.is_file():
+            try:
+                old_text = txt_path.read_text(encoding='utf-8')
+            except Exception:
+                old_text = ""
+        if new_text == old_text:
+            return
+        try:
+            txt_path.write_text(new_text, encoding='utf-8')
+            write_debug_log(f"Caption saved to {txt_path.name}")
+        except Exception as e:
+            self.update_log(self.locale_manager.get_string("MainWindow", "Error_Adding_Tags", txt_path_name=txt_path.name, e=e), "red")
+            return
+        self.undo_manager.push(EditCaptionAction(file_path=txt_path, old_text=old_text, new_text=new_text))
+        self._update_undo_redo_buttons()
+
+    @Slot(int)
+    def _on_task_combo_changed(self, index: int):
+        """Persists the selected Florence-2 caption detail level (spec.md 8.2節)."""
+        task_key = self.task_combo.itemData(index)
+        if not task_key or task_key == self.settings.caption.task:
+            return
+        self.settings.caption.task = task_key
+        self.save_current_config()
 
     def _clear_image_display(self):
         """Clears the image viewer and tag display."""
@@ -664,6 +749,11 @@ class MainWindow(QMainWindow):
         elif event.type() == QEvent.Type.Leave:
             if isinstance(watched, QPushButton) and watched.property("original_tag"):
                 self._clear_highlight()
+                return False
+
+        elif event.type() == QEvent.Type.FocusOut:
+            if watched is self.caption_text_edit:
+                self._save_current_caption()
                 return False
 
         # Pass the event on to the parent class if not handled
@@ -956,7 +1046,7 @@ class MainWindow(QMainWindow):
                 self.update_log(self.locale_manager.get_string("MainWindow", "Starting_Tagging_Process"), "black")
                 self._start_tagging_thread()
             else:
-                self.update_log(self.locale_manager.get_string("MainWindow", "Starting_Model_Download"), "black")
+                # _start_download_thread() logs "Starting_Model_Download" itself.
                 self._start_download_thread()
 
     def _start_tagging_thread(self):
@@ -979,15 +1069,24 @@ class MainWindow(QMainWindow):
             relative_path = current_item.data(Qt.ItemDataRole.UserRole + 1)
             selected_path = Path(self.settings.paths.input_dir) / relative_path
 
+        # Which worker class to instantiate is the one piece of model_type branching that
+        # lives outside ModelModeController: it's a thread/worker-startup decision, not a
+        # UI display-state one (design.md 6.8節 "スコープ外の明記").
+        is_captioner = self._current_model_entry().model_type == "captioner"
+
         self._tagger_thread = QThread()
-        self._tagger_worker = TaggerThreadWorker(self.settings, self._show_overwrite_dialog, self.locale_manager.get_string, selected_file_path=selected_path)
+        if is_captioner:
+            self._tagger_worker = CaptionerThreadWorker(self.settings, self._show_overwrite_dialog, self.locale_manager.get_string, selected_file_path=selected_path)
+            self._tagger_thread.started.connect(self._tagger_worker.run_captioning)
+        else:
+            self._tagger_worker = TaggerThreadWorker(self.settings, self._show_overwrite_dialog, self.locale_manager.get_string, selected_file_path=selected_path)
+            self._tagger_thread.started.connect(self._tagger_worker.run_tagging)
         self._tagger_worker.moveToThread(self._tagger_thread)
-        
+
         self._tagger_worker.log_message.connect(self.update_log)
         self._tagger_worker.model_status_changed.connect(self._check_model_status_and_update_ui)
         self._tagger_worker.finished.connect(self._on_tagger_finished)
-        self._tagger_thread.started.connect(self._tagger_worker.run_tagging)
-        
+
         self._tagger_thread.start()
 
     def _cleanup_tagger_thread(self):
@@ -1023,7 +1122,7 @@ class MainWindow(QMainWindow):
         self.update_log(self.locale_manager.get_string("MainWindow", "Starting_Model_Download"), "black")
 
         self._download_thread = QThread()
-        self._downloader_worker = DownloaderWorker(self.locale_manager.get_string)
+        self._downloader_worker = DownloaderWorker(self.locale_manager.get_string, model_id=self.settings.model.model_id)
         self._downloader_worker.moveToThread(self._download_thread)
 
         self._downloader_worker.log_message.connect(self.update_log)
@@ -1099,12 +1198,11 @@ class MainWindow(QMainWindow):
             self.update_log(self.locale_manager.get_string("MainWindow", "Model_Download_Complete"), "green")
             # Update only the model verification status without overwriting user-modified settings
             config = load_config()
-            self.settings.model.verified = config.getboolean('Model', 'verified', fallback=False)
+            self.settings.model.verified_models = load_settings(config).model.verified_models
             self._check_model_status_and_update_ui() # On success, check status to show "TAG" button
             
             # Reload tag translation map as files are now available
-            self.tag_translation_map = load_tag_translation_map(constants.TAGS_CSV_PATH, constants.TAGS_JP_CSV_PATH, constants.TAGS_FR_CSV_PATH, constants.TAGS_DE_CSV_PATH, 
-                                                               constants.TAGS_ES_CSV_PATH, constants.TAGS_RU_CSV_PATH, constants.TAGS_ZH_CN_CSV_PATH, constants.TAGS_ZH_TW_CSV_PATH, constants.TAGS_KO_CSV_PATH)
+            self.tag_translation_map = load_tag_translation_map(constants.MODEL_PATH.parent)
             
             # Update UI with new translation map
             self.display_current_tag_page()
@@ -1197,6 +1295,14 @@ class MainWindow(QMainWindow):
         self._build_tag_cache()
         self.grid_view_widget.update_tag_cache(self._tag_cache)
 
+    @Slot(Path, str, str)
+    def _on_gridview_caption_edited(self, file_path: Path, old_text: str, new_text: str):
+        """Records a caption edit made in GridView (captioner mode) for undo. The cell has
+        already written the file; this only pushes the action."""
+        self.undo_manager.push(EditCaptionAction(file_path=file_path, old_text=old_text, new_text=new_text))
+        self._update_undo_redo_buttons()
+        write_debug_log(f"GridView caption edit recorded: {file_path.name}")
+
    
 
     def save_current_config(self):
@@ -1211,15 +1317,51 @@ class MainWindow(QMainWindow):
         # The log message can be distracting for this frequent operation, so it's commented out.
         # self.update_log(self.locale_manager.get_string("MainWindow", "Settings_Saved"), "green")
 
+    def _current_model_entry(self) -> ModelEntry:
+        """Returns the ModelEntry for the currently selected model_id (spec.md 8.4節).
+        Falls back to the PixAI pseudo-entry (always first) for an unknown/stale model_id."""
+        entry = get_model_entry(self.settings.model.model_id)
+        if entry is not None:
+            return entry
+        return discover_models()[0]
+
+    def _current_model_dir(self) -> Path:
+        return self._current_model_entry().model_dir
+
     def _is_model_available(self) -> bool:
-        """Checks if the model is verified and essential files exist."""
-        if not self.settings.model.verified:
+        """Checks if the currently selected model is verified and its files exist (spec.md 8.4節)."""
+        entry = self._current_model_entry()
+        if entry.model_id == "pixai-tagger-v0.9":
+            # Unchanged from before multi-model support (NFR-3): trust file presence
+            # directly rather than gating on verified_models, since installs that
+            # downloaded PixAI before multi-model support (or whose config.ini was
+            # ever regenerated) never get a chance to set that flag again - the
+            # download flow only runs when the user clicks the button, which they
+            # won't do for a model that already works.
+            return constants.MODEL_PATH.is_file() and constants.TAGS_CSV_PATH.is_file()
+        required_files = entry.config.get("network", {}).get("files", {}).keys()
+        if not required_files:
             return False
-        if not constants.MODEL_PATH.is_file():
+        if entry.config.get("manual_download", False):
+            # No in-app download to hash-verify against (gated repo): the model_registry
+            # scan already hid this entry until every file was placed by hand, so file
+            # presence alone is the availability signal - same trust-the-files policy as
+            # the PixAI special-case above.
+            return all((entry.model_dir / f).is_file() for f in required_files)
+        if not self.settings.model.verified_models.get(entry.model_id, False):
             return False
-        if not constants.TAGS_CSV_PATH.is_file():
-            return False
-        return True
+        return all((entry.model_dir / f).is_file() for f in required_files)
+
+    @Slot(int)
+    def _on_model_combo_changed(self, index: int):
+        """Handles the user picking a different model from model_combo (spec.md 8.2節)."""
+        model_id = self.model_combo.itemData(index)
+        if not model_id or model_id == self.settings.model.model_id:
+            return
+        self.settings.model.model_id = model_id
+        self.save_current_config()
+        self.model_combo.setToolTip(self.locale_manager.get_string("ModelDescriptions", model_id))
+        self._model_mode.on_model_changed(self._current_model_entry())
 
     def _get_log_color_map(self) -> dict[str, str]:
         """Returns the appropriate color map based on the detected theme."""
@@ -1253,13 +1395,75 @@ class MainWindow(QMainWindow):
                 real_val = value / res
                 v_label.setText(f"{real_val:.2f}" if is_flt else str(int(real_val)))
                 setattr(s, k, real_val if is_flt else int(real_val))
+                if not self._suppress_slider_touch:
+                    # A hand move marks the category "touched" so a later model switch
+                    # won't overwrite it with that model's default (see _apply_threshold_defaults).
+                    s.touched = app_settings.add_touched(s.touched, k)
                 self.save_current_config() # Save settings whenever a slider value changes
 
             slider.valueChanged.connect(update_value)
-            
+
             layout.addWidget(label, row_index, 0)
             layout.addWidget(slider, row_index, 1)
             layout.addWidget(value_label, row_index, 2)
+
+    def _current_model_categories(self) -> list[str]:
+        """Tag categories the selected model produces (ui.categories in its config)."""
+        cats = self._current_model_entry().config.get("ui", {}).get("categories")
+        return list(cats) if cats else ["general", "character"]
+
+    def _sync_settings_sliders(self):
+        """Refresh the four main-window sliders (general/character threshold & max) from
+        self.settings without their valueChanged handler flagging them as user-touched."""
+        self._suppress_slider_touch = True
+        try:
+            for key, (slider, value_label) in self._sliders.items():
+                section_name, cat = key.split('_', 1)
+                value = getattr(getattr(self.settings, section_name), cat)
+                is_float = section_name == 'thresholds'
+                res = 100.0 if is_float else 1.0
+                slider.setValue(int(round(value * res)))
+                value_label.setText(f"{value:.2f}" if is_float else str(int(value)))
+        finally:
+            self._suppress_slider_touch = False
+
+    @Slot()
+    def _open_category_settings_dialog(self):
+        """Opens the per-category threshold / max-tag dialog for the selected model."""
+        if self._category_settings_dialog is not None and self._category_settings_dialog.isVisible():
+            self._category_settings_dialog.raise_()
+            self._category_settings_dialog.activateWindow()
+            return
+
+        def on_changed():
+            # The dialog has already written into self.settings; mirror the main sliders,
+            # persist, and refresh any open tag view that depends on the values.
+            self._sync_settings_sliders()
+            self.save_current_config()
+
+        def on_reset():
+            # Drop "touched" for this model's categories, then re-apply its defaults.
+            model_cats = set(self._current_model_categories())
+            for section in (self.settings.thresholds, self.settings.limits):
+                kept = app_settings.parse_touched(section.touched) - model_cats
+                section.touched = ",".join(sorted(kept))
+            self._model_mode._apply_threshold_defaults(self._current_model_entry())
+            self._sync_settings_sliders()
+            self.save_current_config()
+            if self._category_settings_dialog is not None:
+                self._category_settings_dialog.reload_from_settings()
+
+        self._category_settings_dialog = CategoryTagSettingsDialog(
+            self,
+            get_string=self.locale_manager.get_string,
+            categories=self._current_model_categories(),
+            thresholds=self.settings.thresholds,
+            limits=self.settings.limits,
+            on_changed=on_changed,
+            on_reset=on_reset,
+        )
+        self._category_settings_dialog.finished.connect(lambda _: setattr(self, "_category_settings_dialog", None))
+        self._category_settings_dialog.show()
 
     def _reconnect_sliders(self):
         """Reconnects all sliders to the current self.settings object."""
@@ -1503,6 +1707,7 @@ class MainWindow(QMainWindow):
 
         self.central_widget.setCurrentWidget(self.grid_view_widget)
         self.setWindowTitle(f"{constants.MSG_WINDOW_TITLE} - Grid View")
+        self.grid_view_widget.set_caption_mode(self._current_model_entry().model_type == "captioner")
         self.grid_view_widget.load_images(image_paths, self._tag_cache, Path(self.settings.paths.input_dir))
         self.showMaximized()
         self.update_log(self.locale_manager.get_string("MainWindow", "Switched_To_Grid_View"), "blue")
