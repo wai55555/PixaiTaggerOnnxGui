@@ -45,7 +45,7 @@
     "format": "idx_json",
     "file_name": "model_vocabulary.json",
     "default_category": "general",
-    "_note": "Assumed to be the same {\"<idx>\": {\"tag\": \"...\", \"category\": \"General|Character|Copyright|Meta|Rating|Quality\"}} shape as cl_tagger_1_02's tag_mapping.json. v2 drops the Artist and Model categories. Unverified - the repo is gated; adjust the format / add a parser if model_vocabulary.json differs."
+    "_note": "model_vocabulary.json is gated and unverified. The idx_json loader now auto-detects several shapes: v1 {\"<idx>\":{\"tag\",\"category\"}}, a v2-style root {\"idx_to_tag\":{...},\"tag_to_category\":{...}}, and a flat [{\"tag\",\"category\"}] list. If the real file matches none of these, add a dedicated parser. v2 vocab categories: General/Character/Copyright/Meta/Rating/Quality (no Artist, no Model)."
   },
   "ui": {
     "supports_character_tag": true,

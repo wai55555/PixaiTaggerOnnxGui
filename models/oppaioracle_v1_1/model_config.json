@@ -6,11 +6,10 @@
   "network": {
     "files": {
       "model.onnx": "https://huggingface.co/Grio43/OppaiOracle/resolve/main/V1.1_onnx/model.onnx",
-      "selected_tags.csv": "https://huggingface.co/Grio43/OppaiOracle/resolve/main/V1.1_onnx/selected_tags.csv",
-      "vocabulary.json": "https://huggingface.co/Grio43/OppaiOracle/resolve/main/V1.1_onnx/vocabulary.json",
-      "pr_thresholds.json": "https://huggingface.co/Grio43/OppaiOracle/resolve/main/V1.1_onnx/pr_thresholds.json"
+      "selected_tags.csv": "https://huggingface.co/Grio43/OppaiOracle/resolve/main/V1.1_onnx/selected_tags.csv"
     },
-    "hash_verified_file": "model.onnx"
+    "hash_verified_file": "model.onnx",
+    "_note": "vocabulary.json / pr_thresholds.json are published upstream but nothing in the app reads them yet (per-tag thresholds are not wired into inference). Dropped from files to avoid a needless download."
   },
   "inference": {
     "input_size": 448,

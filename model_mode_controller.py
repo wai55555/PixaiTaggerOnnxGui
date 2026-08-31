@@ -112,6 +112,7 @@ class ModelModeController:
         mw.tag_grid_container.setVisible(not is_captioner)
         mw.image_tag_prev_page_btn.setVisible(not is_captioner)
         mw.image_tag_next_page_btn.setVisible(not is_captioner)
+        mw.add_single_tag_label.setVisible(not is_captioner)
         mw.add_single_tag_line.setVisible(not is_captioner)
         mw.add_single_tag_button.setVisible(not is_captioner)
         mw.bulk_delete_group.setVisible(not is_captioner)
@@ -140,6 +141,11 @@ class ModelModeController:
             idx = mw.task_combo.findData(default_task)
             if idx >= 0:
                 mw.task_combo.setCurrentIndex(idx)
+        else:
+            # reload_tags_only() early-returns in captioner mode, so _all_tags is empty for
+            # the whole captioner session. Repopulate it (and the grid tag cache) when
+            # coming back to a tagger, or the bulk-delete panel stays empty.
+            mw.reload_tags_only()
 
         # Reload whichever display (tag buttons or caption text) matches the new mode
         # for the currently-selected image.

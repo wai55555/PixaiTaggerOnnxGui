@@ -111,12 +111,16 @@ class Florence2Captioner:
         normalized = _normalize_np_chw(chw, mean, std)
         return np.expand_dims(normalized, axis=0)
 
-    def generate(self, image: "Image.Image", task_prompt: str) -> str:
+    def generate(self, image: "Image.Image", task_prompt: str,
+                 stop_checker: Callable[[], bool] | None = None) -> str:
         """
         1. vision_encoder(pixel_values) -> image_features
         2. embed_tokens(task_prompt tokens) -> text_embeds
         3. concat(image_features, text_embeds) -> encoder_model -> encoder_hidden_states
         4. greedy autoregressive decode with decoder_model_merged (KV cache)
+
+        `stop_checker`, if given, is polled once per decoded token so a long generation
+        on CPU responds to the Stop button without finishing the whole caption first.
         """
         pixel_values = self._preprocess_image(image)
         image_features = self.vision_encoder.run(None, {"pixel_values": pixel_values})[0]
@@ -133,11 +137,12 @@ class Florence2Captioner:
             "attention_mask": combined_attention_mask,
         })[0]
 
-        generated_ids = self._greedy_decode(encoder_hidden_states, combined_attention_mask)
+        generated_ids = self._greedy_decode(encoder_hidden_states, combined_attention_mask, stop_checker)
         text = self.tokenizer.decode(generated_ids, skip_special_tokens=True)
         return text.strip()
 
-    def _greedy_decode(self, encoder_hidden_states: "NDArray[np.float32]", encoder_attention_mask: "NDArray[np.int64]") -> list[int]:
+    def _greedy_decode(self, encoder_hidden_states: "NDArray[np.float32]", encoder_attention_mask: "NDArray[np.int64]",
+                       stop_checker: Callable[[], bool] | None = None) -> list[int]:
         batch_size = encoder_hidden_states.shape[0]
         current_token = self.config.decoder_start_token_id
         generated: list[int] = []
@@ -157,6 +162,8 @@ class Florence2Captioner:
         use_cache_branch = np.array([False])
 
         for step in range(self.config.max_new_tokens):
+            if stop_checker and stop_checker():
+                break
             input_ids = np.array([[current_token]], dtype=np.int64)
             inputs_embeds = self.embed_tokens.run(None, {"input_ids": input_ids})[0]
 
@@ -260,11 +267,12 @@ def process_caption_loop(
             with open(image_path, "rb") as f:
                 image = Image.open(f).convert("RGB")
         except Exception as e:
+            log_dbg(f"Caption image load failed for {relative_path}: {type(e).__name__}: {e}")
             core_log_gui(_get_string_internal("TaggerCore", "Image_Load_Failed_Short", current_index_str=current_index_str, relative_path_name=relative_path.name), "red")
             continue
 
         try:
-            caption = captioner.generate(image, task_prompt)
+            caption = captioner.generate(image, task_prompt, stop_checker)
         except Exception as e:
             log_dbg(f"Caption generation failed for {relative_path}: {type(e).__name__}: {e}")
             core_log_gui(_get_string_internal("TaggerCore", "Tag_Inference_Failed_Short", current_index_str=current_index_str, relative_path_name=relative_path.name), "red")
@@ -277,4 +285,5 @@ def process_caption_loop(
                 f.write(caption)
             core_log_gui(_get_string_internal("TaggerCore", "Tag_Output_Success", current_index_str=current_index_str, output_path_name=output_path.name), "green")
         except Exception as e:
+            log_dbg(f"Caption save failed for {output_path.name}: {type(e).__name__}: {e}")
             core_log_gui(_get_string_internal("TaggerCore", "Save_Failed_Short", current_index_str=current_index_str, output_path_name=output_path.name), "red")

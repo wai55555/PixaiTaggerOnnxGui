@@ -70,6 +70,7 @@ class Ui_MainWindow(object):
         main_window.grid_view_widget.tags_added.connect(main_window._on_gridview_tags_added)  # type: ignore
         main_window.grid_view_widget.tag_removed.connect(main_window._on_gridview_tag_removed)  # type: ignore
         main_window.grid_view_widget.caption_edited.connect(main_window._on_gridview_caption_edited)  # type: ignore
+        main_window.grid_view_widget.caption_save_failed.connect(main_window._on_gridview_caption_save_failed)  # type: ignore
         main_window.grid_view_widget.tag_hovered.connect(main_window._highlight_files_for_tag)  # type: ignore
         main_window.grid_view_widget.tag_hover_cleared.connect(main_window._clear_highlight)  # type: ignore
         main_window._resize_timer.timeout.connect(main_window._handle_resize_debounced)  # type: ignore
@@ -237,8 +238,9 @@ class Ui_MainWindow(object):
         main_window.task_combo.setToolTip(main_window.locale_manager.get_string("MainWindow", "Task_Combo_Tooltip"))
         # "More Detailed Caption" first: it's the usual choice, and it becomes the
         # fallback when settings.caption.task is unset/unknown (findData -> -1 -> index 0).
-        for task_key, label in (("MORE_DETAILED_CAPTION", "More Detailed Caption"), ("DETAILED_CAPTION", "Detailed Caption"), ("CAPTION", "Caption")):
-            main_window.task_combo.addItem(label, task_key)
+        for task_key in ("MORE_DETAILED_CAPTION", "DETAILED_CAPTION", "CAPTION"):
+            main_window.task_combo.addItem(
+                main_window.locale_manager.get_string("MainWindow", f"Task_Label_{task_key}"), task_key)
         current_task_index = max(0, main_window.task_combo.findData(main_window.settings.caption.task))
         main_window.task_combo.setCurrentIndex(current_task_index)
         main_window.task_combo.setVisible(False)
@@ -253,7 +255,8 @@ class Ui_MainWindow(object):
         page_nav_layout.addWidget(main_window.image_tag_next_page_btn)
         tag_panel.addLayout(page_nav_layout)
 
-        tag_panel.addWidget(QLabel(main_window.locale_manager.get_string("MainWindow", "Add_Single_Tag_Label")))
+        main_window.add_single_tag_label = QLabel(main_window.locale_manager.get_string("MainWindow", "Add_Single_Tag_Label"))
+        tag_panel.addWidget(main_window.add_single_tag_label)
         add_tag_layout = QHBoxLayout()
         main_window.add_single_tag_line = QLineEdit()
         main_window.add_single_tag_line.setPlaceholderText(main_window.locale_manager.get_string("MainWindow", "Tags_Comma_Separated_Placeholder"))

@@ -1,11 +1,26 @@
 # -*- mode: python ; coding: utf-8 -*-
 
+import glob
+import os
+
+# Ship every model's hand-authored model_config.json (NOT the multi-GB model.onnx files,
+# which the app downloads at runtime) plus PixAI's curated tag-translation CSVs, keeping
+# the models/<model_id>/ directory structure so model_registry.discover_models() finds them.
+_model_datas = [
+    (p, os.path.dirname(p))
+    for p in glob.glob('models/*/model_config.json')
+]
+_model_datas += [
+    (p, os.path.dirname(p))
+    for p in glob.glob('models/pixai-tagger-v0.9/selected_tags*.csv')
+]
+
 
 a = Analysis(
     ['pixai_tagger_gui.py'],
     pathex=[],
     binaries=[],
-    datas=[('icons', 'icons'), ('lang', 'lang')],
+    datas=[('icons', 'icons'), ('lang', 'lang')] + _model_datas,
     hiddenimports=['PySide6.QtCore', 'PySide6.QtGui', 'PySide6.QtWidgets'],
     hookspath=[],
     hooksconfig={},

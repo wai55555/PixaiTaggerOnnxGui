@@ -440,6 +440,10 @@ class MainWindow(QMainWindow):
 
     def _load_caption_for_image(self, image_path: Path) -> None:
         """Captioner mode: load the .txt file as free text, no comma-splitting (design.md 8.5節)."""
+        # Commit any edit still pending in the debounce window for the PREVIOUS image
+        # before its path/content is replaced, otherwise the edit is silently lost.
+        if self._current_caption_image_path is not None and self._current_caption_image_path != image_path:
+            self._save_current_caption()
         self._current_caption_image_path = image_path
         txt_path = image_path.with_suffix('.txt')
         content = ""
@@ -465,8 +469,9 @@ class MainWindow(QMainWindow):
             return
         txt_path = image_path.with_suffix('.txt')
         new_text = self.caption_text_edit.toPlainText()
+        existed_before = txt_path.is_file()
         old_text = ""
-        if txt_path.is_file():
+        if existed_before:
             try:
                 old_text = txt_path.read_text(encoding='utf-8')
             except Exception:
@@ -477,9 +482,10 @@ class MainWindow(QMainWindow):
             txt_path.write_text(new_text, encoding='utf-8')
             write_debug_log(f"Caption saved to {txt_path.name}")
         except Exception as e:
-            self.update_log(self.locale_manager.get_string("MainWindow", "Error_Adding_Tags", txt_path_name=txt_path.name, e=e), "red")
+            self.update_log(self.locale_manager.get_string("MainWindow", "Error_Caption_Save_Failed", txt_path_name=txt_path.name, e=e), "red")
             return
-        self.undo_manager.push(EditCaptionAction(file_path=txt_path, old_text=old_text, new_text=new_text))
+        self.undo_manager.push(EditCaptionAction(
+            file_path=txt_path, old_text=old_text, new_text=new_text, file_existed_before=existed_before))
         self._update_undo_redo_buttons()
 
     @Slot(int)
@@ -499,6 +505,14 @@ class MainWindow(QMainWindow):
         self._current_image_tags = []
         self._current_image_tag_page = 0
         self._display_image_tag_page()
+        # Drop the caption editor state too - otherwise a pending edit would later be
+        # written back to a file from the old folder / no-longer-selected image.
+        self._save_current_caption()
+        self._caption_save_timer.stop()
+        self._current_caption_image_path = None
+        self.caption_text_edit.blockSignals(True)
+        self.caption_text_edit.clear()
+        self.caption_text_edit.blockSignals(False)
         if self._image_viewer_dialog:
             self._image_viewer_dialog.close()
 
@@ -665,6 +679,10 @@ class MainWindow(QMainWindow):
         self.input_line.setEnabled(enabled)
         self.grid_view_button.setEnabled(enabled)
         self.image_list.setEnabled(enabled)
+        # Locked during a download/tagging run: switching models mid-run would repoint
+        # settings/UI away from the model the active worker is using.
+        self.model_combo.setEnabled(enabled)
+        self.task_combo.setEnabled(enabled)
         self._set_bulk_controls_enabled(enabled)
 
     def _set_bulk_controls_enabled(self, enabled: bool):
@@ -1295,13 +1313,18 @@ class MainWindow(QMainWindow):
         self._build_tag_cache()
         self.grid_view_widget.update_tag_cache(self._tag_cache)
 
-    @Slot(Path, str, str)
-    def _on_gridview_caption_edited(self, file_path: Path, old_text: str, new_text: str):
+    @Slot(Path, str, str, bool)
+    def _on_gridview_caption_edited(self, file_path: Path, old_text: str, new_text: str, file_existed_before: bool):
         """Records a caption edit made in GridView (captioner mode) for undo. The cell has
         already written the file; this only pushes the action."""
-        self.undo_manager.push(EditCaptionAction(file_path=file_path, old_text=old_text, new_text=new_text))
+        self.undo_manager.push(EditCaptionAction(
+            file_path=file_path, old_text=old_text, new_text=new_text, file_existed_before=file_existed_before))
         self._update_undo_redo_buttons()
         write_debug_log(f"GridView caption edit recorded: {file_path.name}")
+
+    @Slot(str)
+    def _on_gridview_caption_save_failed(self, detail: str):
+        self.update_log(self.locale_manager.get_string("MainWindow", "Error_Caption_Save_Failed", txt_path_name=detail, e=""), "red")
 
    
 
@@ -1323,7 +1346,13 @@ class MainWindow(QMainWindow):
         entry = get_model_entry(self.settings.model.model_id)
         if entry is not None:
             return entry
-        return discover_models()[0]
+        # Stale / hidden-manual-download model_id: normalize the setting to the fallback
+        # so the downloader and every other consumer agree on which model is active.
+        fallback = discover_models()[0]
+        if self.settings.model.model_id != fallback.model_id:
+            write_debug_log(f"Unknown model_id '{self.settings.model.model_id}'; falling back to '{fallback.model_id}'.")
+            self.settings.model.model_id = fallback.model_id
+        return fallback
 
     def _current_model_dir(self) -> Path:
         return self._current_model_entry().model_dir
@@ -1361,6 +1390,9 @@ class MainWindow(QMainWindow):
         self.settings.model.model_id = model_id
         self.save_current_config()
         self.model_combo.setToolTip(self.locale_manager.get_string("ModelDescriptions", model_id))
+        # The per-category dialog's rows are bound to the previous model's category list.
+        if self._category_settings_dialog is not None:
+            self._category_settings_dialog.close()
         self._model_mode.on_model_changed(self._current_model_entry())
 
     def _get_log_color_map(self) -> dict[str, str]:
@@ -1408,9 +1440,12 @@ class MainWindow(QMainWindow):
             layout.addWidget(value_label, row_index, 2)
 
     def _current_model_categories(self) -> list[str]:
-        """Tag categories the selected model produces (ui.categories in its config)."""
-        cats = self._current_model_entry().config.get("ui", {}).get("categories")
-        return list(cats) if cats else ["general", "character"]
+        """Tag categories the selected model produces (ui.categories in its config),
+        filtered to known names and returned in the canonical TAG_CATEGORY_NAMES order
+        so the per-category dialog rows are always consistent."""
+        cats = self._current_model_entry().config.get("ui", {}).get("categories") or ["general", "character"]
+        cats_set = set(cats)
+        return [c for c in app_settings.TAG_CATEGORY_NAMES if c in cats_set]
 
     def _sync_settings_sliders(self):
         """Refresh the four main-window sliders (general/character threshold & max) from

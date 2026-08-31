@@ -87,42 +87,62 @@ def _pixai_entry() -> ModelEntry:
     )
 
 
+def _iter_model_config_dirs() -> "list[Path]":
+    """Every directory that may hold a model_config.json, most-authoritative first:
+    the user-writable MODELS_DIR (downloads land here), then, when frozen and different,
+    the bundled MODELS_RESOURCE_DIR (_internal/models/ - config-only, no model.onnx)."""
+    seen: set[str] = set()
+    dirs: list[Path] = []
+    for root in (constants.MODELS_DIR, constants.MODELS_RESOURCE_DIR):
+        if not root.is_dir():
+            continue
+        for sub_dir in sorted(root.iterdir(), key=lambda p: p.name):
+            if not sub_dir.is_dir() or sub_dir.name in seen:
+                continue
+            if not (sub_dir / "model_config.json").is_file():
+                continue
+            seen.add(sub_dir.name)
+            dirs.append(sub_dir)
+    return dirs
+
+
 def discover_models() -> list[ModelEntry]:
     """
-    Returns the PixAI pseudo-entry plus every model_config.json-bearing subdirectory of
-    MODELS_DIR, ordered by _MODEL_DISPLAY_ORDER (unlisted model_ids sort last, by model_id).
+    Returns the PixAI pseudo-entry plus every model_config.json-bearing model directory
+    (see _iter_model_config_dirs), ordered by _MODEL_DISPLAY_ORDER (unlisted model_ids
+    sort last, by model_id).
     """
     entries: list[ModelEntry] = [_pixai_entry()]
 
-    models_dir = constants.MODELS_DIR
-    if not models_dir.is_dir():
-        return _sort_by_display_order(entries)
-
-    for sub_dir in sorted(models_dir.iterdir(), key=lambda p: p.name):
-        if not sub_dir.is_dir():
-            continue
-        config_path = sub_dir / "model_config.json"
-        if not config_path.is_file():
-            continue
+    for config_dir in _iter_model_config_dirs():
+        config_path = config_dir / "model_config.json"
         try:
             with config_path.open("r", encoding="utf-8") as f:
-                cfg: dict[str, Any] = json.load(f)
+                cfg: Any = json.load(f)
         except Exception as e:
             write_debug_log(f"model_registry: failed to load {config_path}: {e}")
             continue
 
-        model_id = cfg.get("model_id", sub_dir.name)
+        if not isinstance(cfg, dict):
+            write_debug_log(f"model_registry: {config_path} must contain a JSON object; skipping.")
+            continue
+
+        model_id = cfg.get("model_id", config_dir.name)
         model_type = cfg.get("model_type", "tagger")
         if model_type not in ("tagger", "captioner"):
             write_debug_log(f"model_registry: {config_path} has unknown model_type '{model_type}', skipping.")
             continue
+
+        # Downloaded model.onnx files always live under the user-writable MODELS_DIR, even
+        # when the config was read from the bundled resource copy.
+        model_dir = constants.MODELS_DIR / config_dir.name
 
         # "manual_download" models have no working in-app download (e.g. a gated HF repo):
         # stay hidden from the picker until the user has placed every required file here
         # by hand. Once complete, the entry appears and behaves like any other model.
         if cfg.get("manual_download", False):
             required_files = cfg.get("network", {}).get("files", {})
-            if not required_files or not all((sub_dir / name).is_file() for name in required_files):
+            if not required_files or not all((model_dir / name).is_file() for name in required_files):
                 write_debug_log(f"model_registry: '{model_id}' is manual_download and its files are not all present yet; hiding it.")
                 continue
 
@@ -130,7 +150,7 @@ def discover_models() -> list[ModelEntry]:
             model_id=model_id,
             model_name=cfg.get("model_name", model_id),
             model_type=model_type,
-            model_dir=sub_dir,
+            model_dir=model_dir,
             config=cfg,
         ))
 

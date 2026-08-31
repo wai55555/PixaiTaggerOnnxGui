@@ -50,7 +50,9 @@ def remove_tag_from_file(txt_path: Path, tag_to_remove: str) -> bool:
         return True
     return False
 
-_TRANSLATION_LANGUAGE_SUFFIXES = ["jp", "fr", "de", "es", "ru", "zh_cn", "zh_tw", "ko"]
+# Must match the shipped filenames exactly (selected_tags_zh_CN.csv / _zh_TW.csv) -
+# on a case-sensitive filesystem the lowercase forms silently fail to load.
+_TRANSLATION_LANGUAGE_SUFFIXES = ["jp", "fr", "de", "es", "ru", "zh_CN", "zh_TW", "ko"]
 
 def load_tag_translation_map(model_dir: Path) -> dict[str, list[str]]:
     """

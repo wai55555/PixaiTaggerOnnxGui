@@ -113,6 +113,19 @@ def _resolve_category(category_str: str) -> int | None:
     except KeyError:
         return None
 
+
+def _resolve_category_keep_row(category_str: str, *, context: str) -> int:
+    """Like _resolve_category, but never drops the row: an unrecognized category is
+    treated as GENERAL. Every tag loader MUST use this - infer_batch_prepared pairs
+    labels with model scores by index (zip(self.tags, scores)), so a single skipped
+    row shifts every later tag onto the wrong score."""
+    resolved = _resolve_category(category_str)
+    if resolved is None:
+        log_dbg(f"load_selected_tags[{context}]: unknown category {category_str!r}; "
+                f"mapping to GENERAL to keep index alignment")
+        return int(TagCategory.GENERAL)
+    return resolved
+
 def _load_selected_tags_pixai6col(tags_path: Path) -> list[TagMeta]:
     labels: list[TagMeta] = []
     with tags_path.open(encoding="utf-8", newline="") as fp:
@@ -125,9 +138,7 @@ def _load_selected_tags_pixai6col(tags_path: Path) -> list[TagMeta]:
             if len(cells) < 6:
                 continue
             tag_name = cells[2]
-            category = _resolve_category(cells[3])
-            if category is None:
-                continue
+            category = _resolve_category_keep_row(cells[3], context="pixai6col")
             count_str = cells[4]
             ips_json = cells[5]
             try:
@@ -157,9 +168,7 @@ def _load_selected_tags_simple3col(tags_path: Path) -> list[TagMeta]:
         for cells in reader:
             if len(cells) < 3:
                 continue
-            category = _resolve_category(cells[2])
-            if category is None:
-                continue
+            category = _resolve_category_keep_row(cells[2], context="simple3col")
             labels.append(TagMeta(name=cells[1], category=category, count=None, ips=()))
     return labels
 
@@ -175,9 +184,7 @@ def _load_selected_tags_wd4col(tags_path: Path) -> list[TagMeta]:
         for cells in reader:
             if len(cells) < 4:
                 continue
-            category = _resolve_category(cells[2])
-            if category is None:
-                continue
+            category = _resolve_category_keep_row(cells[2], context="wd4col")
             try:
                 count = int(cells[3]) if cells[3] else None
             except ValueError:
@@ -185,16 +192,59 @@ def _load_selected_tags_wd4col(tags_path: Path) -> list[TagMeta]:
             labels.append(TagMeta(name=cells[1], category=category, count=count, ips=()))
     return labels
 
-def _load_selected_tags_idx_json(tags_path: Path) -> list[TagMeta]:
-    """cl_tagger: tag_mapping.json -> {"<idx>": {"tag": "...", "category": "General"|...}}."""
-    with tags_path.open(encoding="utf-8") as fp:
-        raw: dict[str, dict[str, str]] = json.load(fp)
-    labels: list[TagMeta] = []
-    for idx in sorted(raw.keys(), key=lambda k: int(k)):
-        entry = raw[idx]
-        category = _resolve_category(str(entry.get("category", "")))
-        if category is None:
+def _numeric_keys_sorted(raw: dict[str, Any]) -> list[str]:
+    """Keys that are integer strings, in numeric order. Non-numeric keys (a stray
+    version/comment field in the JSON) are logged and skipped instead of raising."""
+    numeric: list[str] = []
+    for k in raw:
+        try:
+            int(k)
+        except (TypeError, ValueError):
+            log_dbg(f"load_selected_tags: ignoring non-numeric mapping key {k!r}")
             continue
+        numeric.append(k)
+    return sorted(numeric, key=int)
+
+
+def _load_selected_tags_idx_json(tags_path: Path) -> list[TagMeta]:
+    """Index -> tag/category mapping JSON. Handles the shapes seen across cl_tagger:
+
+    * v1 tag_mapping.json:  {"<idx>": {"tag": "...", "category": "General"}}
+    * v2 model_vocabulary.json (provisional - gated, not yet verified):
+        {"idx_to_tag": {"<idx>": "tag"}, "tag_to_category": {"tag": "General"},
+         [optional] "idx_to_category": {"<idx>": "General"}}
+    * flat list:  [{"tag"/"name": "...", "category": "..."}, ...]  (order == index)
+    """
+    with tags_path.open(encoding="utf-8") as fp:
+        raw: Any = json.load(fp)
+    labels: list[TagMeta] = []
+
+    if isinstance(raw, dict) and "idx_to_tag" in raw:
+        idx_to_tag: dict[str, Any] = raw.get("idx_to_tag", {}) or {}
+        tag_to_category: dict[str, Any] = raw.get("tag_to_category", {}) or {}
+        idx_to_category: dict[str, Any] = raw.get("idx_to_category", {}) or {}
+        for idx in _numeric_keys_sorted(idx_to_tag):
+            tag_name = str(idx_to_tag[idx])
+            cat_str = str(idx_to_category.get(idx, tag_to_category.get(tag_name, "")))
+            category = _resolve_category_keep_row(cat_str, context="idx_json/v2")
+            labels.append(TagMeta(name=tag_name, category=category, count=None, ips=()))
+        return labels
+
+    if isinstance(raw, dict) and "tags" in raw and isinstance(raw["tags"], list):
+        raw = raw["tags"]
+
+    if isinstance(raw, list):
+        for entry in raw:
+            entry = entry if isinstance(entry, dict) else {}
+            name = str(entry.get("tag", entry.get("name", "")))
+            category = _resolve_category_keep_row(str(entry.get("category", "")), context="idx_json/list")
+            labels.append(TagMeta(name=name, category=category, count=None, ips=()))
+        return labels
+
+    # v1 shape: {"<idx>": {"tag": ..., "category": ...}}
+    for idx in _numeric_keys_sorted(raw):
+        entry = raw[idx] if isinstance(raw[idx], dict) else {}
+        category = _resolve_category_keep_row(str(entry.get("category", "")), context="idx_json")
         labels.append(TagMeta(name=str(entry.get("tag", "")), category=category, count=None, ips=()))
     return labels
 
@@ -206,11 +256,9 @@ def _load_selected_tags_camie_metadata_json(tags_path: Path) -> list[TagMeta]:
     idx_to_tag: dict[str, str] = tag_mapping.get("idx_to_tag", {})
     tag_to_category: dict[str, str] = tag_mapping.get("tag_to_category", {})
     labels: list[TagMeta] = []
-    for idx in sorted(idx_to_tag.keys(), key=lambda k: int(k)):
+    for idx in _numeric_keys_sorted(idx_to_tag):
         tag_name = idx_to_tag[idx]
-        category = _resolve_category(str(tag_to_category.get(tag_name, "")))
-        if category is None:
-            continue
+        category = _resolve_category_keep_row(str(tag_to_category.get(tag_name, "")), context="camie_metadata_json")
         labels.append(TagMeta(name=tag_name, category=category, count=None, ips=()))
     return labels
 
@@ -516,7 +564,9 @@ def build_inference_config(model_config: dict[str, Any]) -> InferenceConfig:
     tags_csv = model_config.get("tags_csv", {})
     defaults = InferenceConfig()
 
-    def _tuple3(value: Any, fallback: tuple[float, float, float] | None) -> tuple[float, float, float] | None:
+    def _tuple3(value: Any) -> tuple[float, float, float] | None:
+        # `value` has already had its default applied by inference.get(...); None here
+        # means the model explicitly disables normalization.
         if value is None:
             return None
         return tuple(value)  # type: ignore[return-value]
@@ -532,8 +582,8 @@ def build_inference_config(model_config: dict[str, Any]) -> InferenceConfig:
         channel_order=inference.get("channel_order", defaults.channel_order),
         rescale_to_unit=inference.get("rescale_to_unit", defaults.rescale_to_unit),
         pad_color_rgb=tuple(pad_color) if pad_color is not None else defaults.pad_color_rgb,  # type: ignore[arg-type]
-        normalize_mean=_tuple3(normalize_mean, defaults.normalize_mean),
-        normalize_std=_tuple3(normalize_std, defaults.normalize_std),
+        normalize_mean=_tuple3(normalize_mean),
+        normalize_std=_tuple3(normalize_std),
         extra_inputs=tuple(extra_inputs),
         output_name_hint=inference.get("output_name", defaults.output_name_hint),
         output_activation=inference.get("output_activation", defaults.output_activation),
@@ -550,8 +600,16 @@ def setup_tagger_from_settings(app_settings: AppSettings, get_string: GetString 
         entry = model_registry.get_model_entry(model_id)
 
         tags_csv_path: Path | None = None
-        if entry is None or model_id == "pixai-tagger-v0.9":
-            # Unknown model_id (e.g. stale config) falls back to the PixAI path,
+        if entry is not None and entry.model_id == "pixai-tagger-v0.9":
+            # PixAI pseudo-entry: entry.model_dir is constants.MODEL_PATH.parent, which
+            # already resolves the models/pixai-tagger-v0.9/ location with a legacy-path
+            # fallback. Using app_settings.paths.model_dir here would point at a third,
+            # non-existent path on a fresh install.
+            import constants
+            model_path = constants.MODEL_PATH
+            inference_config = InferenceConfig()
+        elif entry is None:
+            # Truly unknown model_id (e.g. stale config) -> legacy PixAI path,
             # matching pre-multi-model behavior exactly (NFR-3).
             model_path = BASE_DIR / app_settings.paths.model_dir / app_settings.paths.model_filename
             inference_config = InferenceConfig()
@@ -701,31 +759,36 @@ def filter_tags_by_solo_rule(
     """
     general_tags = [pred for pred in tag_result.tags if pred.category == TagCategory.GENERAL]
     character_tags = [pred for pred in tag_result.tags if pred.category == TagCategory.CHARACTER]
+    # Everything else (rating / copyright / artist / meta / model / quality / year) is
+    # untouched by the solo rule - it only ever trims character tags. Dropping these here
+    # would make the per-category thresholds / max-tag limits have no effect on output.
+    other_tags = [pred for pred in tag_result.tags
+                  if pred.category not in (TagCategory.GENERAL, TagCategory.CHARACTER)]
     solo_tag_found = any(pred.name.lower() == "solo" for pred in general_tags)
     all_series_tags: set[str] = set()
     final_tags: list[TagPrediction]
-    
+
     # if solo tag is available, and a character tag exists
     if enable_solo_limit and solo_tag_found and character_tags:
         # Only keep the character tag with the highest score.
         character_tags.sort(key=lambda pred: pred.score, reverse=True)
         best_character_tag = character_tags[0]
-        
+
         # get series tags from the best character tag
         char_meta = tagger.tag_meta_lookup.get(best_character_tag.name)
         if char_meta and char_meta.ips:
             all_series_tags.update(char_meta.ips)
-        
-        final_tags = general_tags + [best_character_tag]
+
+        final_tags = general_tags + [best_character_tag] + other_tags
     else:
         # if solo tag not found
         for char_pred in character_tags:
             char_meta = tagger.tag_meta_lookup.get(char_pred.name)
             if char_meta and char_meta.ips:
                 all_series_tags.update(char_meta.ips)
-        
-        final_tags = general_tags + character_tags
-    
+
+        final_tags = general_tags + character_tags + other_tags
+
     return final_tags, all_series_tags
 
 def main(overwrite_checker: Callable[[Path], bool] | None = None, log_gui: Callable[[str, str], None] | None = None, stop_checker: Callable[[], bool] | None = None, get_string: GetString | None = None):

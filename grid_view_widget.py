@@ -10,6 +10,7 @@ from PySide6.QtCore import Qt, Signal, Slot, QRect, QObject, QEvent, QTimer
 from PySide6.QtGui import QPixmap, QWheelEvent, QResizeEvent
 
 import tag_utils
+from utils import write_debug_log
 from locale_manager import LocaleManager
 from app_settings import AppSettings
 from custom_dialogs import ClickableLabel, ImageViewerDialog
@@ -55,7 +56,8 @@ class ImageEditCellWidget(QWidget):
     # Signals for undo/redo
     tags_added = Signal(Path, list)  # (file_path, added_tags)
     tag_removed = Signal(Path, str, int)  # (file_path, removed_tag, original_index)
-    caption_edited = Signal(Path, str, str)  # (txt_path, old_text, new_text) - captioner mode
+    caption_edited = Signal(Path, str, str, bool)  # (txt_path, old_text, new_text, file_existed_before)
+    caption_save_failed = Signal(str)        # error text - surfaced in the main log
     # Signals for tag hover highlight
     tag_hovered = Signal(str)       # ホバー開始: タグ名を渡す
     tag_hover_cleared = Signal()    # ホバー解除
@@ -154,6 +156,20 @@ class ImageEditCellWidget(QWidget):
     # --- MODIFIED: load_data now accepts the global index ---
     def load_data(self, image_path: Path, global_index: int):
         prev_path = self._image_path
+        if self._caption_mode:
+            # Flush a pending debounced edit for the outgoing image before switching,
+            # and only (re)load the .txt when the image actually changes - a same-image
+            # re-render (page refresh, undo/redo, language change) must not clobber text
+            # the user is still typing.
+            if prev_path is not None and prev_path != image_path:
+                self._save_caption()
+            self._image_path = image_path
+            self._global_index = global_index
+            self._rescale_image()
+            if prev_path != image_path:
+                self._current_tag_page = 0
+                self._load_caption_text()
+            return
         self._image_path = image_path
         self._global_index = global_index
         # 同じ画像の場合はタグページを保持、異なる画像の場合のみリセット
@@ -178,7 +194,12 @@ class ImageEditCellWidget(QWidget):
     # ... (rest of the class is unchanged) ...
     def resizeEvent(self, event: QResizeEvent):
         super().resizeEvent(event)
-        self._update_tag_display()
+        if self._caption_mode:
+            # Only rescale the image - never reload the .txt here, or a caption still in
+            # the autosave debounce window would be discarded on every resize.
+            self._rescale_image()
+        else:
+            self._update_tag_display()
     def _rescale_image(self):
         if self._image_path and self.image_label.width() > 0 and self.image_label.height() > 0:
             pixmap = QPixmap(str(self._image_path))
@@ -216,9 +237,10 @@ class ImageEditCellWidget(QWidget):
             return
         txt_path = tag_utils.get_txt_path(self._image_path)
         new_text = self.caption_edit.toPlainText()
+        existed_before = txt_path.is_file()
         old_text = ""
         try:
-            if txt_path.is_file():
+            if existed_before:
                 old_text = txt_path.read_text(encoding="utf-8")
         except Exception:
             old_text = ""
@@ -226,12 +248,17 @@ class ImageEditCellWidget(QWidget):
             return
         try:
             txt_path.write_text(new_text, encoding="utf-8")
-        except Exception:
+        except Exception as e:
+            write_debug_log(f"grid caption save failed for {txt_path.name}: {type(e).__name__}: {e}")
+            self.caption_save_failed.emit(f"{txt_path.name}: {type(e).__name__}: {e}")
             return
         self._caption_loaded_text = new_text
-        self.caption_edited.emit(txt_path, old_text, new_text)
+        self.caption_edited.emit(txt_path, old_text, new_text, existed_before)
 
     def set_caption_mode(self, on: bool):
+        # Flush a pending caption edit while the save path is still active.
+        if self._caption_mode and not on:
+            self._save_caption()
         self._caption_mode = on
         self._tag_area_widget.setVisible(not on)
         self.caption_edit.setVisible(on)
@@ -414,14 +441,18 @@ class ImageEditCellWidget(QWidget):
     def set_search_text(self, text: str):
         """検索文字列を設定し、タグ表示を更新する。"""
         self._search_text = text
-        self._update_tag_display()
+        # In caption mode the search bar is hidden and irrelevant; skipping the refresh
+        # here avoids reloading the .txt (and losing an unsaved edit) on every page render.
+        if not self._caption_mode:
+            self._update_tag_display()
 
 class GridViewWidget(QWidget):
     back_to_main_requested = Signal()
     # Signals for undo/redo
     tags_added = Signal(Path, list)  # (file_path, added_tags)
     tag_removed = Signal(Path, str, int)  # (file_path, removed_tag, original_index)
-    caption_edited = Signal(Path, str, str)  # (txt_path, old_text, new_text) - captioner mode
+    caption_edited = Signal(Path, str, str, bool)  # (txt_path, old_text, new_text, file_existed_before)
+    caption_save_failed = Signal(str)
     # Signals for tag hover highlight
     tag_hovered = Signal(str)
     tag_hover_cleared = Signal()
@@ -478,6 +509,7 @@ class GridViewWidget(QWidget):
             cell.tags_added.connect(self.tags_added.emit)
             cell.tag_removed.connect(self.tag_removed.emit)
             cell.caption_edited.connect(self.caption_edited.emit)
+            cell.caption_save_failed.connect(self.caption_save_failed.emit)
             cell.tag_hovered.connect(self.tag_hovered.emit)
             cell.tag_hover_cleared.connect(self.tag_hover_cleared.emit)
             self.cells.append(cell)

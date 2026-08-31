@@ -32,7 +32,11 @@ LOG_FILE_PATH = BASE_DIR / "debug_log.txt"
 MODEL_SIZE_BYTES = 1271365853
 # Directory for additional (non-PixAI) tagger/captioner models, one subdirectory per model_id.
 # app_settings.Paths.model_dir/model_filename remain PixAI-only legacy fields (design.md 6.9節).
+# MODELS_DIR is user-writable (next to the exe) - downloaded model.onnx files land here.
 MODELS_DIR = BASE_DIR / "models"
+# When frozen, the hand-authored model_config.json files are bundled under RESOURCE_DIR
+# (_internal/), separate from the user-writable MODELS_DIR. Non-frozen: same directory.
+MODELS_RESOURCE_DIR = RESOURCE_DIR / "models"
 # PixAI's own directory lives under MODELS_DIR like every other model (unified 2026-08-31),
 # but it still has no model_config.json - it stays the hardcoded pseudo-entry in
 # model_registry.py, so discover_models()'s directory scan skips it and there is no

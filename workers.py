@@ -1,4 +1,5 @@
 from pathlib import Path
+import json
 import requests
 import threading
 from typing import Callable
@@ -228,6 +229,19 @@ class DownloaderWorker(QObject):
         self.download_finished.emit(all_success)
         write_debug_log(str(self.get_string("Workers", "DownloaderWorker_Download_Thread_Exit")), self.get_string)
 
+    @staticmethod
+    def _sidecar_looks_complete(file_path: Path) -> bool:
+        """Cheap integrity check for a non-hash-verified sidecar already on disk."""
+        try:
+            if file_path.stat().st_size == 0:
+                return False
+            if file_path.suffix.lower() == ".json":
+                with file_path.open("r", encoding="utf-8") as f:
+                    json.load(f)
+            return True
+        except Exception:
+            return False
+
     def _download_from_manifest(self, model_dir: Path, network_config: dict):
         """
         Generic downloader for any model described by a model_config.json "network" block
@@ -268,18 +282,26 @@ class DownloaderWorker(QObject):
 
             if file_path not in self._hash_verified_files and file_path.is_file():
                 # Small metadata/tag JSON/CSV sidecars aren't hash-verified, and HF often
-                # serves them gzip-encoded with no Content-Length on HEAD, so there's no
-                # reliable expected size to compare against (unlike the LFS-backed
-                # hash-verified files, which always report an exact size via the pointer).
-                # If it's already present at all, trust it and skip - same policy as the
-                # existing TAGS_CSV_PATH special-case for the PixAI download path.
-                write_debug_log(f"DownloaderWorker: {file_name} already exists, skipping (not hash-verified).")
-                continue
+                # serves them gzip-encoded with no Content-Length, so there's no reliable
+                # size to compare against. Trust an existing copy only if it passes a cheap
+                # sanity check (parseable JSON / non-empty) - a copy left truncated by an
+                # interrupted earlier run must be re-fetched, not trusted forever.
+                if self._sidecar_looks_complete(file_path):
+                    write_debug_log(f"DownloaderWorker: {file_name} already exists and looks complete, skipping (not hash-verified).")
+                    continue
+                write_debug_log(f"DownloaderWorker: {file_name} exists but looks truncated/corrupt; re-downloading.")
+                file_path.unlink(missing_ok=True)
 
             success = self._download_single_file(file_path, url, expected_sha_by_path.get(file_path))
             if not success:
                 all_success = False
                 break
+
+        # Mark verified once the whole manifest is on disk. Without this, a model whose
+        # pointer hashes never resolve (or that declares no hash_verified_file) downloads
+        # fully but stays "unverified" - _is_model_available then keeps offering Download.
+        if all_success:
+            self._mark_model_as_verified()
 
         self.download_finished.emit(all_success)
         write_debug_log(str(self.get_string("Workers", "DownloaderWorker_Download_Thread_Exit")), self.get_string)
@@ -421,8 +443,11 @@ class CaptionerThreadWorker(QObject):
                 if caption_core.ort is None or caption_core.Tokenizer is None or caption_core.Image is None:
                     # Most common cause for a captioner: the optional deps aren't installed
                     # in this environment (tokenizers was added to requirements.txt later).
+                    # The downloaded model files are intact - don't clear verified, or the
+                    # user is forced to re-download the whole model after `pip install`.
                     self.log_message.emit(self.get_string("CaptionCore", "Required_Libraries_NotFound"), "red")
-                self._mark_model_as_unverified()
+                else:
+                    self._mark_model_as_unverified()
                 return  # finally block emits running_state_changed / reload / finished
 
             self.log_message.emit(self.get_string("Workers", "TaggerThreadWorker_Loading_Model"), "black")

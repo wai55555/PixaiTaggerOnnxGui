@@ -203,6 +203,7 @@ class EditCaptionAction(UndoAction):
     file_path: Path
     old_text: str
     new_text: str
+    file_existed_before: bool = True
 
     def _write(self, text: str) -> bool:
         try:
@@ -213,6 +214,15 @@ class EditCaptionAction(UndoAction):
             return False
 
     def undo(self) -> bool:
+        if not self.file_existed_before:
+            # The edit created the file; undo must restore its absence, otherwise
+            # caption generation treats the leftover .txt as done and skips the image.
+            try:
+                self.file_path.unlink(missing_ok=True)
+                return True
+            except Exception as e:
+                write_debug_log(f"EditCaption undo unlink failed for {self.file_path}: {e}")
+                return False
         return self._write(self.old_text)
 
     def redo(self) -> bool:

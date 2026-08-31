@@ -25,6 +25,9 @@ class CategoryTagSettingsDialog(QDialog):
     """
 
     _THRESHOLD_RES = 100  # slider steps per 1.0
+    # Per-category max-tag slider caps. general / character MUST match the main window's
+    # sliders (150 / 10) so the shared value can't display differently in the two places.
+    _LIMIT_CAPS = {"character": 10}
 
     def __init__(
         self,
@@ -75,7 +78,7 @@ class CategoryTagSettingsDialog(QDialog):
             grid.addWidget(thr_value, i, 2)
 
             lim_slider = QSlider(Qt.Orientation.Horizontal)
-            lim_slider.setRange(0, self._max_limit)
+            lim_slider.setRange(0, self._LIMIT_CAPS.get(category, self._max_limit))
             lim_value = QLabel()
             lim_value.setFixedWidth(44)
             lim_slider.valueChanged.connect(lambda v, c=category: self._on_limit_changed(c, v))
@@ -112,11 +115,13 @@ class CategoryTagSettingsDialog(QDialog):
         self._loading = True
         try:
             for category, (thr_slider, thr_value, lim_slider, lim_value) in self._rows.items():
-                thr = float(getattr(self._thresholds, category, 0.0))
-                lim = int(getattr(self._limits, category, 0))
+                thr = max(0.0, min(1.0, float(getattr(self._thresholds, category, 0.0))))
+                cap = self._LIMIT_CAPS.get(category, self._max_limit)
+                lim = max(0, min(cap, int(getattr(self._limits, category, 0))))
                 thr_slider.setValue(int(round(thr * self._THRESHOLD_RES)))
                 thr_value.setText(f"{thr:.2f}")
-                lim_slider.setValue(max(0, min(self._max_limit, lim)))
+                lim_slider.setValue(lim)
+                # Label shows the clamped value so it always matches what a slider move saves.
                 lim_value.setText(str(lim))
         finally:
             self._loading = False
