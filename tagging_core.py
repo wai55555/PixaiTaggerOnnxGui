@@ -560,7 +560,7 @@ def build_inference_config(model_config: dict[str, Any]) -> InferenceConfig:
     blocks. Any key missing from the dict falls back to InferenceConfig's own
     (PixAI-matching) default, so a partially-specified model_config.json is safe.
     """
-    inference = model_config.get("inference", {})
+    inference = config_mapping(model_config, "inference")
     tags_csv = config_mapping(model_config, "tags_csv")
     defaults = InferenceConfig()
 

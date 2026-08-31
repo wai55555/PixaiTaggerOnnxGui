@@ -699,6 +699,11 @@ class MainWindow(QMainWindow):
         self.grid_view_widget.set_editing_enabled(enabled)
         self.undo_button.setEnabled(enabled and self.undo_manager.can_undo())
         self.redo_button.setEnabled(enabled and self.undo_manager.can_redo())
+        if enabled:
+            # Rebuild the grid's Undo/Redo state from the history, not from the buttons.
+            self.grid_view_widget.update_undo_redo_buttons(
+                self.undo_manager.can_undo(), self.undo_manager.can_redo(),
+                self.undo_manager.get_undo_description(), self.undo_manager.get_redo_description())
         self._set_bulk_controls_enabled(enabled)
 
     def _set_bulk_controls_enabled(self, enabled: bool):

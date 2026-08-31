@@ -1,5 +1,6 @@
 from pathlib import Path
 import json
+import os
 import requests
 import threading
 from typing import Callable
@@ -17,7 +18,21 @@ from tagging_core import setup_tagger_from_settings, process_image_loop, get_ima
 import model_registry
 import caption_core
 
-def ensure_pixai_tags_csv(get_string: GetString, log: Callable[[str, str], None] | None = None) -> bool:
+def _looks_like_tags_csv(data: bytes) -> bool:
+    """Cheap sanity check for the downloaded selected_tags.csv: a header naming the tag
+    column plus at least one data row. Also rejects an HTML error page served with 200."""
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError:
+        return False
+    lines = [ln for ln in text.splitlines() if ln.strip()]
+    if len(lines) < 2:
+        return False
+    return "name" in lines[0].lower()
+
+
+def ensure_pixai_tags_csv(get_string: GetString, log: Callable[[str, str], None] | None = None,
+                          stop_checker: Callable[[], bool] | None = None) -> bool:
     """Make sure PixAI's selected_tags.csv is present, downloading just that file if not.
 
     tag_utils.load_tag_translation_map() uses it as the English key list that every
@@ -31,23 +46,47 @@ def ensure_pixai_tags_csv(get_string: GetString, log: Callable[[str, str], None]
     """
     if TAGS_CSV_PATH.is_file():
         return True
+    if stop_checker and stop_checker():
+        return False
     url = DOWNLOAD_URLS.get(TAGS_CSV_PATH)
     if not url:
         return False
+
+    tmp = TAGS_CSV_PATH.with_name(TAGS_CSV_PATH.name + ".part")
     try:
         write_debug_log("Fetching PixAI selected_tags.csv (tag-translation key list).")
         if log:
             log(get_string("Workers", "Fetching_Translation_Base_Csv"), "blue")
-        response = requests.get(url, timeout=30)
-        response.raise_for_status()
+        # Short connect/read timeouts and a chunked read so a stop request is honoured
+        # within a chunk instead of blocking the tagging thread for the whole timeout.
+        chunks: list[bytes] = []
+        with requests.get(url, timeout=(5, 10), stream=True) as response:
+            response.raise_for_status()
+            for chunk in response.iter_content(chunk_size=65536):
+                if stop_checker and stop_checker():
+                    write_debug_log("selected_tags.csv fetch cancelled by stop request.")
+                    return False
+                chunks.append(chunk)
+        data = b"".join(chunks)
+
+        if not _looks_like_tags_csv(data):
+            write_debug_log("Fetched selected_tags.csv failed its sanity check; discarding.")
+            return False
+
+        # Write via a temp file and rename: a half-written CSV would pass the is_file()
+        # check above on every later run and silently produce partial translations.
         TAGS_CSV_PATH.parent.mkdir(parents=True, exist_ok=True)
-        TAGS_CSV_PATH.write_bytes(response.content)
+        tmp.write_bytes(data)
+        os.replace(tmp, TAGS_CSV_PATH)
         write_debug_log(f"selected_tags.csv saved to {TAGS_CSV_PATH}")
         return True
     except Exception as e:
         # Translations simply fall back to English tag names - not worth failing over.
         write_debug_log(f"Could not fetch selected_tags.csv: {type(e).__name__}: {e}")
         return False
+    finally:
+        if tmp.exists():
+            tmp.unlink(missing_ok=True)
 
 
 class DownloaderWorker(QObject):
@@ -168,8 +207,11 @@ class DownloaderWorker(QObject):
                 self.log_message.emit(self.get_string("Workers", "DownloaderWorker_Error_Size_Mismatch", downloaded_size=f"{final_size/1024/1024:.2f}", total_size=f"{expected_final_size/1024/1024:.2f}"), "red")
                 return False
             # expected_final_size が0の場合（期待サイズ不明の場合）は、content_length が0より大きい場合は content_length と比較する
-            elif expected_final_size == 0 and content_length > 0 and final_size != content_length:
-                 self.log_message.emit(self.get_string("Workers", "DownloaderWorker_Error_Size_Mismatch", downloaded_size=f"{final_size/1024/1024:.2f}", total_size=f"{content_length/1024/1024:.2f}"), "red")
+            # 期待サイズ不明の場合は current_total_size_for_progress と比較する。
+            # 206 Partial Content では content_length は「残りバイト数」でしかないため、
+            # そのまま比較すると正常に再開・完了したファイルを不一致として弾いてしまう。
+            elif expected_final_size == 0 and current_total_size_for_progress > 0 and final_size != current_total_size_for_progress:
+                 self.log_message.emit(self.get_string("Workers", "DownloaderWorker_Error_Size_Mismatch", downloaded_size=f"{final_size/1024/1024:.2f}", total_size=f"{current_total_size_for_progress/1024/1024:.2f}"), "red")
                  return False
 
             if file_path in self._hash_verified_files and expected_sha256:
@@ -309,7 +351,7 @@ class DownloaderWorker(QObject):
         # Fetch the shared tag-translation key list first: it is tiny, and doing it here
         # means translations work even if the (much larger) model download is aborted.
         if not self.is_stopped():
-            ensure_pixai_tags_csv(self.get_string, self.log_message.emit)
+            ensure_pixai_tags_csv(self.get_string, self.log_message.emit, self.is_stopped)
 
         all_success = True
         for file_name, url in files.items():
@@ -397,7 +439,7 @@ class TaggerThreadWorker(QObject):
 
             # Whichever model is tagging, tag translations are looked up against PixAI's
             # selected_tags.csv - grab it here if a previous run never pulled it in.
-            ensure_pixai_tags_csv(self.get_string, self.log_message.emit)
+            ensure_pixai_tags_csv(self.get_string, self.log_message.emit, self.is_stopped)
 
             input_dir = Path(settings_dict['INPUT_DIR'])
             image_paths = get_image_paths_recursive(input_dir)
@@ -496,7 +538,7 @@ class CaptionerThreadWorker(QObject):
 
             # Whichever model is tagging, tag translations are looked up against PixAI's
             # selected_tags.csv - grab it here if a previous run never pulled it in.
-            ensure_pixai_tags_csv(self.get_string, self.log_message.emit)
+            ensure_pixai_tags_csv(self.get_string, self.log_message.emit, self.is_stopped)
 
             input_dir = Path(settings_dict['INPUT_DIR'])
             image_paths = get_image_paths_recursive(input_dir)

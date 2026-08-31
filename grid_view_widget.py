@@ -729,8 +729,12 @@ class GridViewWidget(QWidget):
         self._editing_enabled = enabled
         for cell in self.cells:
             cell.set_editing_enabled(enabled)
-        self.undo_button.setEnabled(enabled and self.undo_button.isEnabled())
-        self.redo_button.setEnabled(enabled and self.redo_button.isEnabled())
+        if not enabled:
+            # Only force them off here. Turning editing back on must NOT read the buttons'
+            # own disabled state (that can never recover) - MainWindow re-drives them from
+            # the UndoManager via update_undo_redo_buttons().
+            self.undo_button.setEnabled(False)
+            self.redo_button.setEnabled(False)
 
     def update_undo_redo_buttons(self, can_undo: bool, can_redo: bool, undo_desc: str, redo_desc: str):
         """Updates the enabled state and tooltips of undo/redo buttons in grid view."""
