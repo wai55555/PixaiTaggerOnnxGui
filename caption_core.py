@@ -58,7 +58,7 @@ class CaptionerConfig:
 
 
 def build_captioner_config(model_dir: Path, model_config: dict[str, Any]) -> CaptionerConfig:
-    cap = model_config.get("captioner", {})
+    cap = model_config.get("captioner") if isinstance(model_config.get("captioner"), dict) else {}
     d = CaptionerConfig(model_dir=model_dir)
     return CaptionerConfig(
         model_dir=model_dir,
@@ -112,7 +112,7 @@ class Florence2Captioner:
         return np.expand_dims(normalized, axis=0)
 
     def generate(self, image: "Image.Image", task_prompt: str,
-                 stop_checker: Callable[[], bool] | None = None) -> str:
+                 stop_checker: Callable[[], bool] | None = None) -> tuple[str, bool]:
         """
         1. vision_encoder(pixel_values) -> image_features
         2. embed_tokens(task_prompt tokens) -> text_embeds
@@ -121,6 +121,10 @@ class Florence2Captioner:
 
         `stop_checker`, if given, is polled once per decoded token so a long generation
         on CPU responds to the Stop button without finishing the whole caption first.
+
+        Returns (text, cancelled). `cancelled` is True when decoding was cut short by
+        stop_checker - the text is then a truncated fragment and MUST NOT be written
+        over the image's caption file.
         """
         pixel_values = self._preprocess_image(image)
         image_features = self.vision_encoder.run(None, {"pixel_values": pixel_values})[0]
@@ -137,12 +141,12 @@ class Florence2Captioner:
             "attention_mask": combined_attention_mask,
         })[0]
 
-        generated_ids = self._greedy_decode(encoder_hidden_states, combined_attention_mask, stop_checker)
+        generated_ids, cancelled = self._greedy_decode(encoder_hidden_states, combined_attention_mask, stop_checker)
         text = self.tokenizer.decode(generated_ids, skip_special_tokens=True)
-        return text.strip()
+        return text.strip(), cancelled
 
     def _greedy_decode(self, encoder_hidden_states: "NDArray[np.float32]", encoder_attention_mask: "NDArray[np.int64]",
-                       stop_checker: Callable[[], bool] | None = None) -> list[int]:
+                       stop_checker: Callable[[], bool] | None = None) -> tuple[list[int], bool]:
         batch_size = encoder_hidden_states.shape[0]
         current_token = self.config.decoder_start_token_id
         generated: list[int] = []
@@ -163,7 +167,7 @@ class Florence2Captioner:
 
         for step in range(self.config.max_new_tokens):
             if stop_checker and stop_checker():
-                break
+                return generated, True
             input_ids = np.array([[current_token]], dtype=np.int64)
             inputs_embeds = self.embed_tokens.run(None, {"input_ids": input_ids})[0]
 
@@ -200,7 +204,7 @@ class Florence2Captioner:
             use_cache_branch = np.array([True])
             current_token = next_token
 
-        return generated
+        return generated, False
 
 
 def setup_captioner_from_settings(app_settings: AppSettings, get_string: GetString | None) -> tuple["Florence2Captioner | None", dict[str, Any]]:
@@ -272,11 +276,19 @@ def process_caption_loop(
             continue
 
         try:
-            caption = captioner.generate(image, task_prompt, stop_checker)
+            caption, cancelled = captioner.generate(image, task_prompt, stop_checker)
         except Exception as e:
             log_dbg(f"Caption generation failed for {relative_path}: {type(e).__name__}: {e}")
             core_log_gui(_get_string_internal("TaggerCore", "Tag_Inference_Failed_Short", current_index_str=current_index_str, relative_path_name=relative_path.name), "red")
             continue
+
+        if cancelled:
+            # Stop was pressed mid-decode: `caption` is a truncated fragment. Writing it
+            # would replace a good caption with a broken one, so abandon this image and
+            # leave the loop - the outer stop check would end it on the next pass anyway.
+            log_dbg(f"Caption generation cancelled for {relative_path}; not writing a partial caption.")
+            core_log_gui(_get_string_internal("TaggerCore", "Caption_Cancelled_Short", current_index_str=current_index_str, relative_path_name=relative_path.name), "orange")
+            break
 
         try:
             resolved_path = output_path.resolve()

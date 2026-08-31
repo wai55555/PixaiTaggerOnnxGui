@@ -32,7 +32,7 @@ from workers import DownloaderWorker, TaggerThreadWorker, CaptionerThreadWorker,
 from locale_manager import LocaleManager
 from ui_main_window import Ui_MainWindow
 from undo_manager import UndoManager, AddTagsAction, RemoveTagAction, BulkAddTagsAction, BulkRemoveTagsAction, EditCaptionAction
-from model_registry import ModelEntry, discover_models, get_model_entry
+from model_registry import ModelEntry, config_mapping, discover_models, get_model_entry
 from model_mode_controller import ModelModeController
 
 def get_os_language() -> str:
@@ -480,7 +480,7 @@ class MainWindow(QMainWindow):
             return
         try:
             txt_path.write_text(new_text, encoding='utf-8')
-            write_debug_log(f"Caption saved to {txt_path.name}")
+            write_debug_log(self.locale_manager.get_string("MainWindow", "Caption_Saved", txt_path_name=txt_path.name))
         except Exception as e:
             self.update_log(self.locale_manager.get_string("MainWindow", "Error_Caption_Save_Failed", txt_path_name=txt_path.name, e=e), "red")
             return
@@ -676,6 +676,10 @@ class MainWindow(QMainWindow):
 
     def _set_main_controls_enabled(self, enabled: bool):
         """Enables or disables main UI controls during processing."""
+        if not enabled:
+            # Commit a pending caption edit before locking the editor, so it isn't lost
+            # (and can't race the worker that is about to rewrite the same .txt).
+            self._save_current_caption()
         self.input_line.setEnabled(enabled)
         self.grid_view_button.setEnabled(enabled)
         self.image_list.setEnabled(enabled)
@@ -683,6 +687,8 @@ class MainWindow(QMainWindow):
         # settings/UI away from the model the active worker is using.
         self.model_combo.setEnabled(enabled)
         self.task_combo.setEnabled(enabled)
+        # The captioner worker rewrites the same .txt files - an editable box would race it.
+        self.caption_text_edit.setEnabled(enabled)
         self._set_bulk_controls_enabled(enabled)
 
     def _set_bulk_controls_enabled(self, enabled: bool):
@@ -1195,6 +1201,11 @@ class MainWindow(QMainWindow):
             # Store the relative path of the current file to re-select it later
             path_to_reselect = current_item.data(Qt.ItemDataRole.UserRole + 1)
 
+        if not self.tag_translation_map:
+            # The worker may have just fetched PixAI's selected_tags.csv on our behalf.
+            self.tag_translation_map = load_tag_translation_map(constants.MODEL_PATH.parent)
+            self.grid_view_widget.set_tag_display_language(self._tag_display_language, self.tag_translation_map)
+
         self.reload_image_list(auto_select_path=path_to_reselect)
         self.reload_tags_only()
 
@@ -1368,7 +1379,7 @@ class MainWindow(QMainWindow):
             # download flow only runs when the user clicks the button, which they
             # won't do for a model that already works.
             return constants.MODEL_PATH.is_file() and constants.TAGS_CSV_PATH.is_file()
-        required_files = entry.config.get("network", {}).get("files", {}).keys()
+        required_files = config_mapping(entry.config, "network", "files").keys()
         if not required_files:
             return False
         if entry.config.get("manual_download", False):
@@ -1443,7 +1454,7 @@ class MainWindow(QMainWindow):
         """Tag categories the selected model produces (ui.categories in its config),
         filtered to known names and returned in the canonical TAG_CATEGORY_NAMES order
         so the per-category dialog rows are always consistent."""
-        cats = self._current_model_entry().config.get("ui", {}).get("categories") or ["general", "character"]
+        cats = config_mapping(self._current_model_entry().config, "ui").get("categories") or ["general", "character"]
         cats_set = set(cats)
         return [c for c in app_settings.TAG_CATEGORY_NAMES if c in cats_set]
 

@@ -157,17 +157,22 @@ class ImageEditCellWidget(QWidget):
     def load_data(self, image_path: Path, global_index: int):
         prev_path = self._image_path
         if self._caption_mode:
-            # Flush a pending debounced edit for the outgoing image before switching,
-            # and only (re)load the .txt when the image actually changes - a same-image
-            # re-render (page refresh, undo/redo, language change) must not clobber text
-            # the user is still typing.
+            # Flush a pending debounced edit for the outgoing image before switching.
             if prev_path is not None and prev_path != image_path:
                 self._save_caption()
+            # Reload the .txt unless the user has unsaved edits for this same image.
+            # Skipping only while "dirty" protects text being typed during a re-render
+            # (resize, page refresh) while still picking up external changes - notably
+            # Undo/Redo, which rewrites the file and then refreshes the page. Keeping the
+            # stale editor there would let the next autosave write the undone text back.
+            is_dirty = self.caption_edit.toPlainText() != self._caption_loaded_text
             self._image_path = image_path
             self._global_index = global_index
             self._rescale_image()
             if prev_path != image_path:
                 self._current_tag_page = 0
+                self._load_caption_text()
+            elif not is_dirty:
                 self._load_caption_text()
             return
         self._image_path = image_path

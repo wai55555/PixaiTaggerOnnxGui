@@ -107,6 +107,17 @@ _CATEGORY_LOOKUP: dict[str, int] = {
 
 TagsCsvFormat = str  # "pixai6col" | "simple3col" | "wd4col" | "idx_json" | "camie_metadata_json"
 
+def _config_mapping(config: Any, *keys: str) -> dict[str, Any]:
+    """Local mirror of model_registry.config_mapping (importing that module at import
+    time would be circular). Walks nested keys, yielding {} for a missing/null level."""
+    current = config
+    for key in keys:
+        if not isinstance(current, dict):
+            return {}
+        current = current.get(key)
+    return current if isinstance(current, dict) else {}
+
+
 def _resolve_category(category_str: str) -> int | None:
     try:
         return _CATEGORY_LOOKUP[category_str.strip().lower()]
@@ -561,7 +572,7 @@ def build_inference_config(model_config: dict[str, Any]) -> InferenceConfig:
     (PixAI-matching) default, so a partially-specified model_config.json is safe.
     """
     inference = model_config.get("inference", {})
-    tags_csv = model_config.get("tags_csv", {})
+    tags_csv = _config_mapping(model_config, "tags_csv")
     defaults = InferenceConfig()
 
     def _tuple3(value: Any) -> tuple[float, float, float] | None:
@@ -619,7 +630,7 @@ def setup_tagger_from_settings(app_settings: AppSettings, get_string: GetString 
             # Models whose tag-metadata file isn't named selected_tags*.csv (camie's
             # own metadata JSON, cl_tagger's tag_mapping.json) must say so explicitly -
             # discover_labels_csv()'s glob would never find them otherwise.
-            tags_file_name = entry.config.get("tags_csv", {}).get("file_name")
+            tags_file_name = _config_mapping(entry.config, "tags_csv").get("file_name")
             if tags_file_name:
                 tags_csv_path = entry.model_dir / tags_file_name
 
@@ -628,7 +639,7 @@ def setup_tagger_from_settings(app_settings: AppSettings, get_string: GetString 
         # of 0 means "emit nothing from this category". Passing an explicit limit for
         # every listed category keeps hard_cap well-defined and stops an unset
         # category from being treated as unbounded.
-        ui_cfg = entry.config.get("ui", {}) if entry is not None else {}
+        ui_cfg = _config_mapping(entry.config, "ui") if entry is not None else {}
         model_categories: list[str] = list(ui_cfg.get("categories", ["general", "character"]))
         tag_thresholds: dict[TagCategory, float] = {}
         max_tags_per_category: dict[TagCategory, int] = {}

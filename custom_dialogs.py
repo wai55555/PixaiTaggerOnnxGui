@@ -111,20 +111,36 @@ class CategoryTagSettingsDialog(QDialog):
         return category.capitalize() if label == f"Category_{category}" else label
 
     def reload_from_settings(self) -> None:
-        """Re-sync every slider from the current Thresholds / Limits values."""
+        """Re-sync every slider from the current Thresholds / Limits values.
+
+        Out-of-range stored values (e.g. a Character limit of 50 written by an older
+        build whose dialog allowed 0..150) are clamped AND written back, so the dialog,
+        the main-window sliders and what inference actually uses cannot disagree.
+        """
         self._loading = True
+        clamped_any = False
         try:
             for category, (thr_slider, thr_value, lim_slider, lim_value) in self._rows.items():
-                thr = max(0.0, min(1.0, float(getattr(self._thresholds, category, 0.0))))
+                raw_thr = float(getattr(self._thresholds, category, 0.0))
+                raw_lim = int(getattr(self._limits, category, 0))
+                thr = max(0.0, min(1.0, raw_thr))
                 cap = self._LIMIT_CAPS.get(category, self._max_limit)
-                lim = max(0, min(cap, int(getattr(self._limits, category, 0))))
+                lim = max(0, min(cap, raw_lim))
+                if thr != raw_thr:
+                    setattr(self._thresholds, category, thr)
+                    clamped_any = True
+                if lim != raw_lim:
+                    setattr(self._limits, category, lim)
+                    clamped_any = True
                 thr_slider.setValue(int(round(thr * self._THRESHOLD_RES)))
                 thr_value.setText(f"{thr:.2f}")
                 lim_slider.setValue(lim)
-                # Label shows the clamped value so it always matches what a slider move saves.
                 lim_value.setText(str(lim))
         finally:
             self._loading = False
+        if clamped_any:
+            # Mirror to the main sliders and persist the corrected values.
+            self._on_changed()
 
     def _on_threshold_changed(self, category: str, raw: int) -> None:
         value = raw / self._THRESHOLD_RES

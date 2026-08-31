@@ -1,18 +1,40 @@
 # -*- mode: python ; coding: utf-8 -*-
 
+import ast
 import glob
 import os
+import re
 
 # Ship every model's hand-authored model_config.json (NOT the multi-GB model.onnx files,
 # which the app downloads at runtime) plus PixAI's curated tag-translation CSVs, keeping
-# the models/<model_id>/ directory structure so model_registry.discover_models() finds them.
+# the models/<model_id>/ directory structure. constants._seed_bundled_model_files() copies
+# them out of _internal/ into the user-visible models/ folder on first launch.
 _model_datas = [
     (p, os.path.dirname(p))
     for p in glob.glob('models/*/model_config.json')
 ]
+
+
+def _translation_suffixes():
+    """The languages tag_utils actually loads, read straight from the source so a new
+    language never silently misses the build. Falls back to the current list."""
+    fallback = ["jp", "fr", "de", "es", "ru", "zh_CN", "zh_TW", "ko"]
+    try:
+        src = open('tag_utils.py', encoding='utf-8').read()
+        match = re.search(r'_TRANSLATION_LANGUAGE_SUFFIXES\s*=\s*(\[[^\]]*\])', src)
+        return ast.literal_eval(match.group(1)) if match else fallback
+    except Exception:
+        return fallback
+
+
+# Only the 8 hand-curated translation CSVs. A bare `selected_tags*.csv` glob would also
+# sweep up selected_tags.csv (downloaded at runtime) and selected_tags_en.csv (redundant),
+# both gitignored - that would make the build depend on the developer's local downloads.
+_pixai_dir = 'models/pixai-tagger-v0.9'
 _model_datas += [
-    (p, os.path.dirname(p))
-    for p in glob.glob('models/pixai-tagger-v0.9/selected_tags*.csv')
+    (os.path.join(_pixai_dir, f'selected_tags_{suffix}.csv'), _pixai_dir)
+    for suffix in _translation_suffixes()
+    if os.path.isfile(os.path.join(_pixai_dir, f'selected_tags_{suffix}.csv'))
 ]
 
 

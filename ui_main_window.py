@@ -378,8 +378,11 @@ class Ui_MainWindow(object):
 
         limit_group = QGroupBox(main_window.locale_manager.get_string("MainWindow", "Max_Tags"))
         limit_layout = QGridLayout(limit_group)
-        main_window.create_slider_group(limit_layout, 'Limits', 1, 150, 1, {'general': 0})
-        main_window.create_slider_group(limit_layout, 'Limits', 1, 10, 1, {'character': 1})
+        # Minimum is 0, not 1: inference treats a 0 max-tag count as "emit nothing from
+        # this category", and the per-category dialog offers 0. With a minimum of 1 the
+        # slider silently clamped a stored 0 back up to 1 when the two were synced.
+        main_window.create_slider_group(limit_layout, 'Limits', 0, 150, 1, {'general': 0})
+        main_window.create_slider_group(limit_layout, 'Limits', 0, 10, 1, {'character': 1})
 
         # Opens the per-category (rating / copyright / artist / meta ...) threshold &
         # max-tag dialog. Per user request (2026-08-31, after several layout attempts):

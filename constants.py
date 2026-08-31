@@ -1,3 +1,4 @@
+import shutil
 import sys
 from pathlib import Path
 from typing import Mapping
@@ -37,6 +38,39 @@ MODELS_DIR = BASE_DIR / "models"
 # When frozen, the hand-authored model_config.json files are bundled under RESOURCE_DIR
 # (_internal/), separate from the user-writable MODELS_DIR. Non-frozen: same directory.
 MODELS_RESOURCE_DIR = RESOURCE_DIR / "models"
+
+
+def _seed_bundled_model_files() -> None:
+    """Copy bundled per-model files into the user-visible models/ directory.
+
+    PyInstaller puts bundled data under `_internal/`, which users are not expected to
+    open - and models/ is exactly where they drop manually-downloaded model files and
+    where downloads land, so the shipped model_config.json / translation CSVs have to be
+    there too. Only files that do not already exist are copied, so a user's edits and
+    the multi-GB downloaded model.onnx are never touched.
+
+    No-op when not frozen (both paths resolve to the same directory).
+    """
+    if MODELS_RESOURCE_DIR.resolve() == MODELS_DIR.resolve():
+        return
+    if not MODELS_RESOURCE_DIR.is_dir():
+        return
+    for src in MODELS_RESOURCE_DIR.rglob("*"):
+        if not src.is_file():
+            continue
+        dest = MODELS_DIR / src.relative_to(MODELS_RESOURCE_DIR)
+        if dest.exists():
+            continue
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(src, dest)
+
+
+try:
+    _seed_bundled_model_files()
+except Exception:
+    # A read-only install directory must not stop the app from starting; discover_models()
+    # also scans MODELS_RESOURCE_DIR directly, so the model list still works.
+    pass
 # PixAI's own directory lives under MODELS_DIR like every other model (unified 2026-08-31),
 # but it still has no model_config.json - it stays the hardcoded pseudo-entry in
 # model_registry.py, so discover_models()'s directory scan skips it and there is no

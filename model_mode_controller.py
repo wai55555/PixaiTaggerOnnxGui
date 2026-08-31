@@ -8,7 +8,7 @@ from PySide6.QtCore import Qt
 import app_settings
 import constants
 from utils import write_debug_log
-from model_registry import ModelEntry
+from model_registry import ModelEntry, config_mapping
 from tag_utils import load_tag_translation_map
 
 if TYPE_CHECKING:
@@ -38,7 +38,7 @@ class ModelModeController:
 
     def _apply_character_ui_visibility(self, entry: ModelEntry) -> None:
         """design.md 6.6節: grey out character-category controls for models without one."""
-        supports_character = bool(entry.config.get("ui", {}).get("supports_character_tag", True))
+        supports_character = bool(config_mapping(entry.config, "ui").get("supports_character_tag", True))
         for key in ("thresholds_character", "limits_character"):
             slider_pair = self.mw._sliders.get(key)
             if slider_pair:
@@ -84,7 +84,7 @@ class ModelModeController:
         """Seed each category this model produces with its recommended threshold / max-tag
         default - but only for categories the user has not adjusted by hand ("touched").
         Runs on every model switch and once at startup (design: 2026-08-31 user decision)."""
-        ui_cfg = entry.config.get("ui", {})
+        ui_cfg = config_mapping(entry.config, "ui")
         categories = ui_cfg.get("categories", ["general", "character"])
 
         thresholds = self.mw.settings.thresholds
@@ -134,7 +134,7 @@ class ModelModeController:
             # Default to the model's verbose task (MORE_DETAILED_CAPTION) on every switch
             # to a captioner - the shorter caption levels are rarely what's wanted
             # (2026-08-31 user decision). The user can still pick another level per session.
-            default_task = entry.config.get("captioner", {}).get("default_task", "MORE_DETAILED_CAPTION")
+            default_task = config_mapping(entry.config, "captioner").get("default_task", "MORE_DETAILED_CAPTION")
             if mw.settings.caption.task != default_task:
                 mw.settings.caption.task = default_task
                 mw.save_current_config()

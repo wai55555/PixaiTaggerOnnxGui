@@ -11,6 +11,22 @@ from utils import write_debug_log
 ModelType = Literal["tagger", "captioner"]
 
 
+def config_mapping(config: Any, *keys: str) -> dict[str, Any]:
+    """Walks `config` through `keys`, returning {} as soon as anything is not a mapping.
+
+    model_config.json is hand-authored, so a key may be present but null (`"network":
+    null`) - plain `cfg.get("network", {}).get("files", {})` raises AttributeError in
+    that case, which would abort discover_models() entirely instead of skipping one
+    bad manifest.
+    """
+    current = config
+    for key in keys:
+        if not isinstance(current, dict):
+            return {}
+        current = current.get(key)
+    return current if isinstance(current, dict) else {}
+
+
 @dataclass(frozen=True)
 class ModelEntry:
     model_id: str
@@ -141,7 +157,7 @@ def discover_models() -> list[ModelEntry]:
         # stay hidden from the picker until the user has placed every required file here
         # by hand. Once complete, the entry appears and behaves like any other model.
         if cfg.get("manual_download", False):
-            required_files = cfg.get("network", {}).get("files", {})
+            required_files = config_mapping(cfg, "network", "files")
             if not required_files or not all((model_dir / name).is_file() for name in required_files):
                 write_debug_log(f"model_registry: '{model_id}' is manual_download and its files are not all present yet; hiding it.")
                 continue
