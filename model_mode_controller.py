@@ -131,16 +131,19 @@ class ModelModeController:
 
         mw.caption_text_edit.setVisible(is_captioner)
         mw.task_combo.setVisible(is_captioner)
+        # 生成キャプションの挿入位置（前に追加 / 後に追加 / 上書き）は captioner 専用。
+        if hasattr(mw, "caption_placement_widget"):
+            mw.caption_placement_widget.setVisible(is_captioner)
 
-        # captioner では APPEND を選べないようにする。自由文のキャプションに生成文を
-        # 連結しても読めるものにならず、タグのような重複判定もできないため
-        # （process_caption_loop 側でも APPEND は ASK にフォールバックする）。
+        # 既存ファイルの扱いは captioner でも4モードすべて選べる。「そのファイルに書くか」
+        # を決めるだけで、実際の組み合わせ方は caption placement が担当するため
+        # （combine_caption）、APPEND を塞ぐ必要はなくなった。
         if hasattr(mw, "existing_mode_combo"):
             append_index = mw.existing_mode_combo.findData("APPEND")
             if append_index >= 0:
                 item = mw.existing_mode_combo.model().item(append_index)
                 if item is not None:
-                    item.setEnabled(not is_captioner)
+                    item.setEnabled(True)
 
         if is_captioner:
             # Default to the model's verbose task (MORE_DETAILED_CAPTION) on every switch

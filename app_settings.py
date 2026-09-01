@@ -85,9 +85,24 @@ class Model:
     model_id: str = "pixai-tagger-v0.9"
     verified_models: dict[str, bool] = field(default_factory=dict)
 
+# 生成キャプションを既存 .txt の内容とどう組み合わせるか。
+# danbooru タグ＋自然言語を1ファイルに同居させるモデルがあるため、単純な上書き以外に
+# 前後への挿入が必要になる（2026-08-31 ユーザー要望）。
+CAPTION_PLACEMENTS: tuple[str, ...] = ("PREPEND", "APPEND", "OVERWRITE")
+
+
+def parse_caption_placement(raw: str) -> str:
+    """config.ini の文字列を検証する。不正値は OVERWRITE（従来動作）へフォールバック。"""
+    value = str(raw).strip().upper()
+    return value if value in CAPTION_PLACEMENTS else "OVERWRITE"
+
+
 @dataclass
 class Caption:
     task: str = "MORE_DETAILED_CAPTION"
+    # PREPEND / APPEND / OVERWRITE。既定は OVERWRITE で、この項目を持たない
+    # 旧 config.ini はこれまでと同じ挙動になる。
+    placement: str = "OVERWRITE"
 
 @dataclass
 class Debug:
@@ -118,7 +133,7 @@ def get_default_config() -> configparser.ConfigParser:
         'Behavior': {'enable_solo_character_limit': 'True', 'convert_underscore_to_space': 'True', 'existing_file_mode': 'ASK'},
         'Window': {'geometry': '986x976+50+50', 'tag_display_rows': '6', 'tag_display_cols': '5'},
         'Model': {'model_id': 'pixai-tagger-v0.9', 'verified_models': ''},
-        'Caption': {'task': 'MORE_DETAILED_CAPTION'},
+        'Caption': {'task': 'MORE_DETAILED_CAPTION', 'placement': 'OVERWRITE'},
         'Debug': {'debug_log': 'False'},
         'General': {'language_code': ''}
     }
@@ -220,7 +235,8 @@ def load_settings(config: configparser.ConfigParser) -> AppSettings:
             verified_models=_parse_verified_models(config)
         ),
         caption=Caption(
-            task=config.get('Caption', 'task', fallback='MORE_DETAILED_CAPTION')
+            task=config.get('Caption', 'task', fallback='MORE_DETAILED_CAPTION'),
+            placement=parse_caption_placement(config.get('Caption', 'placement', fallback='OVERWRITE'))
         ),
         debug=Debug(
             debug_log=config.getboolean('Debug', 'debug_log', fallback=False) # Default is False for debug_log

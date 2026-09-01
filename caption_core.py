@@ -227,6 +227,7 @@ def setup_captioner_from_settings(app_settings: AppSettings, get_string: GetStri
             "INPUT_DIR": Path(app_settings.paths.input_dir),
             "TASK": app_settings.caption.task,
             "EXISTING_FILE_MODE": parse_existing_file_mode(app_settings.behavior.existing_file_mode),
+            "CAPTION_PLACEMENT": app_settings.caption.placement,
         }
         captioner = Florence2Captioner(captioner_config, get_string=_get_string_internal)
         return captioner, settings_dict
@@ -234,6 +235,24 @@ def setup_captioner_from_settings(app_settings: AppSettings, get_string: GetStri
         log_dbg(f"Error during Captioner initialization: {type(e).__name__}: {e}")
         log_dbg(f"Traceback: {traceback.format_exc()}")
         return None, {}
+
+
+def combine_caption(existing: str, caption: str, placement: str) -> str:
+    """生成キャプションを既存内容と組み合わせる（2026-08-31 ユーザー要望）。
+
+    danbooru タグ＋自然言語を1つの .txt に同居させるモデルがあるため、上書き以外に
+    「前に追加」「後に追加」が要る。区切りは学習用キャプションの慣習に合わせて ", "。
+    既存が空なら生成文のみ、生成文が空なら既存のみを返す。
+    """
+    existing = existing.strip().strip(",").strip()
+    caption = caption.strip()
+    if placement == "OVERWRITE" or not existing:
+        return caption
+    if not caption:
+        return existing
+    if placement == "PREPEND":
+        return f"{caption}, {existing}"
+    return f"{existing}, {caption}"
 
 
 def process_caption_loop(
@@ -247,10 +266,9 @@ def process_caption_loop(
 ) -> list[FileChange]:
     """Captioner counterpart of tagging_core.process_image_loop.
 
-    既存ファイルの扱いは ASK / OVERWRITE / SKIP に対応する。APPEND はキャプション
-    （自由文）に対して意味を成さない — 生成文を既存文に連結しても読めるものにならず、
-    タグのような重複判定もできない — ため、APPEND が設定されている場合は ASK に
-    フォールバックし、ユーザーにファイル単位で判断してもらう。
+    既存ファイルの扱い（ASK / OVERWRITE / SKIP / APPEND）は「そのファイルに書くか」
+    だけを決める。実際にどう書くか — 生成キャプションを既存内容の前に入れるか、後ろに
+    足すか、丸ごと置き換えるか — は CAPTION_PLACEMENT が担当する（combine_caption）。
     """
 
     def core_log_gui(message: str, color: str = "black") -> None:
@@ -259,9 +277,7 @@ def process_caption_loop(
 
     _get_string_internal = get_string if get_string else _get_string
     mode: ExistingFileMode = settings.get("EXISTING_FILE_MODE", ExistingFileMode.ASK)
-    if mode is ExistingFileMode.APPEND:
-        log_dbg("captioner: APPEND はキャプションに適用できないため ASK にフォールバックします")
-        mode = ExistingFileMode.ASK
+    placement: str = settings.get("CAPTION_PLACEMENT", "OVERWRITE")
     changed_files: list[FileChange] = []
     task_key = settings.get("TASK", captioner.config.default_task)
     task_prompt = captioner.config.tasks.get(task_key, captioner.config.tasks.get(captioner.config.default_task, "Describe with a paragraph what is shown in the image."))
@@ -320,14 +336,20 @@ def process_caption_loop(
             except Exception:
                 previous_content = None
 
+        new_content = combine_caption(previous_content or "", caption, placement)
+        if previous_content is not None and new_content == previous_content:
+            # 内容が変わらないなら mtime も変えない
+            core_log_gui(_get_string_internal("TaggerCore", "Log_No_New_Tags", current_index_str=current_index_str, file_name=output_path.name), "black")
+            continue
+
         try:
             resolved_path = output_path.resolve()
             long_path_str = f"\\\\?\\{resolved_path}" if sys.platform == "win32" else str(resolved_path)
             with open(long_path_str, "w", encoding="utf-8") as f:
-                f.write(caption)
+                f.write(new_content)
             changed_files.append(FileChange(
                 path=output_path, previous_content=previous_content,
-                new_content=caption, was_append=False))
+                new_content=new_content, was_append=(placement != "OVERWRITE" and previous_content is not None)))
             core_log_gui(_get_string_internal("TaggerCore", "Tag_Output_Success", current_index_str=current_index_str, output_path_name=output_path.name), "green")
         except Exception as e:
             log_dbg(f"Caption save failed for {output_path.name}: {type(e).__name__}: {e}")

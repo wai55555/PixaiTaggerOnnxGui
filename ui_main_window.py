@@ -6,7 +6,7 @@ from PySide6.QtCore import (
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout,
     QGridLayout, QGroupBox, QLabel, QLineEdit, QPushButton,
-    QTextEdit, QSizePolicy, QSplitter, QStackedWidget, QComboBox
+    QTextEdit, QSizePolicy, QSplitter, QStackedWidget, QComboBox, QButtonGroup
 )
 from PySide6.QtGui import (
     QIcon
@@ -232,6 +232,33 @@ class Ui_MainWindow(object):
         main_window.caption_text_edit.setPlaceholderText(main_window.locale_manager.get_string("MainWindow", "Caption_Placeholder"))
         main_window.caption_text_edit.setVisible(False)
         tag_panel.addWidget(main_window.caption_text_edit)
+
+        # 生成キャプションを既存 .txt にどう入れるか（前に追加 / 後に追加 / 上書き）。
+        # 排他のトグルボタンで、押した1つだけが押しっぱなしになる。danbooru タグと
+        # 自然言語を1ファイルに同居させるモデル向け（2026-08-31 ユーザー要望）。
+        main_window.caption_placement_widget = QWidget()
+        placement_row = QHBoxLayout(main_window.caption_placement_widget)
+        placement_row.setContentsMargins(0, 0, 0, 0)
+        main_window.caption_placement_group = QButtonGroup(main_window)
+        main_window.caption_placement_group.setExclusive(True)
+        main_window.caption_placement_buttons = {}
+        for key, label_key in (("PREPEND", "Caption_Placement_Prepend"),
+                               ("APPEND", "Caption_Placement_Append"),
+                               ("OVERWRITE", "Caption_Placement_Overwrite")):
+            btn = QPushButton(main_window.locale_manager.get_string("MainWindow", label_key))
+            btn.setCheckable(True)
+            btn.setToolTip(main_window.locale_manager.get_string("MainWindow", f"{label_key}_Tooltip"))
+            btn.setProperty("placement", key)
+            main_window.caption_placement_group.addButton(btn)
+            main_window.caption_placement_buttons[key] = btn
+            placement_row.addWidget(btn)
+        placement_row.addStretch(1)
+        current_placement = str(main_window.settings.caption.placement).upper()
+        main_window.caption_placement_buttons.get(
+            current_placement, main_window.caption_placement_buttons["OVERWRITE"]).setChecked(True)
+        main_window.caption_placement_group.buttonClicked.connect(main_window._on_caption_placement_changed)  # type: ignore
+        main_window.caption_placement_widget.setVisible(False)
+        tag_panel.addWidget(main_window.caption_placement_widget)
 
         main_window.task_combo = QComboBox()
         main_window.task_combo.setToolTip(main_window.locale_manager.get_string("MainWindow", "Task_Combo_Tooltip"))
