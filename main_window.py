@@ -12,7 +12,7 @@ from PySide6.QtWidgets import (
     QMainWindow, QWidget,
     QGridLayout, QLabel, QLineEdit, QPushButton,
     QSlider, QTextEdit, QFileDialog, QMessageBox, QDialog,
-    QStackedWidget, QApplication, QSplitter, QListWidgetItem, QComboBox
+    QStackedWidget, QApplication, QSplitter, QListWidgetItem, QComboBox, QButtonGroup
 )
 from PySide6.QtGui import (
     QPixmap, QImage, QKeyEvent, QResizeEvent, QDragEnterEvent,
@@ -104,6 +104,9 @@ class MainWindow(QMainWindow):
     language_combo: QComboBox
     model_combo: QComboBox
     existing_mode_combo: QComboBox
+    caption_placement_widget: QWidget
+    caption_placement_group: QButtonGroup
+    caption_placement_buttons: dict[str, QPushButton]
     prev_page_btn: QPushButton
     next_page_btn: QPushButton
     add_tag_line: QLineEdit
@@ -150,7 +153,7 @@ class MainWindow(QMainWindow):
             self.settings.language_code = os_lang
             save_config(self.settings)
 
-        self.locale_manager = LocaleManager(self.settings.language_code, constants.LANG_DIR)
+        self.locale_manager = LocaleManager(self.settings.language_code, constants.LANG_DIR, constants.LANG_RESOURCE_DIR)
         app_settings.set_get_string_func(self.locale_manager.get_string) # Add this line
         write_debug_log(self.locale_manager.get_string("MainWindow", "Application_Startup"))
 
@@ -507,6 +510,21 @@ class MainWindow(QMainWindow):
         self.settings.behavior.existing_file_mode = mode
         self.save_current_config()
         write_debug_log(f"existing_file_mode -> {mode}")
+
+    @Slot()
+    def _on_caption_placement_changed(self, button=None):
+        """生成キャプションの挿入位置（前に追加 / 後に追加 / 上書き）を保存する。
+        QButtonGroup が排他なので、押されたボタンだけが checked のまま残る。"""
+        if button is None:
+            button = self.caption_placement_group.checkedButton()
+        if button is None:
+            return
+        placement = button.property("placement")
+        if not placement or placement == self.settings.caption.placement:
+            return
+        self.settings.caption.placement = placement
+        self.save_current_config()
+        write_debug_log(f"caption placement -> {placement}")
 
     @Slot(int)
     def _on_task_combo_changed(self, index: int):

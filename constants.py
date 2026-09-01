@@ -25,6 +25,9 @@ RESOURCE_DIR = get_resource_dir()
 # LANG_DIR is where user-editable translation files are located.
 # It should be next to the executable.
 LANG_DIR = BASE_DIR / "lang"
+# When frozen, the bundled copy lives under _internal/. _seed_bundled_dir() copies it out
+# to LANG_DIR on startup; this stays as the fallback if that copy could not be made.
+LANG_RESOURCE_DIR = RESOURCE_DIR / "lang"
 
 # User-facing paths are relative to BASE_DIR
 CONFIG_PATH = BASE_DIR / "config.ini"
@@ -41,32 +44,33 @@ MODELS_DIR = BASE_DIR / "models"
 MODELS_RESOURCE_DIR = RESOURCE_DIR / "models"
 
 
-def _seed_bundled_model_files() -> None:
-    """Copy bundled per-model files into the user-visible models/ directory.
+def _seed_bundled_dir(resource_dir: Path, dest_root: Path) -> None:
+    """Copy bundled files out of `_internal/` into the user-visible directory next to
+    the executable.
 
     PyInstaller puts bundled data under `_internal/`, which users are not expected to
-    open - and models/ is exactly where they drop manually-downloaded model files and
-    where downloads land, so the shipped model_config.json / translation CSVs have to be
-    there too. Only files that do not already exist are copied, so a user's edits and
-    the multi-GB downloaded model.onnx are never touched.
+    open. Both models/ and lang/ are meant to be user-visible - models/ is where people
+    drop manually-downloaded model files and where downloads land, and lang/ is
+    documented as user-editable - so the shipped copies have to end up there.
 
-    No-op when not frozen (both paths resolve to the same directory).
+    Only files that do not already exist are copied, so a user's edits and the multi-GB
+    downloaded model.onnx are never touched. No-op when not frozen (both paths resolve
+    to the same directory).
     """
-    if MODELS_RESOURCE_DIR.resolve() == MODELS_DIR.resolve():
+    if resource_dir.resolve() == dest_root.resolve():
         return
-    if not MODELS_RESOURCE_DIR.is_dir():
+    if not resource_dir.is_dir():
         return
-    for src in MODELS_RESOURCE_DIR.rglob("*"):
+    for src in resource_dir.rglob("*"):
         if not src.is_file():
             continue
-        dest = MODELS_DIR / src.relative_to(MODELS_RESOURCE_DIR)
+        dest = dest_root / src.relative_to(resource_dir)
         if dest.exists():
             continue
         dest.parent.mkdir(parents=True, exist_ok=True)
         # Copy to a sibling temp file and rename into place: os.replace() is atomic on the
-        # same volume, so an interrupted startup can never leave a truncated
-        # model_config.json behind. A partial file would otherwise satisfy the
-        # `dest.exists()` check above forever and hide that model from the picker.
+        # same volume, so an interrupted startup can never leave a truncated file behind.
+        # A partial file would otherwise satisfy the `dest.exists()` check above forever.
         tmp = dest.with_name(dest.name + ".part")
         try:
             shutil.copy2(src, tmp)
@@ -77,10 +81,15 @@ def _seed_bundled_model_files() -> None:
 
 
 try:
-    _seed_bundled_model_files()
+    _seed_bundled_dir(MODELS_RESOURCE_DIR, MODELS_DIR)
+    # lang/ has the same _internal-vs-exe-adjacent split as models/. Without this the
+    # frozen app finds no .ini at all and every string falls back to its raw key, which
+    # also makes the OS-language detection look broken.
+    _seed_bundled_dir(RESOURCE_DIR / "lang", LANG_DIR)
 except Exception:
     # A read-only install directory must not stop the app from starting; discover_models()
-    # also scans MODELS_RESOURCE_DIR directly, so the model list still works.
+    # also scans MODELS_RESOURCE_DIR directly, and LocaleManager falls back to
+    # LANG_RESOURCE_DIR, so the app still works.
     pass
 # PixAI's own directory lives under MODELS_DIR like every other model (unified 2026-08-31),
 # but it still has no model_config.json - it stays the hardcoded pseudo-entry in
