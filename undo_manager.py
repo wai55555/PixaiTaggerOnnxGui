@@ -18,13 +18,21 @@ def _long_path_str(path: Path) -> str:
     """Windows の MAX_PATH（260文字）制限を避ける `\\\\?\\` プレフィックス付き絶対パス。
 
     tagging_core.process_image_loop / caption_core.process_caption_loop の書き込みと
-    同じ変換。そちらは長いパスでも書けるのに undo/redo だけ素の Path 経由で失敗する、
-    という非対称を防ぐ（PR#16 レビュー指摘）。
+    同じ狙い（長いパスでも書けるのに undo/redo だけ素の Path 経由で失敗する非対称を防ぐ）。
+
+    - `os.path.abspath()` を使う（`Path.resolve()` ではない）: `\\\\?\\` パスは OS がそのまま
+      使うので `..` の正規化は必要だが、**symlink は解決しない**。resolve() だと、新規
+      作成した出力がその後 symlink に差し替えられていた場合、undo の unlink が
+      リンク先の実体を消してしまう（PR#16 レビュー指摘）。
+    - UNC パス（`\\\\server\\share\\...`）は `\\\\?\\UNC\\server\\share\\...` の形にする必要が
+      あり、単純に `\\\\?\\` を前置すると不正なパスになる（PR#16 レビュー指摘）。
     """
-    resolved = path.resolve()
-    if sys.platform == "win32":
-        return f"\\\\?\\{resolved}"
-    return str(resolved)
+    p = os.path.abspath(path)
+    if sys.platform != "win32":
+        return p
+    if p.startswith("\\\\"):
+        return "\\\\?\\UNC" + p[1:]
+    return "\\\\?\\" + p
 
 
 class GetString(Protocol):

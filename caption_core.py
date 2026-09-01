@@ -285,6 +285,12 @@ def process_caption_loop(
     _get_string_internal = get_string if get_string else _get_string
     mode: ExistingFileMode = settings.get("EXISTING_FILE_MODE", ExistingFileMode.ASK)
     placement: str = settings.get("CAPTION_PLACEMENT", "OVERWRITE")
+    # 「既存ファイルの扱い」で APPEND（＝常に追記）を選んでいるのに、キャプション挿入位置が
+    # 既定の OVERWRITE のままだと、combine_caption が既存キャプションを丸ごと捨ててしまう
+    # （PR#16 レビュー指摘: ラベルは「追記」なのに実際は上書き）。矛盾する組み合わせでは
+    # 明示的な「追記」意図を優先し、既存内容を壊さない APPEND として扱う。PREPEND は尊重。
+    if mode is ExistingFileMode.APPEND and placement == "OVERWRITE":
+        placement = "APPEND"
     changed_files: list[FileChange] = []
     task_key = settings.get("TASK", captioner.config.default_task)
     task_prompt = captioner.config.tasks.get(task_key, captioner.config.tasks.get(captioner.config.default_task, "Describe with a paragraph what is shown in the image."))
@@ -296,7 +302,8 @@ def process_caption_loop(
     n_unchanged = 0
     # progress_cb もクロススレッド signal なので毎画像発行を避け、全体で ~200 回に間引く
     # （PR#16 レビュー指摘）。最後の1枚は必ず発行して N/N に到達させる。
-    progress_step = max(1, total // 200)
+    # 天井除算: total//200 だと 201〜399 枚で step=1 になり間引きが効かない。
+    progress_step = max(1, (total + 199) // 200)
 
     for i, image_path in enumerate(image_paths):
         if progress_cb and ((i + 1) % progress_step == 0 or i == total - 1):

@@ -803,7 +803,8 @@ def process_image_loop(
     # progress_cb 自体もクロススレッドの queued signal なので、毎画像発行すると
     # シグナルのキュー投入コストが積み上がる（PR#16 レビュー指摘）。全体で ~200 回に
     # 間引く。最後の1枚は必ず発行して N/N（完了）に到達させる。
-    progress_step = max(1, total // 200)
+    # 天井除算にする: total//200 だと 201〜399 枚で step=1 になり間引きが効かない。
+    progress_step = max(1, (total + 199) // 200)
 
     for i, image_path in enumerate(image_paths):
         if progress_cb and ((i + 1) % progress_step == 0 or i == total - 1):

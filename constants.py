@@ -85,7 +85,7 @@ try:
     # lang/ has the same _internal-vs-exe-adjacent split as models/. Without this the
     # frozen app finds no .ini at all and every string falls back to its raw key, which
     # also makes the OS-language detection look broken.
-    _seed_bundled_dir(RESOURCE_DIR / "lang", LANG_DIR)
+    _seed_bundled_dir(LANG_RESOURCE_DIR, LANG_DIR)
 except Exception:
     # A read-only install directory must not stop the app from starting; discover_models()
     # also scans MODELS_RESOURCE_DIR directly, and LocaleManager falls back to
