@@ -770,18 +770,19 @@ def process_image_loop(
     mode: ExistingFileMode = settings.get('EXISTING_FILE_MODE', ExistingFileMode.ASK)
     changed_files: list[FileChange] = []
     total = len(image_paths)
+    # issue #10: 1画像=1 GUI ログだと全既存フォルダの SKIP で Qt キューが飽和する。
+    # 個々の skip / 成功は debug log だけに残し、GUI へは末尾のサマリ1行だけ出す。
+    n_skipped = 0
+    n_errors = 0
+    n_unchanged = 0
 
     for i, image_path in enumerate(image_paths):
         if progress_cb:
             progress_cb(i + 1, total)
-        if stop_checker:
-            log_dbg("DEBUG: process_image_loop: Calling stop_checker.")
-            should_stop = stop_checker()
-            log_dbg(f"DEBUG: process_image_loop: stop_checker returned {should_stop}.")
-            if should_stop:
-                core_log_gui(_get_string_internal("TaggerCore", "Tagging_Process_Aborted_By_User"), "red")
-                log_dbg(_get_string_internal("TaggerCore", "Tagging_Process_Aborted_By_User_Debug"))
-                break
+        if stop_checker and stop_checker():
+            core_log_gui(_get_string_internal("TaggerCore", "Tagging_Process_Aborted_By_User"), "red")
+            log_dbg(_get_string_internal("TaggerCore", "Tagging_Process_Aborted_By_User_Debug"))
+            break
 
         # First, check if the output file exists and should be skipped.
         base_name, _ = os.path.splitext(str(image_path))
@@ -792,12 +793,13 @@ def process_image_loop(
         will_append = False
         if output_path.is_file():
             if mode is ExistingFileMode.SKIP:
+                n_skipped += 1
                 log_dbg(_get_string_internal("TaggerCore", "Tag_Output_Skipped_Existing_File", current_index_str=current_index_str, relative_path=str(relative_path)))
-                core_log_gui(_get_string_internal("TaggerCore", "Tag_Skipped_Existing_File_Short", current_index_str=current_index_str, output_path_name=output_path.name), "orange")
                 continue
             if mode is ExistingFileMode.ASK:
                 if decision_resolver is None:
                     # 防御: resolver 未設定なら既存ファイルには触らない
+                    n_skipped += 1
                     log_dbg("process_image_loop: ASK モードだが decision_resolver が未設定のためスキップします")
                     continue
                 if stop_checker and stop_checker():
@@ -805,8 +807,8 @@ def process_image_loop(
                     break
                 decision = decision_resolver(output_path)
                 if decision is OverwriteDecision.SKIP:
+                    n_skipped += 1
                     log_dbg(_get_string_internal("TaggerCore", "Tag_Output_Skipped_Existing_File", current_index_str=current_index_str, relative_path=str(relative_path)))
-                    core_log_gui(_get_string_internal("TaggerCore", "Tag_Skipped_Existing_File_Short", current_index_str=current_index_str, output_path_name=output_path.name), "orange")
                     continue
                 will_append = decision is OverwriteDecision.APPEND
             else:
@@ -819,6 +821,7 @@ def process_image_loop(
             with open(image_path, 'rb') as f:
                 image = Image.open(f).convert("RGB")
         except Exception as e:
+            n_errors += 1
             log_dbg(_get_string_internal("TaggerCore", "Image_Load_Failed", current_index_str=current_index_str, relative_path=str(relative_path), type_e_name=type(e).__name__, e=str(e)))
             core_log_gui(_get_string_internal("TaggerCore", "Image_Load_Failed_Short", current_index_str=current_index_str, relative_path_name=relative_path.name), "red")
             continue
@@ -830,11 +833,13 @@ def process_image_loop(
                 max_tags=settings['MAX_TAGS_PER_CATEGORY'],
             )
         except Exception as e:
+            n_errors += 1
             log_dbg(_get_string_internal("TaggerCore", "Tag_Inference_Failed", current_index_str=current_index_str, relative_path=str(relative_path), type_e_name=type(e).__name__, e=str(e)))
             core_log_gui(_get_string_internal("TaggerCore", "Tag_Inference_Failed_Short", current_index_str=current_index_str, relative_path_name=relative_path.name), "red")
             continue
 
         if not results or not results[0].tags:
+            n_errors += 1
             log_dbg(_get_string_internal("TaggerCore", "Tag_Acquisition_Failed", current_index_str=current_index_str, relative_path=str(relative_path)))
             core_log_gui(_get_string_internal("TaggerCore", "Tag_Acquisition_Failed_Short", current_index_str=current_index_str, relative_path_name=relative_path.name), "orange")
             continue
@@ -856,6 +861,7 @@ def process_image_loop(
                 previous_content = output_path.read_text(encoding='utf-8')
             except Exception as e:
                 # 既存内容が読めないファイルは触らずスキップする（spec.md 3.3節）
+                n_errors += 1
                 log_dbg(f"append: 既存ファイルの読み込みに失敗したためスキップします {output_path.name}: {type(e).__name__}: {e}")
                 core_log_gui(_get_string_internal("TaggerCore", "Save_Failed_Short", current_index_str=current_index_str, output_path_name=output_path.name), "red")
                 continue
@@ -865,6 +871,7 @@ def process_image_loop(
             if merged == existing_tags:
                 # 追加できる新規タグが無い場合は mtime も変えない（spec.md 3.3節）
                 # ルーチン結果なので GUI へは出さず debug log のみ（issue #10）。
+                n_unchanged += 1
                 log_dbg(_get_string_internal("TaggerCore", "Log_No_New_Tags", current_index_str=current_index_str, file_name=output_path.name))
                 continue
             added_tags = tuple(merged[len(existing_tags):])
@@ -891,18 +898,23 @@ def process_image_loop(
             changed_files.append(FileChange(
                 path=output_path, previous_content=previous_content,
                 new_content=new_content, was_append=will_append, added_tags=added_tags))
+            # 個々の追記／出力成功は debug log のみ。件数は末尾サマリで GUI へ（issue #10）。
             if will_append:
-                # 追記件数は原因調査に必要なので GUI へ残す（有界・低頻度）。
-                core_log_gui(_get_string_internal("TaggerCore", "Log_Appended", current_index_str=current_index_str, count=len(added_tags), file_name=output_path.name), "green")
+                log_dbg(_get_string_internal("TaggerCore", "Log_Appended", current_index_str=current_index_str, count=len(added_tags), file_name=output_path.name))
             else:
-                # ルーチンの出力成功は GUI へ流さず debug log のみ（issue #10）。
                 log_dbg(_get_string_internal("TaggerCore", "Tag_Output_Success", current_index_str=current_index_str, output_path_name=output_path.name))
             log_dbg(_get_string_internal("TaggerCore", "Tagging_Result_Output", current_index_str=current_index_str, output_path_name=output_path.name))
         except Exception as e:
+            n_errors += 1
             log_dbg(_get_string_internal("TaggerCore", "Save_Failed", current_index_str=current_index_str, relative_path=str(relative_path), type_e_name=type(e).__name__, e=str(e)))
-            
+
             core_log_gui(_get_string_internal("TaggerCore", "Save_Failed_Short", current_index_str=current_index_str, output_path_name=output_path.name), "red")
 
+    n_appended = sum(1 for c in changed_files if c.was_append)
+    core_log_gui(_get_string_internal(
+        "TaggerCore", "Batch_Summary",
+        written=len(changed_files), appended=n_appended, skipped=n_skipped,
+        unchanged=n_unchanged, errors=n_errors, total=total), "blue")
     return changed_files
 
 def filter_tags_by_solo_rule(

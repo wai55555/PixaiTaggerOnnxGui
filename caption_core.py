@@ -283,6 +283,11 @@ def process_caption_loop(
     task_key = settings.get("TASK", captioner.config.default_task)
     task_prompt = captioner.config.tasks.get(task_key, captioner.config.tasks.get(captioner.config.default_task, "Describe with a paragraph what is shown in the image."))
     total = len(image_paths)
+    # issue #10: 1画像=1 GUI ログだと大量画像で Qt キューが飽和する。個々の skip / 成功は
+    # debug log だけに残し、GUI へは末尾のサマリ1行だけ出す。
+    n_skipped = 0
+    n_errors = 0
+    n_unchanged = 0
 
     for i, image_path in enumerate(image_paths):
         if progress_cb:
@@ -298,16 +303,19 @@ def process_caption_loop(
 
         if output_path.is_file():
             if mode is ExistingFileMode.SKIP:
-                core_log_gui(_get_string_internal("TaggerCore", "Tag_Skipped_Existing_File_Short", current_index_str=current_index_str, output_path_name=output_path.name), "orange")
+                n_skipped += 1
+                log_dbg(_get_string_internal("TaggerCore", "Tag_Skipped_Existing_File_Short", current_index_str=current_index_str, output_path_name=output_path.name))
                 continue
             if mode is ExistingFileMode.ASK:
                 if decision_resolver is None:
+                    n_skipped += 1
                     log_dbg("process_caption_loop: ASK モードだが decision_resolver が未設定のためスキップします")
                     continue
                 if stop_checker and stop_checker():
                     break
                 if decision_resolver(output_path) is OverwriteDecision.SKIP:
-                    core_log_gui(_get_string_internal("TaggerCore", "Tag_Skipped_Existing_File_Short", current_index_str=current_index_str, output_path_name=output_path.name), "orange")
+                    n_skipped += 1
+                    log_dbg(_get_string_internal("TaggerCore", "Tag_Skipped_Existing_File_Short", current_index_str=current_index_str, output_path_name=output_path.name))
                     continue
 
         # ルーチンの「処理中」表示は GUI へ流さず debug log のみ（issue #10）。GUI は progress_cb 経由。
@@ -317,6 +325,7 @@ def process_caption_loop(
             with open(image_path, "rb") as f:
                 image = Image.open(f).convert("RGB")
         except Exception as e:
+            n_errors += 1
             log_dbg(f"Caption image load failed for {relative_path}: {type(e).__name__}: {e}")
             core_log_gui(_get_string_internal("TaggerCore", "Image_Load_Failed_Short", current_index_str=current_index_str, relative_path_name=relative_path.name), "red")
             continue
@@ -324,6 +333,7 @@ def process_caption_loop(
         try:
             caption, cancelled = captioner.generate(image, task_prompt, stop_checker)
         except Exception as e:
+            n_errors += 1
             log_dbg(f"Caption generation failed for {relative_path}: {type(e).__name__}: {e}")
             core_log_gui(_get_string_internal("TaggerCore", "Tag_Inference_Failed_Short", current_index_str=current_index_str, relative_path_name=relative_path.name), "red")
             continue
@@ -346,6 +356,7 @@ def process_caption_loop(
         new_content = combine_caption(previous_content or "", caption, placement)
         if previous_content is not None and new_content == previous_content:
             # 内容が変わらないなら mtime も変えない。ルーチン結果なので GUI へは出さず debug log のみ（issue #10）。
+            n_unchanged += 1
             log_dbg(_get_string_internal("TaggerCore", "Log_No_New_Tags", current_index_str=current_index_str, file_name=output_path.name))
             continue
 
@@ -360,7 +371,13 @@ def process_caption_loop(
             # ルーチンの出力成功は GUI へ流さず debug log のみ（issue #10）。
             log_dbg(_get_string_internal("TaggerCore", "Tag_Output_Success", current_index_str=current_index_str, output_path_name=output_path.name))
         except Exception as e:
+            n_errors += 1
             log_dbg(f"Caption save failed for {output_path.name}: {type(e).__name__}: {e}")
             core_log_gui(_get_string_internal("TaggerCore", "Save_Failed_Short", current_index_str=current_index_str, output_path_name=output_path.name), "red")
 
+    n_appended = sum(1 for c in changed_files if c.was_append)
+    core_log_gui(_get_string_internal(
+        "TaggerCore", "Batch_Summary",
+        written=len(changed_files), appended=n_appended, skipped=n_skipped,
+        unchanged=n_unchanged, errors=n_errors, total=total), "blue")
     return changed_files
