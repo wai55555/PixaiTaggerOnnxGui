@@ -129,6 +129,43 @@ class Caption:
 class Debug:
     debug_log: bool
 
+
+@dataclass
+class Vlm:
+    """VLM 生成機能の基本設定（260901_VLM_spec.md 16章）。
+
+    複雑なカスタム接続定義は config.ini ではなく vlm_connections.json 側に持つ。
+    この項目を持たない旧 config.ini でも enabled=False の未設定状態として動く。
+    """
+    # True のとき、選択中のローカルモデルの代わりにネットワーク VLM で生成する。
+    # 出力の形式（タグ列 / 自然文 など）は VLM プロンプト次第（既定は詳細キャプション）。
+    enabled: bool = False
+    model_profile_id: str = "gemma-4-26b-a4b-it"
+    generation_profile_id: str = "default-caption-en"
+    free_only: bool = True
+    paid_continuation: bool = False
+    # builtin_fallback / custom_single
+    execution_mode: str = "builtin_fallback"
+    selected_connection_id: str = ""
+    connection_order: str = "gemini,openrouter,cloudflare"
+    # 有料継続を個別許可した内蔵プロバイダー（カンマ区切り）。free_only かつ
+    # paid_continuation のときだけ意味を持つ。
+    paid_connections: str = ""
+    # Cloudflare Workers AI はアカウント ID を URL に含むため別途保持する。
+    cloudflare_account_id: str = ""
+    # 生成プロファイルの内訳（フラットに保持。vlm_profiles.GenerationProfile へ写す）
+    language: str = "en"
+    detail_level: str = "maximum_detail"
+    sentence_mode: str = "automatic_long_detailed"
+    character_name_mode: str = "explicit_only"
+    markdown: str = "disabled"
+    max_output_tokens: int = 1024
+    image_max_long_edge: int = 1536
+
+    def order_list(self) -> list[str]:
+        return [p.strip() for p in self.connection_order.split(",") if p.strip()]
+
+
 @dataclass
 class AppSettings:
     paths: Paths
@@ -138,6 +175,7 @@ class AppSettings:
     window: Window
     model: Model
     caption: Caption
+    vlm: Vlm
     debug: Debug
     language_code: str
 
@@ -155,6 +193,17 @@ def get_default_config() -> configparser.ConfigParser:
         'Window': {'geometry': '986x976+50+50', 'tag_display_rows': '6', 'tag_display_cols': '5'},
         'Model': {'model_id': 'pixai-tagger-v0.9', 'verified_models': ''},
         'Caption': {'task': 'MORE_DETAILED_CAPTION', 'placement': 'OVERWRITE'},
+        'Vlm': {
+            'enabled': 'False',
+            'model_profile_id': 'gemma-4-26b-a4b-it', 'generation_profile_id': 'default-caption-en',
+            'free_only': 'True', 'paid_continuation': 'False',
+            'execution_mode': 'builtin_fallback', 'selected_connection_id': '',
+            'connection_order': 'gemini,openrouter,cloudflare', 'paid_connections': '',
+            'cloudflare_account_id': '',
+            'language': 'en', 'detail_level': 'maximum_detail',
+            'sentence_mode': 'automatic_long_detailed', 'character_name_mode': 'explicit_only',
+            'markdown': 'disabled', 'max_output_tokens': '1024', 'image_max_long_edge': '1536',
+        },
         'Debug': {'debug_log': 'False'},
         'General': {'language_code': ''}
     }
@@ -260,11 +309,39 @@ def load_settings(config: configparser.ConfigParser) -> AppSettings:
             task=config.get('Caption', 'task', fallback='MORE_DETAILED_CAPTION'),
             placement=parse_caption_placement(config.get('Caption', 'placement', fallback='OVERWRITE'))
         ),
+        vlm=_load_vlm(config),
         debug=Debug(
             debug_log=config.getboolean('Debug', 'debug_log', fallback=False) # Default is False for debug_log
         ),
         language_code=config.get('General', 'language_code', fallback="")
     )
+
+def _load_vlm(config: configparser.ConfigParser) -> Vlm:
+    """[Vlm] セクションを読み込む。欠けているキーは Vlm の既定値へフォールバック。"""
+    d = Vlm()
+    g = lambda k, fb: config.get('Vlm', k, fallback=fb)  # noqa: E731
+    gb = lambda k, fb: config.getboolean('Vlm', k, fallback=fb)  # noqa: E731
+    gi = lambda k, fb: config.getint('Vlm', k, fallback=fb)  # noqa: E731
+    return Vlm(
+        enabled=gb('enabled', d.enabled),
+        model_profile_id=g('model_profile_id', d.model_profile_id),
+        generation_profile_id=g('generation_profile_id', d.generation_profile_id),
+        free_only=gb('free_only', d.free_only),
+        paid_continuation=gb('paid_continuation', d.paid_continuation),
+        execution_mode=g('execution_mode', d.execution_mode).strip().lower() or d.execution_mode,
+        selected_connection_id=g('selected_connection_id', d.selected_connection_id),
+        connection_order=g('connection_order', d.connection_order),
+        paid_connections=g('paid_connections', d.paid_connections),
+        cloudflare_account_id=g('cloudflare_account_id', d.cloudflare_account_id).strip(),
+        language=g('language', d.language),
+        detail_level=g('detail_level', d.detail_level),
+        sentence_mode=g('sentence_mode', d.sentence_mode),
+        character_name_mode=g('character_name_mode', d.character_name_mode),
+        markdown=g('markdown', d.markdown),
+        max_output_tokens=gi('max_output_tokens', d.max_output_tokens),
+        image_max_long_edge=gi('image_max_long_edge', d.image_max_long_edge),
+    )
+
 
 def save_config(settings: AppSettings):
     """Saves the AppSettings object to the config.ini file."""

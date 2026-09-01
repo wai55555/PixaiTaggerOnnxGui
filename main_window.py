@@ -32,6 +32,7 @@ from tagging_core import ExistingFileMode, OverwriteDecision
 from custom_dialogs import ClickableLabel, ImageViewerDialog, CategoryTagSettingsDialog
 from grid_view_widget import GridViewWidget
 from workers import DownloaderWorker, TaggerThreadWorker, CaptionerThreadWorker, TagLoader, BulkTagWorker
+from vlm_worker import VlmCaptionWorker
 from locale_manager import LocaleManager
 from ui_main_window import Ui_MainWindow
 from undo_manager import (
@@ -166,7 +167,8 @@ class MainWindow(QMainWindow):
         self._is_shutting_down = False # Flag to prevent race conditions on close
         # Thread and worker management
         self._tagger_thread: QThread | None = None
-        self._tagger_worker: TaggerThreadWorker | CaptionerThreadWorker | None = None
+        self._tagger_worker: TaggerThreadWorker | CaptionerThreadWorker | VlmCaptionWorker | None = None
+        self._vlm_settings_dialog = None
         self._download_thread: QThread | None = None
         self._downloader_worker: DownloaderWorker | None = None
         self._bulk_tag_thread: QThread | None = None
@@ -336,7 +338,7 @@ class MainWindow(QMainWindow):
 
     def reload_tags_only(self, preserve_page: bool = False):
         """Reloads the aggregated tag list for bulk editing asynchronously."""
-        if self._current_model_entry().model_type == "captioner":
+        if self._is_text_output_mode():
             # Bulk tag aggregation comma-splits every .txt file; running it on free-text
             # captions would shred sentences into meaningless fragments (design.md 1.4節).
             # The bulk add/delete UI is hidden in caption mode anyway (spec.md 8.3節).
@@ -428,8 +430,8 @@ class MainWindow(QMainWindow):
             self.image_label.setText(self.locale_manager.get_string("MainWindow", "Image_Display_Error", image_relative_path=image_path.name, e=e))
 
     def _load_image_tags(self, image_path: Path, preserve_page: bool = False):
-        """Loads tags (tagger mode) or free-text caption (captioner mode) for a given image."""
-        if self._current_model_entry().model_type == "captioner":
+        """Loads tags (tag mode) or the raw .txt into the text editor (captioner / VLM mode)."""
+        if self._is_text_output_mode():
             self._load_caption_for_image(image_path)
             return
 
@@ -476,7 +478,7 @@ class MainWindow(QMainWindow):
         Called on focus-out (eventFilter) rather than on every keystroke. Records an
         EditCaptionAction so the change is undoable, and only when something changed."""
         self._caption_save_timer.stop()
-        if self._current_model_entry().model_type != "captioner":
+        if not self._is_text_output_mode():
             return
         image_path = self._current_caption_image_path
         if image_path is None:
@@ -527,6 +529,79 @@ class MainWindow(QMainWindow):
         self.settings.caption.placement = placement
         self.save_current_config()
         write_debug_log(f"caption placement -> {placement}")
+
+    def _is_text_output_mode(self) -> bool:
+        """出力が自由テキストになるモード = ローカル captioner か「VLM接続を使う」。
+        タグボタン一覧やタグ集計をこのモードで動かすと自然文をカンマで刻んでしまう。"""
+        try:
+            if self._current_model_entry().model_type == "captioner":
+                return True
+        except Exception:  # noqa: BLE001
+            pass
+        return bool(self.settings.vlm.enabled)
+
+    @Slot(bool)
+    def _on_use_vlm_toggled(self, checked: bool):
+        """「VLM接続を使う」トグル。選択中モデルの種別（tagger / captioner）とは独立で、
+        ON のときローカルモデルの代わりにネットワーク VLM で生成する。出力形式は VLM
+        プロンプト次第（既定は詳細キャプション。タグ列も可）。"""
+        checked = bool(checked)
+        if checked == self.settings.vlm.enabled:
+            return
+        self.settings.vlm.enabled = checked
+        self.save_current_config()
+        write_debug_log(f"use_vlm -> {checked}")
+        self.vlm_settings_button.setVisible(checked)
+        self.vlm_single_test_button.setVisible(checked)
+        # タグ欄 <-> テキスト欄など UI 表示を更新。
+        self._model_mode.on_model_changed(self._current_model_entry())
+
+    @Slot()
+    def _open_vlm_settings(self):
+        """VLM 設定ダイアログを開く（260901_VLM_design.md 6.3節）。"""
+        from vlm_settings_dialog import VlmSettingsDialog
+        if self._vlm_settings_dialog is not None and self._vlm_settings_dialog.isVisible():
+            self._vlm_settings_dialog.raise_()
+            return
+        self._vlm_settings_dialog = VlmSettingsDialog(self.settings, self.locale_manager.get_string, self)
+        self._vlm_settings_dialog.finished.connect(lambda _=0: setattr(self, "_vlm_settings_dialog", None))
+        self._vlm_settings_dialog.show()
+
+    @Slot()
+    def _run_vlm_single_test(self):
+        """選択画像1枚で実際に VLM 生成し、結果を編集欄へ出しつつ .txt へも保存する
+        （既存ファイルの扱い・挿入位置は一括処理と同じ設定に従う。2026-09 ユーザー決定）。"""
+        if self._tagger_thread and self._tagger_thread.isRunning():
+            self.update_log(self.locale_manager.get_string("MainWindow", "Warning_Tagging_Already_Running"), "orange")
+            return
+        current_item = self.image_list.currentItem()
+        if not current_item:
+            self.update_log(self.locale_manager.get_string("Vlm", "Error_No_Selected_Image"), "red")
+            return
+        rel = current_item.data(Qt.ItemDataRole.UserRole + 1)
+        selected_path = Path(self.settings.paths.input_dir) / rel
+
+        self._cleanup_tagger_thread()
+        self._update_ui_for_processing(True, 'tagging')
+        self._tagger_thread = QThread()
+        self._tagger_worker = VlmCaptionWorker(
+            self.settings, self._make_decision_requester(), self.locale_manager.get_string,
+            selected_file_path=selected_path, single_test=True)
+        self._tagger_worker.moveToThread(self._tagger_thread)
+        self._tagger_worker.log_message.connect(self.update_log)
+        self._tagger_worker.single_test_result.connect(self._on_vlm_single_test_result)
+        self._tagger_worker.batch_completed.connect(self._on_batch_completed)
+        self._tagger_worker.finished.connect(self._on_tagger_finished)
+        self._tagger_thread.started.connect(self._tagger_worker.run_captioning)
+        self._tagger_thread.start()
+
+    @Slot(str, str, str)
+    def _on_vlm_single_test_result(self, caption: str, connection_display: str, model_id: str):
+        """1枚テストの結果をキャプション編集欄へ表示する（自動保存しない）。"""
+        self.update_log(self.locale_manager.get_string(
+            "Vlm", "Test_Result_Header", conn=connection_display, model=model_id), "green")
+        if hasattr(self, "caption_text_edit"):
+            self.caption_text_edit.setPlainText(caption)
 
     @Slot(int)
     def _on_task_combo_changed(self, index: int):
@@ -725,8 +800,9 @@ class MainWindow(QMainWindow):
         self.grid_view_button.setEnabled(enabled)
         self.image_list.setEnabled(enabled)
         # Locked during a download/tagging run: switching models mid-run would repoint
-        # settings/UI away from the model the active worker is using.
-        self.model_combo.setEnabled(enabled)
+        # settings/UI away from the model the active worker is using. Also stays disabled
+        # while "Use VLM connection" is on - the local model is not in play then.
+        self.model_combo.setEnabled(enabled and not self.settings.vlm.enabled)
         self.task_combo.setEnabled(enabled)
         # The active worker already captured EXISTING_FILE_MODE / CAPTION_PLACEMENT at
         # start; changing them mid-run has no effect on this run but is immediately
@@ -734,6 +810,9 @@ class MainWindow(QMainWindow):
         # (PR#16 review). Lock them the same way model_combo/task_combo are locked.
         self.existing_mode_combo.setEnabled(enabled)
         self.caption_placement_widget.setEnabled(enabled)
+        if hasattr(self, "use_vlm_check"):
+            self.use_vlm_check.setEnabled(enabled)
+            self.vlm_settings_button.setEnabled(enabled)
         # The worker rewrites the same .txt files, so every path that can also write them
         # has to be locked: the main caption box, the grid-view cells, and Undo/Redo.
         self.caption_text_edit.setEnabled(enabled)
@@ -1122,7 +1201,8 @@ class MainWindow(QMainWindow):
         elif self._tagger_thread and self._tagger_thread.isRunning():
             self._stop_tagging_thread()
         else:
-            if self._is_model_available():
+            # 「VLM接続を使う」ならローカルモデル不要 -> モデル未DLでも起動できる。
+            if self.settings.vlm.enabled or self._is_model_available():
                 self.update_log(self.locale_manager.get_string("MainWindow", "Starting_Tagging_Process"), "black")
                 self._start_tagging_thread()
             else:
@@ -1152,10 +1232,19 @@ class MainWindow(QMainWindow):
         # Which worker class to instantiate is the one piece of model_type branching that
         # lives outside ModelModeController: it's a thread/worker-startup decision, not a
         # UI display-state one (design.md 6.8節 "スコープ外の明記").
-        is_captioner = self._current_model_entry().model_type == "captioner"
+        # 「VLM接続を使う」が ON ならネットワーク VLM（ローカルモデル不要、tagger でも
+        # captioner でも VLM が担当）。OFF なら従来どおりモデル種別で分岐。
+        use_vlm = bool(self.settings.vlm.enabled)
+        is_captioner = (not use_vlm) and self._current_model_entry().model_type == "captioner"
 
         self._tagger_thread = QThread()
-        if is_captioner:
+        if use_vlm:
+            self._tagger_worker = VlmCaptionWorker(
+                self.settings, self._make_decision_requester(), self.locale_manager.get_string,
+                selected_file_path=selected_path)
+            self._tagger_worker.single_test_result.connect(self._on_vlm_single_test_result)
+            self._tagger_thread.started.connect(self._tagger_worker.run_captioning)
+        elif is_captioner:
             self._tagger_worker = CaptionerThreadWorker(self.settings, self._make_decision_requester(), self.locale_manager.get_string, selected_file_path=selected_path)
             self._tagger_thread.started.connect(self._tagger_worker.run_captioning)
         else:
@@ -1873,7 +1962,7 @@ class MainWindow(QMainWindow):
 
         self.central_widget.setCurrentWidget(self.grid_view_widget)
         self.setWindowTitle(f"{constants.MSG_WINDOW_TITLE} - Grid View")
-        self.grid_view_widget.set_caption_mode(self._current_model_entry().model_type == "captioner")
+        self.grid_view_widget.set_caption_mode(self._is_text_output_mode())
         self.grid_view_widget.load_images(image_paths, self._tag_cache, Path(self.settings.paths.input_dir))
         self.showMaximized()
         self.update_log(self.locale_manager.get_string("MainWindow", "Switched_To_Grid_View"), "blue")
@@ -1951,9 +2040,10 @@ class MainWindow(QMainWindow):
 
         上段 [上書き] [スキップ] [追記] / 下段 [常に上書き] [常にスキップ] [常に追記]。
         「常に〜」を選ぶとセッション内オーバーライドを設定し、以降は確認を省略する。
-        追記系のボタンは captioner モードでは表示しない（自由文に追記は成立しないため）。
+        追記系のボタンはテキスト出力モード（captioner / VLM）では表示しない
+        （追記の可否は「キャプション挿入位置」トグルが担うため、ここでは出さない）。
         """
-        is_captioner = self._current_model_entry().model_type == "captioner"
+        is_captioner = self._is_text_output_mode()
 
         msg = QMessageBox(self)
         msg.setWindowTitle(self.locale_manager.get_string("MainWindow", "Overwrite_Confirmation_Title"))

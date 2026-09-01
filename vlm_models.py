@@ -1,0 +1,327 @@
+"""VLM モデルプロファイルと同一性判定（260901_VLM_spec.md 3章 / design.md 4.1・5.1節）。
+
+内蔵サービス間のフォールバックは「サービス」ではなく「同一モデルプロファイル」を単位に
+する。サービスごとの呼び名の違いは対応表（bindings）で吸収し、`vlm_protocols.py` などの
+通信コードには分散させない。量子化方式・ベースモデル・リビジョンが違うものは同一モデルと
+みなさない（別モデルへの自動切り替えは一切行わない）。
+"""
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass, field
+from enum import Enum
+
+_TOKEN_SPLIT = re.compile(r"[/:@_.\-\s]+")
+# 「同一モデル」を判定するのに効くトークン（サイズ・世代・ファミリー）。汎用語は除外。
+_STOP_TOKENS = frozenset({"", "free", "instruct", "it", "chat", "latest", "preview",
+                          "vision", "vl", "model", "google", "meta", "cf", "api"})
+
+
+def _sig_tokens(text: str) -> set[str]:
+    return {t for t in _TOKEN_SPLIT.split((text or "").lower()) if t and t not in _STOP_TOKENS}
+
+
+class ModelIdentityStatus(str, Enum):
+    """内蔵サービスが提供するモデルが、プロファイルの正規モデルと同一と言えるか。
+
+    - VERIFIED: 厳格フォールバックで使用可能
+    - DECLARED: 同一と宣言されているが、厳格フォールバックでは使わない（警告対象）
+    - UNKNOWN : 判定不能。厳格フォールバックから除外
+    """
+    VERIFIED = "verified"
+    DECLARED = "declared"
+    UNKNOWN = "unknown"
+
+
+def parse_identity_status(raw: object) -> ModelIdentityStatus:
+    """手書き JSON からの値を検証する。不明・型違いは UNKNOWN（安全側）へ。"""
+    try:
+        return ModelIdentityStatus(str(raw).strip().lower())
+    except (ValueError, AttributeError):
+        return ModelIdentityStatus.UNKNOWN
+
+
+@dataclass(frozen=True)
+class ProviderConstraint:
+    """OpenRouter のように内部プロバイダーが変わりうるサービスの固定条件。
+
+    承認済みプロバイダーへ固定でき、かつ自動プロバイダーフォールバックを無効化できた
+    場合だけ VERIFIED を名乗れる（spec.md 3.2節）。
+    """
+    allowed_providers: tuple[str, ...] = ()
+    allow_fallbacks: bool = True
+
+    @property
+    def is_pinned(self) -> bool:
+        return bool(self.allowed_providers) and not self.allow_fallbacks
+
+
+@dataclass(frozen=True)
+class ModelBinding:
+    """1つの内蔵プロバイダーにおける、このモデルプロファイルの実体。"""
+    provider_id: str
+    model_id: str
+    identity_status: ModelIdentityStatus = ModelIdentityStatus.UNKNOWN
+    provider_constraint: ProviderConstraint | None = None
+    # この経路が「既知の無料経路」か（プロバイダーではなく binding 単位。OpenRouter の
+    # `:free` サフィックスや、無料枠のあるサービスなど）。connection map 構築時に反映。
+    free_route: bool = False
+
+    def effective_identity_status(self) -> ModelIdentityStatus:
+        """provider_constraint を固定できていない場合、VERIFIED を格下げする。"""
+        status = self.identity_status
+        if status is ModelIdentityStatus.VERIFIED and self.provider_constraint is not None:
+            if not self.provider_constraint.is_pinned:
+                return ModelIdentityStatus.DECLARED
+        return status
+
+    def is_strict_fallback_eligible(self) -> bool:
+        """通常（厳格）フォールバックの候補になれるか。VERIFIED のみ True。"""
+        return self.effective_identity_status() is ModelIdentityStatus.VERIFIED
+
+
+@dataclass(frozen=True)
+class VlmModelProfile:
+    """利用者が選ぶのはサービス名ではなくこのプロファイル（requirement FR-003）。"""
+    profile_id: str
+    display_name: str
+    canonical_model_id: str
+    family: str = ""
+    base_model: str = ""
+    revision: str = ""
+    # unquantized_required / int8 / awq / gguf-q4 など。空・不明は厳格判定から除外する材料。
+    quantization: str = "unknown"
+    bindings: dict[str, ModelBinding] = field(default_factory=dict)
+    # 別名（サービスの生モデルID等）から profile_id を引くための逆引き補助。
+    aliases: tuple[str, ...] = ()
+
+    def binding_for(self, provider_id: str) -> ModelBinding | None:
+        return self.bindings.get(provider_id)
+
+    def strict_fallback_providers(self) -> list[str]:
+        """厳格フォールバックの対象になる provider_id を、bindings 挿入順で返す。"""
+        return [pid for pid, b in self.bindings.items() if b.is_strict_fallback_eligible()]
+
+    def quantization_is_strict(self) -> bool:
+        """量子化方式が厳格判定に足るか（不明・空は不可。spec.md 3章 / plan 3.1節）。"""
+        q = self.quantization.strip().lower()
+        return bool(q) and q != "unknown"
+
+
+class VlmModelRegistry:
+    """内蔵モデルプロファイルの集合。model_registry.py（ローカル ONNX 用）とは混在させない。"""
+
+    def __init__(self, profiles: list[VlmModelProfile] | None = None):
+        self._profiles: dict[str, VlmModelProfile] = {}
+        for p in profiles or []:
+            self.add(p)
+
+    def add(self, profile: VlmModelProfile) -> None:
+        self._profiles[profile.profile_id] = profile
+
+    def get(self, profile_id: str) -> VlmModelProfile | None:
+        return self._profiles.get(profile_id)
+
+    def all_profiles(self) -> list[VlmModelProfile]:
+        return list(self._profiles.values())
+
+    def resolve_alias(self, name: str) -> VlmModelProfile | None:
+        """profile_id / canonical_model_id / alias / いずれかの binding.model_id で引く。"""
+        key = name.strip()
+        if key in self._profiles:
+            return self._profiles[key]
+        low = key.lower()
+        for p in self._profiles.values():
+            if p.canonical_model_id.lower() == low:
+                return p
+            if any(a.lower() == low for a in p.aliases):
+                return p
+            if any(b.model_id.lower() == low for b in p.bindings.values()):
+                return p
+        return None
+
+
+# --- 内蔵プロファイル（spec.md 3章 / implement_plan 2.1・2.2・18章） ------------------
+# identity_status は控えめに置く（多くは DECLARED、実在が未確認のものは UNKNOWN）。
+# 各プロバイダーでの正確なモデル ID は「接続診断／1枚テスト」を通すまで確定しない前提。
+# 診断のフル PASS または生成成功で `[Vlm] verified_bindings` に載り VERIFIED 扱いになる
+# （vlm_config._apply_verified_promotions）。
+#
+# providers: gemini / openrouter / cloudflare / groq / nvidia / mistral
+#   - gemini      : Google Generative Language API（gemini_generate_content）
+#   - openrouter  : OpenRouter（openai_chat_completions、`:free` サフィックスで無料経路）
+#   - cloudflare  : Cloudflare Workers AI（openai_chat_completions、要 account_id）
+#   - groq        : Groq（openai_chat_completions、無料枠あり）
+#   - nvidia      : NVIDIA NIM / build.nvidia.com（openai_chat_completions、無料クレジット）
+#   - mistral     : Mistral La Plateforme（openai_chat_completions、無料枠あり）
+
+GEMMA_4_26B_A4B_IT = VlmModelProfile(
+    profile_id="gemma-4-26b-a4b-it",
+    display_name="Gemma 4 26B A4B IT",
+    canonical_model_id="gemma-4-26b-a4b-it",
+    family="Gemma 4",
+    base_model="gemma-4-26b-a4b-it",
+    revision="provider_verified",
+    quantization="unquantized_required",
+    aliases=(
+        "google/gemma-4-26b-a4b-it",
+        "google/gemma-4-26b-a4b-it:free",
+        "@cf/google/gemma-4-26b-a4b-it",
+    ),
+    bindings={
+        "gemini": ModelBinding("gemini", "gemma-4-26b-a4b-it",
+                               ModelIdentityStatus.DECLARED, free_route=True),
+        "openrouter": ModelBinding("openrouter", "google/gemma-4-26b-a4b-it:free",
+                                   ModelIdentityStatus.DECLARED,
+                                   ProviderConstraint(allowed_providers=(), allow_fallbacks=True),
+                                   free_route=True),
+        "cloudflare": ModelBinding("cloudflare", "@cf/google/gemma-4-26b-a4b-it",
+                                   ModelIdentityStatus.DECLARED),
+    },
+)
+
+# --- 2.2 「後から追加する内蔵候補」。実モデル ID は接続で確定させる前提なので UNKNOWN。
+GEMMA_4_31B_IT = VlmModelProfile(
+    profile_id="gemma-4-31b-it",
+    display_name="Gemma 4 31B IT",
+    canonical_model_id="gemma-4-31b-it",
+    family="Gemma 4",
+    base_model="gemma-4-31b-it",
+    quantization="unknown",
+    aliases=("google/gemma-4-31b-it", "google/gemma-4-31b-it:free", "@cf/google/gemma-4-31b-it"),
+    bindings={
+        "gemini": ModelBinding("gemini", "gemma-4-31b-it", ModelIdentityStatus.UNKNOWN),
+        "openrouter": ModelBinding("openrouter", "google/gemma-4-31b-it:free",
+                                   ModelIdentityStatus.UNKNOWN, free_route=True),
+        "cloudflare": ModelBinding("cloudflare", "@cf/google/gemma-4-31b-it",
+                                   ModelIdentityStatus.UNKNOWN),
+        "nvidia": ModelBinding("nvidia", "google/gemma-4-31b-it", ModelIdentityStatus.UNKNOWN,
+                               free_route=True),
+        "groq": ModelBinding("groq", "gemma-4-31b-it", ModelIdentityStatus.UNKNOWN, free_route=True),
+    },
+)
+
+QWEN3_8_27B = VlmModelProfile(
+    profile_id="qwen3.8-27b",
+    display_name="Qwen3.8 27B",
+    canonical_model_id="qwen3.8-27b",
+    family="Qwen3.8",
+    base_model="qwen3.8-27b",
+    quantization="unknown",
+    aliases=("qwen/qwen3.8-27b", "qwen/qwen3.8-27b-instruct", "qwen3.8-27b-instruct"),
+    bindings={
+        "openrouter": ModelBinding("openrouter", "qwen/qwen3.8-27b", ModelIdentityStatus.UNKNOWN,
+                                   free_route=True),
+        "nvidia": ModelBinding("nvidia", "qwen/qwen3.8-27b-instruct", ModelIdentityStatus.UNKNOWN,
+                               free_route=True),
+        "groq": ModelBinding("groq", "qwen3.8-27b", ModelIdentityStatus.UNKNOWN, free_route=True),
+    },
+)
+
+QWEN3_6_27B = VlmModelProfile(
+    profile_id="qwen3.6-27b",
+    display_name="Qwen3.6 27B",
+    canonical_model_id="qwen3.6-27b",
+    family="Qwen3.6",
+    base_model="qwen3.6-27b",
+    quantization="unknown",
+    aliases=("qwen/qwen3.6-27b", "qwen/qwen3.6-27b-instruct", "qwen3.6-27b-instruct"),
+    bindings={
+        "openrouter": ModelBinding("openrouter", "qwen/qwen3.6-27b", ModelIdentityStatus.UNKNOWN,
+                                   free_route=True),
+        "nvidia": ModelBinding("nvidia", "qwen/qwen3.6-27b-instruct", ModelIdentityStatus.UNKNOWN,
+                               free_route=True),
+        "groq": ModelBinding("groq", "qwen3.6-27b", ModelIdentityStatus.UNKNOWN, free_route=True),
+    },
+)
+
+# Mistral の VLM（Pixtral 系）。実 ID は接続で確認する。
+PIXTRAL_12B = VlmModelProfile(
+    profile_id="pixtral-12b",
+    display_name="Pixtral 12B",
+    canonical_model_id="pixtral-12b",
+    family="Pixtral",
+    base_model="pixtral-12b",
+    quantization="unknown",
+    aliases=("mistralai/pixtral-12b", "pixtral-12b-2409"),
+    bindings={
+        "mistral": ModelBinding("mistral", "pixtral-12b-2409", ModelIdentityStatus.UNKNOWN,
+                                free_route=True),
+        "openrouter": ModelBinding("openrouter", "mistralai/pixtral-12b", ModelIdentityStatus.UNKNOWN,
+                                   free_route=True),
+    },
+)
+
+_ALL_PROFILES = [GEMMA_4_26B_A4B_IT, GEMMA_4_31B_IT, QWEN3_8_27B, QWEN3_6_27B, PIXTRAL_12B]
+
+
+def _profile_reference_tokens(profile: VlmModelProfile) -> set[str]:
+    """このプロファイルの「同一モデル」を表す代表トークン集合。"""
+    toks: set[str] = set()
+    for s in (profile.canonical_model_id, profile.base_model, profile.family):
+        toks |= _sig_tokens(s)
+    for a in profile.aliases:
+        toks |= _sig_tokens(a)
+    return toks
+
+
+def match_model_id(profile: VlmModelProfile, provider_id: str,
+                   candidates: list[str]) -> tuple[str | None, float]:
+    """プロバイダーが返したモデル ID 一覧から、このプロファイルの正規モデルに
+    もっとも合致するものを選ぶ。戻り値は (best_id | None, score[0..1])。
+
+    フォールバックは「同一モデルを複数プロバイダーで回す」設計なので、ここでの狙いは
+    「一覧の中でプロファイルのモデルはどれか」を当てること。任意モデルの自由選択ではない。
+    """
+    if not candidates:
+        return None, 0.0
+    binding = profile.binding_for(provider_id)
+    lowered = {c.lower(): c for c in candidates}
+    # 1) binding の既定 ID / alias が一覧にそのままあれば即決。
+    exacts = [binding.model_id] if binding is not None else []
+    exacts += list(profile.aliases) + [profile.canonical_model_id]
+    for e in exacts:
+        if e and e.lower() in lowered:
+            return lowered[e.lower()], 1.0
+    # 2) トークン一致で採点。
+    ref = _profile_reference_tokens(profile)
+    if not ref:
+        return None, 0.0
+    best_id, best_score = None, 0.0
+    for c in candidates:
+        ct = _sig_tokens(c)
+        if not ct:
+            continue
+        inter = ref & ct
+        # 数字トークン（27b / 12b など）が食い違うなら別サイズ＝別モデル。強く減点。
+        ref_nums = {t for t in ref if any(ch.isdigit() for ch in t)}
+        cand_nums = {t for t in ct if any(ch.isdigit() for ch in t)}
+        size_ok = not (ref_nums and cand_nums) or bool(ref_nums & cand_nums)
+        score = len(inter) / len(ref | ct)
+        if not size_ok:
+            score *= 0.3
+        if score > best_score:
+            best_id, best_score = c, score
+    return (best_id, best_score) if best_score >= 0.34 else (None, best_score)
+
+
+def looks_same_family(profile: VlmModelProfile, model_id: str) -> bool:
+    """model_id がプロファイルと「だいたい同じモデル」に見えるか（緩いチェック）。"""
+    if not model_id:
+        return False
+    ref = _profile_reference_tokens(profile)
+    ct = _sig_tokens(model_id)
+    if not ref or not ct:
+        return False
+    ref_nums = {t for t in ref if any(ch.isdigit() for ch in t)}
+    cand_nums = {t for t in ct if any(ch.isdigit() for ch in t)}
+    if ref_nums and cand_nums and not (ref_nums & cand_nums):
+        return False
+    return len(ref & ct) >= 1
+
+
+def default_registry() -> VlmModelRegistry:
+    return VlmModelRegistry(_ALL_PROFILES)
+
+
+DEFAULT_MODEL_PROFILE_ID = GEMMA_4_26B_A4B_IT.profile_id

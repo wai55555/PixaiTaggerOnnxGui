@@ -43,7 +43,16 @@ a = Analysis(
     pathex=[],
     binaries=[],
     datas=[('icons', 'icons'), ('lang', 'lang')] + _model_datas,
-    hiddenimports=['PySide6.QtCore', 'PySide6.QtGui', 'PySide6.QtWidgets'],
+    hiddenimports=[
+        'PySide6.QtCore', 'PySide6.QtGui', 'PySide6.QtWidgets',
+        # keyring はバックエンドを entry point 経由で探すため、凍結ビルドでは
+        # 明示しないと 1つも見つからず、API キーが毎回セッション保持に落ちる。
+        'keyring.backends.Windows',
+        'keyring.backends.SecretService',
+        'keyring.backends.kwallet',
+        'keyring.backends.chainer',
+        'keyring.backends.fail',
+    ],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
