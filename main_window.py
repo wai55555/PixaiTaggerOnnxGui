@@ -6,7 +6,7 @@ import sys
 import time
 
 from PySide6.QtCore import (
-    Qt, QThread, QObject, Signal, Slot, QTimer, QPoint, QRect, QEvent,
+    Qt, QThread, QObject, Signal, Slot, QTimer, QPoint, QEvent,
     QMetaObject, Q_ARG, Q_RETURN_ARG
 )
 from PySide6.QtWidgets import (
@@ -1796,40 +1796,48 @@ class MainWindow(QMainWindow):
 
     @Slot()
     def show_enlarged_image(self):
-        """Shows the currently selected image, positioned next to the tag panel."""
+        """Shows the currently selected image, fitted and centered on the display
+        that holds the main window (multi-monitor safe)."""
         if not self._original_image_pixmap or self._original_image_pixmap.isNull():
             return
 
-        screen_geom = QApplication.primaryScreen().availableGeometry()
-        
+        # マルチディスプレイ対策: 本体ウィンドウの左上が乗っているスクリーンを基準にする。
+        # 左上が画面外（前回終了時のオフスクリーン位置など）なら順にフォールバック。
+        anchor = self.frameGeometry().topLeft()
+        target_screen = (QApplication.screenAt(anchor)
+                         or self.screen()
+                         or QApplication.primaryScreen())
+        screen_geom = target_screen.availableGeometry()
+
         tag_panel_widget = self.tag_display_grid.parentWidget().parentWidget() # Get the splitter child widget
         if not tag_panel_widget:
             return
-            
-        global_top_left = tag_panel_widget.mapToGlobal(QPoint(0,0))
-        tag_panel_global_rect = QRect(global_top_left, tag_panel_widget.size())
-        
-        available_width = tag_panel_global_rect.left()
+
+        # 従来どおり「タグパネルより左の領域」に収まる大きさにする。ただし基準スクリーン内の
+        # 相対座標で測る（グローバル座標のままだと副ディスプレイでスクリーン幅を超える）。
+        tag_panel_left_global = tag_panel_widget.mapToGlobal(QPoint(0, 0)).x()
+        available_width = tag_panel_left_global - screen_geom.x()
+        available_width = max(200, min(available_width, screen_geom.width()))
         available_height = screen_geom.height()
 
         if self._original_image_pixmap.height() == 0:
             return
         img_ratio = self._original_image_pixmap.width() / self._original_image_pixmap.height()
-        
+
         dialog_width = available_width
         dialog_height = int(dialog_width / img_ratio) if img_ratio > 0 else available_height
 
         if dialog_height > available_height:
             dialog_height = available_height
             dialog_width = int(dialog_height * img_ratio)
-        
-        dialog_width = max(200, dialog_width)
-        dialog_height = max(200, dialog_height)
 
-        # --- MODIFIED: Position dialog to the left of the tag panel ---
-        dialog_x = tag_panel_global_rect.left() - dialog_width
+        dialog_width = max(200, min(dialog_width, available_width))
+        dialog_height = max(200, min(dialog_height, available_height))
+
+        # 基準スクリーン内で中央寄せ（ディスプレイ間にまたがって表示されるのを防ぐ）。
+        dialog_x = screen_geom.x() + (screen_geom.width() - dialog_width) // 2
         dialog_y = screen_geom.y() + (screen_geom.height() - dialog_height) // 2
-        
+
         if self._image_viewer_dialog is None:
             # Launch in navigation mode (default)
             self._image_viewer_dialog = ImageViewerDialog(self) # Removed tag_panel_global_rect
