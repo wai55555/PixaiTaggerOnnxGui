@@ -83,12 +83,13 @@ EXISTING_FILE_MODE_MAP: dict[str, ExistingFileMode] = {
 }
 
 
-def parse_existing_file_mode(raw: str) -> ExistingFileMode:
+def parse_existing_file_mode(raw: str, get_string: GetString | None = None) -> ExistingFileMode:
     """config.ini の文字列を ExistingFileMode に変換する。不正値は ASK にフォールバック
     し、警告をデバッグログに残す（spec.md 5.2節）。"""
     mode = EXISTING_FILE_MODE_MAP.get(str(raw).strip().upper())
     if mode is None:
-        log_dbg(f"existing_file_mode の値が不正です: {raw!r} -> ASK にフォールバックします")
+        _get_string_internal = get_string if get_string else _get_string
+        log_dbg(_get_string_internal("TaggerCore", "Invalid_Existing_Mode_Debug", raw=raw))
         return ExistingFileMode.ASK
     return mode
 
@@ -742,7 +743,7 @@ def setup_tagger_from_settings(app_settings: AppSettings, get_string: GetString 
             'MAX_TAGS_PER_CATEGORY': max_tags_per_category,
             'ENABLE_SOLO_LIMIT': app_settings.behavior.enable_solo_character_limit,
             'CONVERT_UNDERSCORE': app_settings.behavior.convert_underscore_to_space,
-            'EXISTING_FILE_MODE': parse_existing_file_mode(app_settings.behavior.existing_file_mode),
+            'EXISTING_FILE_MODE': parse_existing_file_mode(app_settings.behavior.existing_file_mode, _get_string_internal),
         }
         tagger = OnnxTagger(model_path=settings_dict['MODEL_PATH'], tags_csv=tags_csv_path, get_string=_get_string_internal, inference_config=inference_config, intra_op_num_threads=app_settings.behavior.onnx_threads)
 
@@ -799,9 +800,13 @@ def process_image_loop(
     n_skipped = 0
     n_errors = 0
     n_unchanged = 0
+    # progress_cb 自体もクロススレッドの queued signal なので、毎画像発行すると
+    # シグナルのキュー投入コストが積み上がる（PR#16 レビュー指摘）。全体で ~200 回に
+    # 間引く。最後の1枚は必ず発行して N/N（完了）に到達させる。
+    progress_step = max(1, total // 200)
 
     for i, image_path in enumerate(image_paths):
-        if progress_cb:
+        if progress_cb and ((i + 1) % progress_step == 0 or i == total - 1):
             progress_cb(i + 1, total)
         if stop_checker and stop_checker():
             core_log_gui(_get_string_internal("TaggerCore", "Tagging_Process_Aborted_By_User"), "red")
@@ -905,8 +910,15 @@ def process_image_loop(
             if output_path.is_file():
                 try:
                     previous_content = output_path.read_text(encoding='utf-8')
-                except Exception:
-                    previous_content = None
+                except Exception as e:
+                    # 既存だが読めないファイル（非UTF-8等）はここで previous_content=None
+                    # のまま書くと「元は存在しなかった」と undo に誤認され、undo で
+                    # ファイルごと削除して原本を復元不能に破壊する（PR#16 レビュー指摘）。
+                    # APPEND 分岐と同様、触らずスキップする。
+                    n_errors += 1
+                    log_dbg(f"overwrite: 既存ファイルの読み込みに失敗したためスキップします {output_path.name}: {type(e).__name__}: {e}")
+                    core_log_gui(_get_string_internal("TaggerCore", "Save_Failed_Short", current_index_str=current_index_str, output_path_name=output_path.name), "red")
+                    continue
             new_content = formatted_tags
 
         try:

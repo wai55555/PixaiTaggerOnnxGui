@@ -18,31 +18,37 @@ class LocaleManager:
                 self.search_dirs.append(extra)
         self.translations = self._load_translations()
 
-    def _find_ini(self, file_name: str) -> Path | None:
-        for directory in self.search_dirs:
-            candidate = directory / file_name
-            if candidate.is_file():
-                return candidate
-        return None
+    def _load_file_layered(self, config: configparser.ConfigParser, file_name: str) -> None:
+        """`file_name` を search_dirs の優先度が低い順（末尾から）に読み込む。
 
-    def _load_translations(self) -> configparser.ConfigParser:
-        config = configparser.ConfigParser()
-        fallback_path = self._find_ini("en.ini")
-        primary_path = self._find_ini(f"{self.lang_code}.ini")
+        configparser.read() は後で読んだファイルのキーが先に読んだものを上書きするので、
+        末尾（同梱リソース側）から読んで先頭（exe隣の書き込み可能ディレクトリ）を最後に
+        読めば、exe隣のファイルが優先されつつ、そこに無いキーだけ同梱版の値へ「ファイル
+        単位」ではなく「キー単位」でフォールバックする。
 
-        # Load English first as a per-key fallback, then overlay the selected language so
-        # any key a translation file is missing (e.g. a whole new [CaptionCore] section)
-        # still resolves to English instead of showing the raw key.
-        paths = [fallback_path]
-        if self.lang_code != "en" and primary_path != fallback_path:
-            paths.append(primary_path)
-        for path in paths:
-            if path is None:
+        exe隣の lang/*.ini は一度作られたら二度と上書きされない（models/ と同じ「既存
+        ファイルは触らない」方針、ユーザーの手編集を保護するため）。ファイル単位で最初に
+        見つかった1つだけを読む実装だと、アップデートで追加された翻訳キーが exe隣の古い
+        ファイルには無いまま埋まらず raw key 表示になっていた（PR#16 レビュー指摘）。
+        """
+        for directory in reversed(self.search_dirs):
+            path = directory / file_name
+            if not path.is_file():
                 continue
             try:
                 config.read(path, encoding="utf-8")
             except Exception as e:
                 write_debug_log(f"Failed to read language file {path}: {e}")
+
+    def _load_translations(self) -> configparser.ConfigParser:
+        config = configparser.ConfigParser()
+
+        # Load English first as a per-key fallback, then overlay the selected language so
+        # any key a translation file is missing (e.g. a whole new [CaptionCore] section)
+        # still resolves to English instead of showing the raw key.
+        self._load_file_layered(config, "en.ini")
+        if self.lang_code != "en":
+            self._load_file_layered(config, f"{self.lang_code}.ini")
         return config
 
     def get_string(self, section: str, key: str, **kwargs: Any) -> str:

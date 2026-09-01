@@ -24,7 +24,7 @@ class _FastTooltipStyle(QProxyStyle):
         return super().styleHint(hint, option, widget, return_data)
 
 
-def os_prefers_dark(app: QApplication) -> bool:
+def os_prefers_dark(app: QApplication, fallback_palette: QPalette | None = None) -> bool:
     """OS のカラースキームがダークかどうかを返す。
 
     アプリは Fusion スタイルを強制しており、Fusion は OS のテーマに追随しない固定
@@ -32,6 +32,12 @@ def os_prefers_dark(app: QApplication) -> bool:
     「システムテーマ感知が働かない」状態になっていた。Qt 6.5 以降の
     `QStyleHints.colorScheme()` はスタイルに依存せず OS 設定そのものを返すので、
     そちらを一次情報として使い、取得できない環境ではパレットの明度に戻す。
+
+    `fallback_palette` は `setStyle(Fusion)` を適用する**前**に取得したパレットを渡すこと。
+    `colorScheme()` が使えない環境こそこのフォールバックが必要な環境であり、そこで
+    `app.palette()`（Fusion 適用後）を見ると常に Fusion の固定ライトパレットを見てしまい、
+    このフォールバック自体が無意味になる（PR#16 レビュー指摘）。省略時は互換のため
+    `app.palette()` を使うが、`main()` からは必ず退避済みのものを渡す。
     """
     try:
         scheme = app.styleHints().colorScheme()
@@ -41,7 +47,8 @@ def os_prefers_dark(app: QApplication) -> bool:
             return False
     except Exception:
         pass
-    return app.palette().color(QPalette.ColorRole.Window).lightness() < 128
+    palette = fallback_palette if fallback_palette is not None else app.palette()
+    return palette.color(QPalette.ColorRole.Window).lightness() < 128
 
 
 def apply_dark_palette(app: QApplication) -> None:
@@ -79,11 +86,15 @@ def main():
     """main entry point."""
     app = QApplication(sys.argv)
 
+    # colorScheme() が使えない環境向けのフォールバック判定は Fusion 適用前のプラット
+    # フォーム既定パレットで行う必要がある（setStyle 後の palette() は Fusion の固定
+    # ライトパレットになり判定できない。PR#16 レビュー指摘）。
+    platform_palette = app.palette()
     app.setStyle(_FastTooltipStyle("Fusion"))
 
     # スタイルを適用した後に OS のテーマへ合わせる。MainWindow はこの時点のパレットから
     # ダーク判定を行うので、ウィンドウ生成より前に済ませておく必要がある。
-    if os_prefers_dark(app):
+    if os_prefers_dark(app, platform_palette):
         apply_dark_palette(app)
 
     window = MainWindow()

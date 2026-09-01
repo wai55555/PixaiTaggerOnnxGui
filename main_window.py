@@ -728,6 +728,12 @@ class MainWindow(QMainWindow):
         # settings/UI away from the model the active worker is using.
         self.model_combo.setEnabled(enabled)
         self.task_combo.setEnabled(enabled)
+        # The active worker already captured EXISTING_FILE_MODE / CAPTION_PLACEMENT at
+        # start; changing them mid-run has no effect on this run but is immediately
+        # persisted to config.ini, silently changing the default for the next run
+        # (PR#16 review). Lock them the same way model_combo/task_combo are locked.
+        self.existing_mode_combo.setEnabled(enabled)
+        self.caption_placement_widget.setEnabled(enabled)
         # The worker rewrites the same .txt files, so every path that can also write them
         # has to be locked: the main caption box, the grid-view cells, and Undo/Redo.
         self.caption_text_edit.setEnabled(enabled)
@@ -1189,13 +1195,13 @@ class MainWindow(QMainWindow):
             return
         if len(changed_files) > constants.UNDO_BATCH_SNAPSHOT_LIMIT:
             # 全ファイルの旧内容＋新内容を1つの CompositeUndoAction に抱えると、
-            # 数万ファイル規模ではメモリを圧迫する（issue #10）。この規模では Undo を諦める。
-            self.undo_manager.clear()
-            self._update_undo_redo_buttons()
+            # 数万ファイル規模ではメモリを圧迫する（issue #10）。今回のバッチだけ
+            # スナップショットを諦める。既存の Undo 履歴（別バッチ・バルク編集等）は
+            # 無関係なので消さない（PR#16 レビュー指摘: 以前は clear() で全部消していた）。
             self.update_log(self.locale_manager.get_string(
                 "MainWindow", "Undo_Batch_Too_Large", count=len(changed_files)), "orange")
             write_debug_log(
-                f"batch_completed: {len(changed_files)} 件 > {constants.UNDO_BATCH_SNAPSHOT_LIMIT} のため Undo スナップショットを作成せず履歴をクリアしました")
+                f"batch_completed: {len(changed_files)} 件 > {constants.UNDO_BATCH_SNAPSHOT_LIMIT} のため今回のバッチは Undo スナップショットを作成しません（既存履歴は保持）")
             return
         actions = []
         for change in changed_files:

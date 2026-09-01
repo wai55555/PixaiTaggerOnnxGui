@@ -135,15 +135,10 @@ class ModelModeController:
         if hasattr(mw, "caption_placement_widget"):
             mw.caption_placement_widget.setVisible(is_captioner)
 
-        # 既存ファイルの扱いは captioner でも4モードすべて選べる。「そのファイルに書くか」
-        # を決めるだけで、実際の組み合わせ方は caption placement が担当するため
-        # （combine_caption）、APPEND を塞ぐ必要はなくなった。
-        if hasattr(mw, "existing_mode_combo"):
-            append_index = mw.existing_mode_combo.findData("APPEND")
-            if append_index >= 0:
-                item = mw.existing_mode_combo.model().item(append_index)
-                if item is not None:
-                    item.setEnabled(True)
+        # 既存ファイルの扱いは captioner でも4モードすべて選べる（existing_mode_combo の
+        # APPEND 項目は ui_main_window.py で作成時から常に有効で、無効化している箇所は
+        # どこにも無い）。「そのファイルに書くか」を決めるだけで、実際の組み合わせ方は
+        # caption placement が担当するため（combine_caption）、特別扱いは不要。
 
         if is_captioner:
             # Default to the model's verbose task (MORE_DETAILED_CAPTION) on every switch

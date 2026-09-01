@@ -4,12 +4,27 @@ Manages the history of tag editing operations and provides undo/redo functionali
 """
 
 from __future__ import annotations
+import os
+import sys
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
 from utils import write_debug_log
+
+
+def _long_path_str(path: Path) -> str:
+    """Windows の MAX_PATH（260文字）制限を避ける `\\\\?\\` プレフィックス付き絶対パス。
+
+    tagging_core.process_image_loop / caption_core.process_caption_loop の書き込みと
+    同じ変換。そちらは長いパスでも書けるのに undo/redo だけ素の Path 経由で失敗する、
+    という非対称を防ぐ（PR#16 レビュー指摘）。
+    """
+    resolved = path.resolve()
+    if sys.platform == "win32":
+        return f"\\\\?\\{resolved}"
+    return str(resolved)
 
 
 class GetString(Protocol):
@@ -233,11 +248,13 @@ class EditCaptionAction(UndoAction):
 
 
 @dataclass
-class OverwriteFileAction(UndoAction):
-    """タグ付けバッチによる1ファイルの上書き / 新規作成（spec.md 4.1節）。
+class _FileSnapshotAction(UndoAction):
+    """全文スナップショットによる undo/redo の共通実装（PR#16 レビュー指摘: 従来
+    OverwriteFileAction と AppendTagsActionV2 が完全に同じ実装を重複させていた）。
 
     previous_content が None のときは「変更前にファイルが存在しなかった」ことを表し、
     undo はファイル削除まで行う。undo / redo とも全文スナップショットの復元で対称。
+    `description()` はサブクラスで実装する（抽象のまま = 直接インスタンス化はしない）。
     """
     file_path: Path
     previous_content: str | None
@@ -245,61 +262,45 @@ class OverwriteFileAction(UndoAction):
 
     def _write(self, text: str) -> bool:
         try:
-            self.file_path.write_text(text, encoding='utf-8')
+            with open(_long_path_str(self.file_path), 'w', encoding='utf-8') as f:
+                f.write(text)
             return True
         except Exception as e:
-            write_debug_log(f"OverwriteFileAction write failed for {self.file_path}: {e}")
+            write_debug_log(f"{type(self).__name__} write failed for {self.file_path}: {e}")
             return False
 
     def undo(self) -> bool:
         if self.previous_content is None:
             try:
-                self.file_path.unlink(missing_ok=True)
-                return True
+                os.unlink(_long_path_str(self.file_path))
+            except FileNotFoundError:
+                pass
             except Exception as e:
-                write_debug_log(f"OverwriteFileAction undo unlink failed for {self.file_path}: {e}")
+                write_debug_log(f"{type(self).__name__} undo unlink failed for {self.file_path}: {e}")
                 return False
+            return True
         return self._write(self.previous_content)
 
     def redo(self) -> bool:
         return self._write(self.new_content)
+
+
+@dataclass
+class OverwriteFileAction(_FileSnapshotAction):
+    """タグ付けバッチによる1ファイルの上書き / 新規作成（spec.md 4.1節）。"""
 
     def description(self) -> str:
         return f"「{self.file_path.name}」の上書き"
 
 
 @dataclass
-class AppendTagsActionV2(UndoAction):
+class AppendTagsActionV2(_FileSnapshotAction):
     """タグ付けバッチによる1ファイルへの追記（spec.md 4.1節）。
 
-    undo/redo は OverwriteFileAction と同じ全文スナップショット方式で行い、
+    undo/redo は _FileSnapshotAction 共通の全文スナップショット方式で行い、
     added_tags は説明文・ログ用のメタ情報として保持する。
     """
-    file_path: Path
-    previous_content: str | None
-    new_content: str
     added_tags: list[str]
-
-    def _write(self, text: str) -> bool:
-        try:
-            self.file_path.write_text(text, encoding='utf-8')
-            return True
-        except Exception as e:
-            write_debug_log(f"AppendTagsActionV2 write failed for {self.file_path}: {e}")
-            return False
-
-    def undo(self) -> bool:
-        if self.previous_content is None:
-            try:
-                self.file_path.unlink(missing_ok=True)
-                return True
-            except Exception as e:
-                write_debug_log(f"AppendTagsActionV2 undo unlink failed for {self.file_path}: {e}")
-                return False
-        return self._write(self.previous_content)
-
-    def redo(self) -> bool:
-        return self._write(self.new_content)
 
     def description(self) -> str:
         return f"「{self.file_path.name}」へ{len(self.added_tags)}件のタグを追記"

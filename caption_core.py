@@ -231,7 +231,7 @@ def setup_captioner_from_settings(app_settings: AppSettings, get_string: GetStri
         settings_dict: dict[str, Any] = {
             "INPUT_DIR": Path(app_settings.paths.input_dir),
             "TASK": app_settings.caption.task,
-            "EXISTING_FILE_MODE": parse_existing_file_mode(app_settings.behavior.existing_file_mode),
+            "EXISTING_FILE_MODE": parse_existing_file_mode(app_settings.behavior.existing_file_mode, _get_string_internal),
             "CAPTION_PLACEMENT": app_settings.caption.placement,
         }
         captioner = Florence2Captioner(captioner_config, get_string=_get_string_internal,
@@ -294,9 +294,12 @@ def process_caption_loop(
     n_skipped = 0
     n_errors = 0
     n_unchanged = 0
+    # progress_cb もクロススレッド signal なので毎画像発行を避け、全体で ~200 回に間引く
+    # （PR#16 レビュー指摘）。最後の1枚は必ず発行して N/N に到達させる。
+    progress_step = max(1, total // 200)
 
     for i, image_path in enumerate(image_paths):
-        if progress_cb:
+        if progress_cb and ((i + 1) % progress_step == 0 or i == total - 1):
             progress_cb(i + 1, total)
         if stop_checker and stop_checker():
             core_log_gui(_get_string_internal("TaggerCore", "Tagging_Process_Aborted_By_User"), "red")
@@ -356,8 +359,15 @@ def process_caption_loop(
         if output_path.is_file():
             try:
                 previous_content = output_path.read_text(encoding="utf-8")
-            except Exception:
-                previous_content = None
+            except Exception as e:
+                # 既存だが読めないファイルはここで previous_content=None のまま書くと
+                # 「元は存在しなかった」と undo に誤認され、undo でファイルごと削除して
+                # 原本を破壊する（PR#16 レビュー指摘）。OVERWRITE でも同じ undo 経由の
+                # 破壊が起きるので placement を問わず触らずスキップする。
+                n_errors += 1
+                log_dbg(f"caption: 既存ファイルの読み込みに失敗したためスキップします {output_path.name}: {type(e).__name__}: {e}")
+                core_log_gui(_get_string_internal("TaggerCore", "Save_Failed_Short", current_index_str=current_index_str, output_path_name=output_path.name), "red")
+                continue
 
         new_content = combine_caption(previous_content or "", caption, placement)
         if previous_content is not None and new_content == previous_content:

@@ -59,15 +59,25 @@ _LOG_LAST_FLUSH = 0.0
 _LOG_FLUSH_INTERVAL_S = 1.0
 
 
+_LOG_ACQUIRE_TIMEOUT_S = 0.5
+
+
 def _flush_debug_log() -> None:
     global _LOG_LAST_FLUSH
-    with _LOG_LOCK:
+    # タイムアウト付き取得: QThread.terminate()（closeEvent の最終手段）がこのロックを
+    # 保持中のスレッドを任意の場所で強制終了しうる。解放されないロックを永久に待つと、
+    # atexit で呼ばれるこの関数自身、ひいてはプロセス終了が固まる。取れなければ諦める。
+    if not _LOG_LOCK.acquire(timeout=_LOG_ACQUIRE_TIMEOUT_S):
+        return
+    try:
         if _LOG_FH is not None:
             try:
                 _LOG_FH.flush()
             except Exception:
                 pass
         _LOG_LAST_FLUSH = time.monotonic()
+    finally:
+        _LOG_LOCK.release()
 
 
 atexit.register(_flush_debug_log)
@@ -84,19 +94,35 @@ def write_debug_log(message: str, get_string: GetString | None = None):
     lines = [ln for ln in message.split('\n') if ln.strip()]
     if not lines:
         return
+
+    # タイムアウト付き取得（PR#16 レビュー指摘）: 別スレッドが terminate() で
+    # このロックを保持したまま死んでいても、ここで永久ブロックしない。GUI スレッドの
+    # closeEvent からもこの関数は呼ばれるので、取れないなら黙ってこの1行を諦める
+    # （デバッグ用途であり、アプリが閉じられなくなる方が遥かに悪い）。
+    if not _LOG_LOCK.acquire(timeout=_LOG_ACQUIRE_TIMEOUT_S):
+        return
     try:
-        with _LOG_LOCK:
-            if _LOG_FH is None:
-                _LOG_FH = open(LOG_FILE_PATH, 'a', encoding='utf-8')
-            tag = nowtag()
-            for line in lines:
-                _LOG_FH.write(tag + line.strip() + "\n")
-            now = time.monotonic()
-            if now - _LOG_LAST_FLUSH >= _LOG_FLUSH_INTERVAL_S:
-                _LOG_FH.flush()
-                _LOG_LAST_FLUSH = now
+        if _LOG_FH is None:
+            _LOG_FH = open(LOG_FILE_PATH, 'a', encoding='utf-8')
+        tag = nowtag()
+        for line in lines:
+            _LOG_FH.write(tag + line.strip() + "\n")
+        now = time.monotonic()
+        if now - _LOG_LAST_FLUSH >= _LOG_FLUSH_INTERVAL_S:
+            _LOG_FH.flush()
+            _LOG_LAST_FLUSH = now
     except Exception:
+        # 書き込み/flush に失敗したハンドルを使い続けると以後ずっと書けなくなるので、
+        # 閉じてリセットし次回呼び出しで開き直す。
+        try:
+            if _LOG_FH is not None:
+                _LOG_FH.close()
+        except Exception:
+            pass
+        _LOG_FH = None
         print(f"{_get_string('Utils', 'Log_Write_Failed', message=message)}", file=sys.stderr)
+    finally:
+        _LOG_LOCK.release()
 
 def log_dbg(msg: str, get_string: GetString | None = None):
     write_debug_log(msg, get_string)

@@ -1,4 +1,5 @@
 import configparser
+import os
 from typing import Any
 from dataclasses import dataclass, field, is_dataclass, fields
 from pathlib import Path
@@ -103,12 +104,18 @@ def parse_caption_placement(raw: str) -> str:
 
 def _parse_onnx_threads(raw: str) -> int:
     """[Behavior] onnx_threads を検証する。手書きの想定なので空文字・非数値・小数・
-    負値は全て 0（= ONNX Runtime 既定 = 全コア）へフォールバックする。"""
+    負値は全て 0（= ONNX Runtime 既定 = 全コア）へフォールバックする。
+
+    実コア数を超える値をそのまま ONNX Runtime の SessionOptions.intra_op_num_threads に
+    渡すとセッション生成に失敗しうる（タガー/キャプショナーが起動しなくなる）ので、
+    実コア数（取得できなければ 32）でクランプする（PR#16 レビュー指摘）。"""
     try:
         n = int(str(raw).strip())
     except (TypeError, ValueError):
         return 0
-    return n if n > 0 else 0
+    if n <= 0:
+        return 0
+    return min(n, os.cpu_count() or 32)
 
 
 @dataclass
