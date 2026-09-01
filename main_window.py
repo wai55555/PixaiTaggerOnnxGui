@@ -1796,8 +1796,9 @@ class MainWindow(QMainWindow):
 
     @Slot()
     def show_enlarged_image(self):
-        """Shows the currently selected image, fitted and centered on the display
-        that holds the main window (multi-monitor safe)."""
+        """Shows the currently selected image in the area to the left of the tag panel,
+        maximised to fit, so the tags stay visible and clickable while viewing it.
+        The display is chosen from the main window's own screen (multi-monitor safe)."""
         if not self._original_image_pixmap or self._original_image_pixmap.isNull():
             return
 
@@ -1813,8 +1814,8 @@ class MainWindow(QMainWindow):
         if not tag_panel_widget:
             return
 
-        # 従来どおり「タグパネルより左の領域」に収まる大きさにする。ただし基準スクリーン内の
-        # 相対座標で測る（グローバル座標のままだと副ディスプレイでスクリーン幅を超える）。
+        # 画像を出す領域＝「タグパネルの左端」から「基準スクリーンの左端」までの帯。
+        # ここに収まる最大サイズにフィットさせ、タグ欄には決してかぶせない（編集用途）。
         tag_panel_left_global = tag_panel_widget.mapToGlobal(QPoint(0, 0)).x()
         available_width = tag_panel_left_global - screen_geom.x()
         available_width = max(200, min(available_width, screen_geom.width()))
@@ -1834,8 +1835,9 @@ class MainWindow(QMainWindow):
         dialog_width = max(200, min(dialog_width, available_width))
         dialog_height = max(200, min(dialog_height, available_height))
 
-        # 基準スクリーン内で中央寄せ（ディスプレイ間にまたがって表示されるのを防ぐ）。
-        dialog_x = screen_geom.x() + (screen_geom.width() - dialog_width) // 2
+        # 右辺をタグパネルの左端に合わせて配置（タグ欄に非かぶり）。基準スクリーンの
+        # 左端より外へは出さない。縦は基準スクリーン内で中央寄せ。
+        dialog_x = max(screen_geom.x(), tag_panel_left_global - dialog_width)
         dialog_y = screen_geom.y() + (screen_geom.height() - dialog_height) // 2
 
         if self._image_viewer_dialog is None:
