@@ -11,7 +11,7 @@ from utils import log_dbg, GetString
 from app_settings import AppSettings
 from tagging_core import (
     _normalize_np_chw, BASE_DIR, ExistingFileMode, FileChange, OverwriteDecision,
-    parse_existing_file_mode,
+    make_cpu_session_options, parse_existing_file_mode,
 )
 
 if TYPE_CHECKING:
@@ -86,7 +86,8 @@ class Florence2Captioner:
     Greedy decoding only - no beam search (design.md 8.2節, spec.md 7章).
     """
 
-    def __init__(self, config: CaptionerConfig, get_string: GetString | None = None):
+    def __init__(self, config: CaptionerConfig, get_string: GetString | None = None,
+                 intra_op_num_threads: int = 0):
         self.get_string = get_string if get_string else _get_string
         self.config = config
 
@@ -95,11 +96,15 @@ class Florence2Captioner:
 
         onnx_dir = config.model_dir / "onnx"
         providers = ["CPUExecutionProvider"]
+        # config.ini [Behavior] onnx_threads。0 なら None（ORT 既定 = 全コア）。
+        so = make_cpu_session_options(intra_op_num_threads)
+        if so is not None:
+            log_dbg(f"Florence2Captioner: intra_op_num_threads capped at {so.intra_op_num_threads} ([Behavior] onnx_threads)")
         log_dbg(self.get_string("CaptionCore", "Info_Loading_Sessions", model_dir=str(config.model_dir)))
-        self.vision_encoder = ort.InferenceSession(str(onnx_dir / "vision_encoder_quantized.onnx"), providers=providers)
-        self.embed_tokens = ort.InferenceSession(str(onnx_dir / "embed_tokens_quantized.onnx"), providers=providers)
-        self.encoder_model = ort.InferenceSession(str(onnx_dir / "encoder_model_quantized.onnx"), providers=providers)
-        self.decoder_model_merged = ort.InferenceSession(str(onnx_dir / "decoder_model_merged_quantized.onnx"), providers=providers)
+        self.vision_encoder = ort.InferenceSession(str(onnx_dir / "vision_encoder_quantized.onnx"), sess_options=so, providers=providers)
+        self.embed_tokens = ort.InferenceSession(str(onnx_dir / "embed_tokens_quantized.onnx"), sess_options=so, providers=providers)
+        self.encoder_model = ort.InferenceSession(str(onnx_dir / "encoder_model_quantized.onnx"), sess_options=so, providers=providers)
+        self.decoder_model_merged = ort.InferenceSession(str(onnx_dir / "decoder_model_merged_quantized.onnx"), sess_options=so, providers=providers)
         self._decoder_output_names = [o.name for o in self.decoder_model_merged.get_outputs()]
         self.tokenizer = Tokenizer.from_file(str(config.model_dir / "tokenizer.json"))
         log_dbg(self.get_string("CaptionCore", "Info_Sessions_Loaded"))
@@ -229,7 +234,8 @@ def setup_captioner_from_settings(app_settings: AppSettings, get_string: GetStri
             "EXISTING_FILE_MODE": parse_existing_file_mode(app_settings.behavior.existing_file_mode),
             "CAPTION_PLACEMENT": app_settings.caption.placement,
         }
-        captioner = Florence2Captioner(captioner_config, get_string=_get_string_internal)
+        captioner = Florence2Captioner(captioner_config, get_string=_get_string_internal,
+                                       intra_op_num_threads=app_settings.behavior.onnx_threads)
         return captioner, settings_dict
     except Exception as e:
         log_dbg(f"Error during Captioner initialization: {type(e).__name__}: {e}")

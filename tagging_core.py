@@ -371,6 +371,26 @@ def _normalize_np_chw(x: NDArray[np.float32], mean: NDArray[np.float_], std: NDA
         x[c] = (x[c] - mean[c]) / std[c]
     return x
 
+def make_cpu_session_options(intra_op_num_threads: int):
+    """Return an ort.SessionOptions that caps intra-op parallelism, or None.
+
+    Driven by config.ini [Behavior] onnx_threads: 0 (the default) returns None, i.e.
+    ONNX Runtime keeps its own default of one thread per physical core - byte-for-byte
+    the same as before this option existed. A positive N caps intra_op_num_threads at
+    N so a large batch does not pin every core (issue: "20k tagging makes the machine
+    unusable"). Shared by the tagger and the Florence-2 captioner sessions.
+    """
+    try:
+        n = int(intra_op_num_threads)
+    except (TypeError, ValueError):
+        return None
+    if n <= 0 or ort is None:
+        return None
+    so = ort.SessionOptions()
+    so.intra_op_num_threads = n
+    return so
+
+
 @dataclass(frozen=True)
 class InferenceConfig:
     """
@@ -411,6 +431,7 @@ class OnnxTagger:
         tags_csv: Path | None = None,
         get_string: GetString | None = None,
         inference_config: InferenceConfig | None = None,
+        intra_op_num_threads: int = 0,
     ):
         self.get_string = get_string if get_string else _get_string
         self.inference_config = inference_config if inference_config is not None else InferenceConfig()
@@ -422,7 +443,10 @@ class OnnxTagger:
             log_dbg(self.get_string("TaggerCore", "Onnxruntime_Not_Installed"))
             raise ImportError(self.get_string("TaggerCore", "Onnxruntime_Not_Installed"))
         log_dbg(self.get_string("TaggerCore", "Info_ONNX_Session_Creation_Start", model_path=model_path.name))
-        self.session = ort.InferenceSession(str(model_path), providers=['CPUExecutionProvider'])
+        sess_options = make_cpu_session_options(intra_op_num_threads)
+        if sess_options is not None:
+            log_dbg(f"OnnxTagger: intra_op_num_threads capped at {sess_options.intra_op_num_threads} ([Behavior] onnx_threads)")
+        self.session = ort.InferenceSession(str(model_path), sess_options=sess_options, providers=['CPUExecutionProvider'])
         log_dbg(self.get_string("TaggerCore", "Info_ONNX_Session_Created"))
         model_dir = model_path.parent
         tags_path = discover_labels_csv(model_dir, tags_csv)
@@ -720,7 +744,7 @@ def setup_tagger_from_settings(app_settings: AppSettings, get_string: GetString 
             'CONVERT_UNDERSCORE': app_settings.behavior.convert_underscore_to_space,
             'EXISTING_FILE_MODE': parse_existing_file_mode(app_settings.behavior.existing_file_mode),
         }
-        tagger = OnnxTagger(model_path=settings_dict['MODEL_PATH'], tags_csv=tags_csv_path, get_string=_get_string_internal, inference_config=inference_config)
+        tagger = OnnxTagger(model_path=settings_dict['MODEL_PATH'], tags_csv=tags_csv_path, get_string=_get_string_internal, inference_config=inference_config, intra_op_num_threads=app_settings.behavior.onnx_threads)
 
         # Surface a model_config.json whose ui.categories does not cover what its tag file
         # actually contains: those tags are blocked above (limit 0), so without this log
