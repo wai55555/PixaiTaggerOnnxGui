@@ -1,5 +1,8 @@
 from __future__ import annotations
+import atexit
 import sys
+import threading
+import time
 from pathlib import Path
 from typing import Any, Protocol
 from datetime import datetime
@@ -44,21 +47,54 @@ def nowtag() -> str:
     """Return the current time as a string in the format [YYYY-MM-DD HH:MM:SS]."""
     return datetime.now().strftime("[%Y-%m-%d %H:%M:%S] ")
 
+# --- Buffered debug log --------------------------------------------------------
+# Previously every write_debug_log() call did open()/write()/flush()/close(). A
+# tagging run logs one or two lines per image, so a 20k-image batch became ~40k
+# synchronous flushed appends - enough disk churn to make the app look frozen
+# (issue #10). Keep one handle open and flush at most once per second (and at exit),
+# so routine logging costs almost nothing while a crash still keeps ~1s of history.
+_LOG_LOCK = threading.Lock()
+_LOG_FH = None
+_LOG_LAST_FLUSH = 0.0
+_LOG_FLUSH_INTERVAL_S = 1.0
+
+
+def _flush_debug_log() -> None:
+    global _LOG_LAST_FLUSH
+    with _LOG_LOCK:
+        if _LOG_FH is not None:
+            try:
+                _LOG_FH.flush()
+            except Exception:
+                pass
+        _LOG_LAST_FLUSH = time.monotonic()
+
+
+atexit.register(_flush_debug_log)
+
+
 def write_debug_log(message: str, get_string: GetString | None = None):
-    _get_string: GetString = get_string if get_string else default_get_string_fallback # Moved initialization here
+    global _LOG_FH, _LOG_LAST_FLUSH
+    _get_string: GetString = get_string if get_string else default_get_string_fallback
     if not get_debug_settings().debug_log_enabled:
         return
-        
     if not message.strip():
         return
-        
-    lines = message.split('\n')
+
+    lines = [ln for ln in message.split('\n') if ln.strip()]
+    if not lines:
+        return
     try:
-        with open(LOG_FILE_PATH, 'a', encoding='utf-8') as f:
+        with _LOG_LOCK:
+            if _LOG_FH is None:
+                _LOG_FH = open(LOG_FILE_PATH, 'a', encoding='utf-8')
+            tag = nowtag()
             for line in lines:
-                if line.strip():
-                    f.write(nowtag() + line.strip() + "\n")
-            f.flush()
+                _LOG_FH.write(tag + line.strip() + "\n")
+            now = time.monotonic()
+            if now - _LOG_LAST_FLUSH >= _LOG_FLUSH_INTERVAL_S:
+                _LOG_FH.flush()
+                _LOG_LAST_FLUSH = now
     except Exception:
         print(f"{_get_string('Utils', 'Log_Write_Failed', message=message)}", file=sys.stderr)
 

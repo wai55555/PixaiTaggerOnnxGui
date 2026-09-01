@@ -123,6 +123,9 @@ IMAGE_EXTENSIONS = ['.png', '.jpg', '.jpeg', '.webp']
 TAGS_PER_PAGE = 16
 TAGS_PER_PAGE_FOR_IMAGE = 20
 MAX_LOG_LINES = 1000
+# 1バッチで書き換えたファイルがこの数を超えたら Undo スナップショットを作らない
+# （issue #10: 全ファイルの旧内容＋新内容を1つの CompositeUndoAction に抱えるとメモリを圧迫する）。
+UNDO_BATCH_SNAPSHOT_LIMIT = 500
 
 # --- UI TEXT ---
 MSG_WINDOW_TITLE = "PixAI Tagger 0.9 onnx GUI (Viewer/Bulk Edit)"

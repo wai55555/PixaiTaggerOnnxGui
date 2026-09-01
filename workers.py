@@ -398,6 +398,9 @@ class TaggerThreadWorker(QObject):
     reload_image_list_signal = Signal()
     # バッチ1回で書き換えたファイル群。MainWindow 側で CompositeUndoAction にまとめる。
     batch_completed = Signal(list)
+    # 進捗（done, total）。ルーチンの「処理中／成功」ログを GUI へ垂れ流す代わりに
+    # これを毎画像発行し、GUI 側で throttle する（issue #10: Qt キュー飽和対策）。
+    progress_update = Signal(int, int)
     def __init__(self, settings: AppSettings, decision_requester: Callable[[Path], OverwriteDecision] | None, get_string: GetString | None = None, selected_file_path: Path | None = None):
         super().__init__()
         self._settings: AppSettings = settings
@@ -407,7 +410,7 @@ class TaggerThreadWorker(QObject):
         self._selected_file_path = selected_file_path
         self._stop_event = threading.Event()
         self.get_string: GetString = get_string if get_string else default_get_string_fallback
-    
+
     def stop(self):
         write_debug_log(f"DEBUG: {type(self).__name__}.stop() called.")
         self._stop_event.set()
@@ -472,7 +475,8 @@ class TaggerThreadWorker(QObject):
                 decision_resolver=self._decision_requester,
                 log_gui=log_to_gui,
                 stop_checker=self.is_stopped,
-                get_string=self.get_string
+                get_string=self.get_string,
+                progress_cb=self.progress_update.emit,
             )
             self.batch_completed.emit(changed_files)
             
@@ -501,6 +505,8 @@ class CaptionerThreadWorker(QObject):
     reload_image_list_signal = Signal()
     # バッチ1回で書き換えたファイル群。MainWindow 側で CompositeUndoAction にまとめる。
     batch_completed = Signal(list)
+    # 進捗（done, total）。GUI 側で throttle する（issue #10: Qt キュー飽和対策）。
+    progress_update = Signal(int, int)
 
     def __init__(self, settings: AppSettings, decision_requester: Callable[[Path], OverwriteDecision] | None, get_string: GetString | None = None, selected_file_path: Path | None = None):
         super().__init__()
@@ -578,6 +584,7 @@ class CaptionerThreadWorker(QObject):
                 log_gui=log_to_gui,
                 stop_checker=self.is_stopped,
                 get_string=self.get_string,
+                progress_cb=self.progress_update.emit,
             )
             self.batch_completed.emit(changed_files)
 

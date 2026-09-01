@@ -745,7 +745,8 @@ def process_image_loop(
     decision_resolver: Callable[[Path], OverwriteDecision] | None,
     log_gui: Callable[[str, str], None] | None,
     stop_checker: Callable[[], bool] | None,
-    get_string: GetString | None
+    get_string: GetString | None,
+    progress_cb: Callable[[int, int], None] | None = None,
 ) -> list[FileChange]:
     """設定に従って画像へタグを付け、既存 .txt の扱いを EXISTING_FILE_MODE で分岐する。
 
@@ -754,6 +755,11 @@ def process_image_loop(
 
     戻り値: 実際に書き換えたファイルの FileChange リスト。呼び出し側はこれを1つの
     Undo エントリ（CompositeUndoAction）にまとめる（design.md 4.4節）。
+
+    `progress_cb(done, total)` は毎画像呼ばれる。issue #10: 1画像=1〜2回の GUI ログ発行だと
+    高速ループ（SKIP など）で Qt イベントキューが飽和して固まるため、ルーチンの
+    「処理中／出力成功」ログは GUI へ出さず progress_cb へ回す。スキップ・エラー・警告・
+    追記件数など有界・低頻度のログは従来どおり GUI へ出す。
     """
 
     def core_log_gui(message: str, color: str = "black") -> None:
@@ -763,8 +769,11 @@ def process_image_loop(
     _get_string_internal = get_string if get_string else _get_string
     mode: ExistingFileMode = settings.get('EXISTING_FILE_MODE', ExistingFileMode.ASK)
     changed_files: list[FileChange] = []
+    total = len(image_paths)
 
     for i, image_path in enumerate(image_paths):
+        if progress_cb:
+            progress_cb(i + 1, total)
         if stop_checker:
             log_dbg("DEBUG: process_image_loop: Calling stop_checker.")
             should_stop = stop_checker()
@@ -791,6 +800,9 @@ def process_image_loop(
                     # 防御: resolver 未設定なら既存ファイルには触らない
                     log_dbg("process_image_loop: ASK モードだが decision_resolver が未設定のためスキップします")
                     continue
+                if stop_checker and stop_checker():
+                    # ここで停止要求が来ていたら resolver（GUI 往復しうる）を呼ばずに抜ける
+                    break
                 decision = decision_resolver(output_path)
                 if decision is OverwriteDecision.SKIP:
                     log_dbg(_get_string_internal("TaggerCore", "Tag_Output_Skipped_Existing_File", current_index_str=current_index_str, relative_path=str(relative_path)))
@@ -800,8 +812,9 @@ def process_image_loop(
             else:
                 will_append = mode is ExistingFileMode.APPEND
 
-        core_log_gui(_get_string_internal("TaggerCore", "Processing_Image", current_index_str=current_index_str, relative_path=str(relative_path)), "black")
-        
+        # ルーチンの「処理中」表示は GUI へ流さず debug log のみ（issue #10）。GUI は progress_cb 経由。
+        log_dbg(_get_string_internal("TaggerCore", "Processing_Image", current_index_str=current_index_str, relative_path=str(relative_path)))
+
         try:
             with open(image_path, 'rb') as f:
                 image = Image.open(f).convert("RGB")
@@ -851,7 +864,8 @@ def process_image_loop(
             merged = merge_tags(existing_tags, generated_tags)
             if merged == existing_tags:
                 # 追加できる新規タグが無い場合は mtime も変えない（spec.md 3.3節）
-                core_log_gui(_get_string_internal("TaggerCore", "Log_No_New_Tags", current_index_str=current_index_str, file_name=output_path.name), "black")
+                # ルーチン結果なので GUI へは出さず debug log のみ（issue #10）。
+                log_dbg(_get_string_internal("TaggerCore", "Log_No_New_Tags", current_index_str=current_index_str, file_name=output_path.name))
                 continue
             added_tags = tuple(merged[len(existing_tags):])
             new_content = ", ".join(merged)
@@ -878,9 +892,11 @@ def process_image_loop(
                 path=output_path, previous_content=previous_content,
                 new_content=new_content, was_append=will_append, added_tags=added_tags))
             if will_append:
+                # 追記件数は原因調査に必要なので GUI へ残す（有界・低頻度）。
                 core_log_gui(_get_string_internal("TaggerCore", "Log_Appended", current_index_str=current_index_str, count=len(added_tags), file_name=output_path.name), "green")
             else:
-                core_log_gui(_get_string_internal("TaggerCore", "Tag_Output_Success", current_index_str=current_index_str, output_path_name=output_path.name), "green")
+                # ルーチンの出力成功は GUI へ流さず debug log のみ（issue #10）。
+                log_dbg(_get_string_internal("TaggerCore", "Tag_Output_Success", current_index_str=current_index_str, output_path_name=output_path.name))
             log_dbg(_get_string_internal("TaggerCore", "Tagging_Result_Output", current_index_str=current_index_str, output_path_name=output_path.name))
         except Exception as e:
             log_dbg(_get_string_internal("TaggerCore", "Save_Failed", current_index_str=current_index_str, relative_path=str(relative_path), type_e_name=type(e).__name__, e=str(e)))

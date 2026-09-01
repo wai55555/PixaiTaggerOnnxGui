@@ -263,6 +263,7 @@ def process_caption_loop(
     log_gui: Callable[[str, str], None] | None,
     stop_checker: Callable[[], bool] | None,
     get_string: GetString | None,
+    progress_cb: Callable[[int, int], None] | None = None,
 ) -> list[FileChange]:
     """Captioner counterpart of tagging_core.process_image_loop.
 
@@ -281,8 +282,11 @@ def process_caption_loop(
     changed_files: list[FileChange] = []
     task_key = settings.get("TASK", captioner.config.default_task)
     task_prompt = captioner.config.tasks.get(task_key, captioner.config.tasks.get(captioner.config.default_task, "Describe with a paragraph what is shown in the image."))
+    total = len(image_paths)
 
     for i, image_path in enumerate(image_paths):
+        if progress_cb:
+            progress_cb(i + 1, total)
         if stop_checker and stop_checker():
             core_log_gui(_get_string_internal("TaggerCore", "Tagging_Process_Aborted_By_User"), "red")
             break
@@ -300,11 +304,14 @@ def process_caption_loop(
                 if decision_resolver is None:
                     log_dbg("process_caption_loop: ASK モードだが decision_resolver が未設定のためスキップします")
                     continue
+                if stop_checker and stop_checker():
+                    break
                 if decision_resolver(output_path) is OverwriteDecision.SKIP:
                     core_log_gui(_get_string_internal("TaggerCore", "Tag_Skipped_Existing_File_Short", current_index_str=current_index_str, output_path_name=output_path.name), "orange")
                     continue
 
-        core_log_gui(_get_string_internal("TaggerCore", "Processing_Image", current_index_str=current_index_str, relative_path=str(relative_path)), "black")
+        # ルーチンの「処理中」表示は GUI へ流さず debug log のみ（issue #10）。GUI は progress_cb 経由。
+        log_dbg(_get_string_internal("TaggerCore", "Processing_Image", current_index_str=current_index_str, relative_path=str(relative_path)))
 
         try:
             with open(image_path, "rb") as f:
@@ -338,8 +345,8 @@ def process_caption_loop(
 
         new_content = combine_caption(previous_content or "", caption, placement)
         if previous_content is not None and new_content == previous_content:
-            # 内容が変わらないなら mtime も変えない
-            core_log_gui(_get_string_internal("TaggerCore", "Log_No_New_Tags", current_index_str=current_index_str, file_name=output_path.name), "black")
+            # 内容が変わらないなら mtime も変えない。ルーチン結果なので GUI へは出さず debug log のみ（issue #10）。
+            log_dbg(_get_string_internal("TaggerCore", "Log_No_New_Tags", current_index_str=current_index_str, file_name=output_path.name))
             continue
 
         try:
@@ -350,7 +357,8 @@ def process_caption_loop(
             changed_files.append(FileChange(
                 path=output_path, previous_content=previous_content,
                 new_content=new_content, was_append=(placement != "OVERWRITE" and previous_content is not None)))
-            core_log_gui(_get_string_internal("TaggerCore", "Tag_Output_Success", current_index_str=current_index_str, output_path_name=output_path.name), "green")
+            # ルーチンの出力成功は GUI へ流さず debug log のみ（issue #10）。
+            log_dbg(_get_string_internal("TaggerCore", "Tag_Output_Success", current_index_str=current_index_str, output_path_name=output_path.name))
         except Exception as e:
             log_dbg(f"Caption save failed for {output_path.name}: {type(e).__name__}: {e}")
             core_log_gui(_get_string_internal("TaggerCore", "Save_Failed_Short", current_index_str=current_index_str, output_path_name=output_path.name), "red")

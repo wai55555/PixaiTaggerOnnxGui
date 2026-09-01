@@ -3,9 +3,10 @@ from datetime import datetime
 from typing import Any, Callable, Mapping, Protocol
 import functools
 import sys
+import time
 
 from PySide6.QtCore import (
-    Qt, QThread, QObject, Signal, Slot, QTimer, QPoint, QRect, QEvent, QEventLoop,
+    Qt, QThread, QObject, Signal, Slot, QTimer, QPoint, QRect, QEvent,
     QMetaObject, Q_ARG, Q_RETURN_ARG
 )
 from PySide6.QtWidgets import (
@@ -188,7 +189,9 @@ class MainWindow(QMainWindow):
         # ASK セッション中に「常に〜」が選ばれたときの上書き先。タギング開始ごとに
         # None へリセットされ、config.ini の保存値は変更しない（spec.md 1.3節）。
         self._session_mode_override: ExistingFileMode | None = None
-        
+        # ワーカーからの進捗通知を GUI へ反映した最後の時刻（issue #10: 毎画像反映すると固まる）。
+        self._progress_last_shown_at: float = 0.0
+
         # Timers and Dialogs
         self._resize_timer = QTimer(self)
         self._resize_timer.setSingleShot(True)
@@ -217,7 +220,6 @@ class MainWindow(QMainWindow):
 
         # Consolidates all model-switch side effects (design.md 6.8節).
         self._model_mode = ModelModeController(self)
-        self._worker_finished_event_loop: QEventLoop | None = None
         self._last_navigation_event_time: datetime | None = None # 追加
         
         self.tag_translation_map: dict[str, list[str]] = {}
@@ -1130,6 +1132,7 @@ class MainWindow(QMainWindow):
         self._cleanup_tagger_thread()
 
         self._session_mode_override = None
+        self._progress_last_shown_at = 0.0
 
         self._update_ui_for_processing(True, 'tagging')
 
@@ -1156,16 +1159,43 @@ class MainWindow(QMainWindow):
 
         self._tagger_worker.log_message.connect(self.update_log)
         self._tagger_worker.batch_completed.connect(self._on_batch_completed)
+        self._tagger_worker.progress_update.connect(self._on_tagging_progress)
         self._tagger_worker.model_status_changed.connect(self._check_model_status_and_update_ui)
         self._tagger_worker.finished.connect(self._on_tagger_finished)
 
         self._tagger_thread.start()
+
+    @Slot(int, int)
+    def _on_tagging_progress(self, done: int, total: int):
+        """ワーカーからの進捗通知。毎画像来るので ~0.5s に1回だけ GUI へ反映する
+        （issue #10: 1画像=1ログだと Qt イベントキューが飽和して固まる）。"""
+        if self._is_shutting_down:
+            return
+        now = time.monotonic()
+        if done < total and now - self._progress_last_shown_at < 0.5:
+            return
+        self._progress_last_shown_at = now
+        # 停止処理中はボタン文言を「停止中...」に固定したいので触らない。
+        if not self.run_button.isEnabled():
+            return
+        base = self.locale_manager.get_string("Constants", "Stop_Tagging_Process")
+        self.run_button.setText(f"{base} ({done} / {total})")
 
     @Slot(list)
     def _on_batch_completed(self, changed_files: list):
         """タギング/キャプション1回分の変更を、Undo履歴上の1エントリとして積む
         （spec.md 4.2節）。50件の履歴が大量画像処理で即座に消費されるのを防ぐ。"""
         if not changed_files:
+            return
+        if len(changed_files) > constants.UNDO_BATCH_SNAPSHOT_LIMIT:
+            # 全ファイルの旧内容＋新内容を1つの CompositeUndoAction に抱えると、
+            # 数万ファイル規模ではメモリを圧迫する（issue #10）。この規模では Undo を諦める。
+            self.undo_manager.clear()
+            self._update_undo_redo_buttons()
+            self.update_log(self.locale_manager.get_string(
+                "MainWindow", "Undo_Batch_Too_Large", count=len(changed_files)), "orange")
+            write_debug_log(
+                f"batch_completed: {len(changed_files)} 件 > {constants.UNDO_BATCH_SNAPSHOT_LIMIT} のため Undo スナップショットを作成せず履歴をクリアしました")
             return
         actions = []
         for change in changed_files:
@@ -1849,26 +1879,44 @@ class MainWindow(QMainWindow):
     # 処理が凍結することがあった（Issue #12）。ここでは Qt の BlockingQueuedConnection に
     # 委ね、共有可変状態を持たない形に置き換えている。
 
+    _SESSION_OVERRIDE_DECISION = {
+        ExistingFileMode.OVERWRITE: OverwriteDecision.OVERWRITE,
+        ExistingFileMode.SKIP: OverwriteDecision.SKIP,
+        ExistingFileMode.APPEND: OverwriteDecision.APPEND,
+    }
+
     @Slot(str, result=str)
     def ask_existing_file_decision(self, file_path_str: str) -> str:
         """GUI スレッドで実行され、ワーカーへ決定を文字列で返す。
 
         Qt のメタオブジェクト経由で Enum をそのまま渡すのは環境差があるため、
         OverwriteDecision の名前（"OVERWRITE" / "SKIP" / "APPEND"）で受け渡しする。
-        セッション内オーバーライドが有効なら、ダイアログを出さずに即座に確定する。
         """
+        if self._is_shutting_down:
+            return OverwriteDecision.SKIP.name
         if self._session_mode_override is not None:
-            return {
-                ExistingFileMode.OVERWRITE: OverwriteDecision.OVERWRITE,
-                ExistingFileMode.SKIP: OverwriteDecision.SKIP,
-                ExistingFileMode.APPEND: OverwriteDecision.APPEND,
-            }[self._session_mode_override].name
+            return self._SESSION_OVERRIDE_DECISION[self._session_mode_override].name
         return self._ask_overwrite_confirmation(Path(file_path_str)).name
 
     def _make_decision_requester(self) -> Callable[[Path], OverwriteDecision]:
         """ワーカースレッドから GUI スレッドの ask_existing_file_decision を
-        同期呼び出しするブリッジを作る（design.md 4.1節）。"""
+        同期呼び出しするブリッジを作る（design.md 4.1節）。
+
+        ダイアログが本当に必要なのは「ASK モードで、まだ『常に〜』が押されていない」
+        ときだけ。それ以外は GUI スレッドへの BlockingQueuedConnection を張らずに
+        ワーカー側で即決する:
+        - 終了処理中は SKIP（closeEvent が thread.wait 中だと invokeMethod がデッドロック
+          しうるため、往復自体を回避する）
+        - セッション内オーバーライド（「常に上書き/スキップ/追記」）が決まっていれば
+          その決定を返す（10K 枚で 10K 回の同期クロススレッド呼び出しを省く）
+        """
         def resolve(file_path: Path) -> OverwriteDecision:
+            if self._is_shutting_down:
+                return OverwriteDecision.SKIP
+            override = self._session_mode_override  # GIL-atomic な単一参照の読み取り
+            if override is not None:
+                return self._SESSION_OVERRIDE_DECISION[override]
+
             result = QMetaObject.invokeMethod(
                 self, "ask_existing_file_decision",
                 Qt.ConnectionType.BlockingQueuedConnection,
