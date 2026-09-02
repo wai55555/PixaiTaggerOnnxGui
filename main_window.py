@@ -590,6 +590,7 @@ class MainWindow(QMainWindow):
         self._tagger_worker.moveToThread(self._tagger_thread)
         self._tagger_worker.log_message.connect(self.update_log)
         self._tagger_worker.single_test_result.connect(self._on_vlm_single_test_result)
+        self._tagger_worker.binding_verified.connect(self._on_vlm_binding_verified)
         self._tagger_worker.batch_completed.connect(self._on_batch_completed)
         self._tagger_worker.finished.connect(self._on_tagger_finished)
         self._tagger_thread.started.connect(self._tagger_worker.run_captioning)
@@ -602,6 +603,16 @@ class MainWindow(QMainWindow):
             "Vlm", "Test_Result_Header", conn=connection_display, model=model_id), "green")
         if hasattr(self, "caption_text_edit"):
             self.caption_text_edit.setPlainText(caption)
+
+    @Slot(str, str)
+    def _on_vlm_binding_verified(self, provider_id: str, profile_id: str):
+        """実出力を確認できた内蔵 binding を `[Vlm] verified_bindings` に永続化する
+        （次回以降 VERIFIED 扱い。UI スレッドで config を書く）。"""
+        import vlm_config
+        if vlm_config.mark_binding_verified(self.settings.vlm, provider_id, profile_id=profile_id):
+            self.save_current_config()
+            self.update_log(self.locale_manager.get_string(
+                "Vlm", "Binding_Verified", provider=provider_id, profile=profile_id), "green")
 
     @Slot(int)
     def _on_task_combo_changed(self, index: int):
@@ -1243,6 +1254,7 @@ class MainWindow(QMainWindow):
                 self.settings, self._make_decision_requester(), self.locale_manager.get_string,
                 selected_file_path=selected_path)
             self._tagger_worker.single_test_result.connect(self._on_vlm_single_test_result)
+            self._tagger_worker.binding_verified.connect(self._on_vlm_binding_verified)
             self._tagger_thread.started.connect(self._tagger_worker.run_captioning)
         elif is_captioner:
             self._tagger_worker = CaptionerThreadWorker(self.settings, self._make_decision_requester(), self.locale_manager.get_string, selected_file_path=selected_path)

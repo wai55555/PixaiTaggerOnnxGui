@@ -161,9 +161,32 @@ class Vlm:
     markdown: str = "disabled"
     max_output_tokens: int = 1024
     image_max_long_edge: int = 1536
+    # 実際に期待どおりの出力を返したと確認できた binding。`<profile_id>:<provider_id>` を
+    # カンマ区切り。接続診断のフル PASS または 1枚テスト成功で追記される。UNKNOWN 出荷でも
+    # ここに載れば VERIFIED 扱いになり、「厳格」モードでも候補に残る。
+    verified_bindings: str = ""
+    # True のとき、内蔵フォールバックは VERIFIED（実証済み or verified_bindings 収録）
+    # の接続だけを候補にする。既定 False（同一と宣言されていれば未実証でも使う）。
+    strict_identity: bool = False
+    # 内蔵経路のモデル ID 上書き。`<profile_id>:<provider_id>=<model_id>` をカンマ区切り。
+    # 出荷時の推定 ID が実サービスと違うとき、接続診断で確認しつつここで直せる。
+    model_id_overrides: str = ""
 
     def order_list(self) -> list[str]:
         return [p.strip() for p in self.connection_order.split(",") if p.strip()]
+
+    def verified_set(self) -> set[str]:
+        return {t.strip() for t in self.verified_bindings.split(",") if t.strip()}
+
+    def model_id_override_map(self) -> dict[str, str]:
+        out: dict[str, str] = {}
+        for tok in self.model_id_overrides.split(","):
+            tok = tok.strip()
+            if "=" in tok:
+                k, _, v = tok.partition("=")
+                if k.strip() and v.strip():
+                    out[k.strip()] = v.strip()
+        return out
 
 
 @dataclass
@@ -203,6 +226,7 @@ def get_default_config() -> configparser.ConfigParser:
             'language': 'en', 'detail_level': 'maximum_detail',
             'sentence_mode': 'automatic_long_detailed', 'character_name_mode': 'explicit_only',
             'markdown': 'disabled', 'max_output_tokens': '1024', 'image_max_long_edge': '1536',
+            'verified_bindings': '', 'strict_identity': 'False', 'model_id_overrides': '',
         },
         'Debug': {'debug_log': 'False'},
         'General': {'language_code': ''}
@@ -340,6 +364,9 @@ def _load_vlm(config: configparser.ConfigParser) -> Vlm:
         markdown=g('markdown', d.markdown),
         max_output_tokens=gi('max_output_tokens', d.max_output_tokens),
         image_max_long_edge=gi('image_max_long_edge', d.image_max_long_edge),
+        verified_bindings=g('verified_bindings', d.verified_bindings),
+        strict_identity=gb('strict_identity', d.strict_identity),
+        model_id_overrides=g('model_id_overrides', d.model_id_overrides),
     )
 
 
