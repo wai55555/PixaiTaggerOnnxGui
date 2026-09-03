@@ -49,6 +49,7 @@ class DiagReport:
     connection_id: str
     items: list[DiagItem] = field(default_factory=list)
     http_status: int | None = None   # live リクエストが返した HTTP ステータス（あれば）
+    billing_blocked: bool = False    # 到達・認証後に課金／残高で生成を拒否された
 
     def add(self, name: str, status: DiagStatus, detail: str = "") -> None:
         self.items.append(DiagItem(name, status, detail))
@@ -75,10 +76,13 @@ class DiagReport:
         429 は認証済みのリクエストがエンドポイントへ到達したことを示すため、
         認証・リクエスト組み立て・画像入力が PASS なら到達確認済みとして扱う。
         この場合も ``overall`` は WARN のままなので、本文取得成功と混同しない。
-        課金不足の 429 は HTTP を FAIL にしているため、この例外には入らない。
+        課金不足は HTTP を WARN にするが、課金不足だけではモデルの応答まで確認
+        できないため、この例外には入れない。
         """
         http = self.item("HTTP response")
         if http is None:
+            return False
+        if self.billing_blocked or is_billing_or_credit_block(http.detail):
             return False
         extraction = self.item("Caption extraction")
         if http.status is DiagStatus.PASS and extraction is not None:
@@ -314,13 +318,14 @@ def diagnose(conn: VlmConnection, api_key: str | None, *,
     rep.http_status = raw.status
     provider_detail = _response_error_detail(raw)
     billing_blocked = is_billing_or_credit_block(provider_detail)
+    rep.billing_blocked = billing_blocked
     if raw.status == 200:
         rep.add("HTTP response", DiagStatus.PASS, "200 OK")
     elif billing_blocked:
-        detail = f"{raw.status} billing / credits unavailable"
+        detail = f"{raw.status} billing / credits unavailable (endpoint reached; inference not verified)"
         if provider_detail:
             detail += f": {provider_detail}"
-        rep.add("HTTP response", DiagStatus.FAIL, detail)
+        rep.add("HTTP response", DiagStatus.WARN, detail)
     elif raw.status in (401, 403):
         detail = f"{raw.status} auth rejected"
         if provider_detail:

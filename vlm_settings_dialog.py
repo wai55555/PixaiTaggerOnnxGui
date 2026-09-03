@@ -26,6 +26,9 @@ from app_settings import save_config
 from custom_connection_dialog import CustomConnectionDialog
 from vlm_connections import ConnectionKind
 from vlm_diagnostics import DiagStatus
+from vlm_model_list import (
+    ModelCatalogEntry, catalog_entry_from_id, filter_vlm_catalog,
+)
 from vlm_worker import VlmDiagnosticsWorker, VlmModelListWorker
 
 GetString = Callable[..., str]
@@ -51,7 +54,7 @@ _BUILTIN_SECRET_REF = {
     "builtin-cloudflare": "vlm/cloudflare/api_token",
     "builtin-groq": "vlm/groq/api_key",
     "builtin-nvidia": "vlm/nvidia/api_key",
-    "builtin-mistral": "vlm/mistral/api_key",
+    # "builtin-mistral": "vlm/mistral/api_key",  # Pixtral内蔵経路は一時停止
     "builtin-huggingface": "vlm/huggingface/api_token",
     "builtin-vercel": "vlm/vercel/api_key",
     "builtin-openai": "vlm/openai/api_key",
@@ -87,11 +90,11 @@ _PROVIDER_KEY_INFO = {
         "login_url": "https://build.nvidia.com/login",
         "instructions_key": "ApiKey_Steps_Nvidia",
     },
-    "mistral": {
-        "key_url": "https://console.mistral.ai/api-keys",
-        "login_url": "https://console.mistral.ai/",
-        "instructions_key": "ApiKey_Steps_Mistral",
-    },
+    # "mistral": {  # Pixtral内蔵経路は一時停止
+    #     "key_url": "https://console.mistral.ai/api-keys",
+    #     "login_url": "https://console.mistral.ai/",
+    #     "instructions_key": "ApiKey_Steps_Mistral",
+    # },
     "huggingface": {
         "key_url": "https://huggingface.co/settings/tokens",
         "login_url": "https://huggingface.co/login",
@@ -492,9 +495,13 @@ class VlmSettingsDialog(QDialog):
             r["status"].setText(self._t("Vlm", "Settings_Route_FetchModels_Fail", detail=detail))
             return
 
-        profile = vlm_config.resolve_model_profile(self._vlm)
-        vlm_ids = vlm_models.filter_vlm_model_ids(
-            profile, r["conn"].provider_id, result)
+        provider_id = r["conn"].provider_id
+        entries = [entry if isinstance(entry, ModelCatalogEntry)
+                   else catalog_entry_from_id(provider_id, str(entry))
+                   for entry in result]
+        vlm_entries = filter_vlm_catalog(entries)
+        vlm_ids = [entry.model_id for entry in vlm_entries]
+        vlm_models.register_discovered_vlm_ids(provider_id, vlm_ids)
         r["model_ids"] = vlm_ids
         combo = r["model_edit"]
         combo.blockSignals(True)
@@ -502,8 +509,10 @@ class VlmSettingsDialog(QDialog):
         combo.addItems(vlm_ids)
         combo.blockSignals(False)
 
-        # フォールバックは「同一モデルを多プロバイダーで回す」設計。一覧の中から
-        # 選択プロファイルのモデルに一番合うものを自動で当て、ユーザーに確認させる。
+        profile = vlm_config.resolve_model_profile(self._vlm)
+        # フォールバックは「同一モデルを多プロバイダーで回す」設計。一覧全体は
+        # VLMと確認できたものを表示し、その中から選択プロファイルに一番合うものを
+        # 自動で当てる。別モデルを使う場合はプロファイル編集で明示的に割り当てる。
         best, score = vlm_models.match_model_id(profile, r["conn"].provider_id, vlm_ids) \
             if profile is not None else (None, 0.0)
         okmsg = self._t("Vlm", "Settings_Route_FetchModels_Ok", n=len(vlm_ids))

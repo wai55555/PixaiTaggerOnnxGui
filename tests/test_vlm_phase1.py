@@ -473,8 +473,16 @@ def test_multi_provider_profiles():
     import vlm_config as CFG
 
     ids = {p.profile_id for p in M.default_registry().all_profiles()}
+    assert "pixtral-12b" not in ids
+    from vlm_connections import default_builtin_connections
+    assert all(c.provider_id != "mistral" for c in default_builtin_connections())
     assert {"gemma-4-26b-a4b-it", "gemma-4-31b-it", "qwen3.8-27b", "qwen3.6-27b",
-            "pixtral-12b", "openai-gpt-5.6-luna", "claude-haiku-4-5"} <= ids
+            "openai-gpt-4o", "openai-gpt-4o-mini",
+            "openai-gpt-5.6-sol", "openai-gpt-5.6-terra",
+            "openai-gpt-5.6-luna", "claude-fable-5-1", "claude-fable-5",
+            "claude-opus-5", "claude-opus-4-8", "claude-opus-4-7",
+            "claude-opus-4-6", "claude-opus-4-5", "claude-sonnet-5",
+            "claude-sonnet-4-6", "claude-sonnet-4-5", "claude-haiku-4-5"} <= ids
 
     def _s(profile_id):
         s = types.SimpleNamespace(model_profile_id=profile_id, paid_connections="",
@@ -542,6 +550,25 @@ def test_multi_provider_profiles():
         "anthropic-workspace-id": "wrkspc_test123"}
     assert claude_cm["builtin-vercel"].model_id == "anthropic/claude-haiku-4.5"
 
+    for profile_id, provider, model_id in (
+        ("openai-gpt-5.6-sol", "openai", "gpt-5.6-sol"),
+        ("openai-gpt-5.6-terra", "openai", "gpt-5.6-terra"),
+        ("claude-fable-5-1", "anthropic", "claude-fable-5-1"),
+        ("claude-fable-5", "anthropic", "claude-fable-5"),
+        ("claude-opus-5", "anthropic", "claude-opus-5"),
+        ("claude-opus-4-8", "anthropic", "claude-opus-4-8"),
+        ("claude-opus-4-7", "anthropic", "claude-opus-4-7"),
+        ("claude-opus-4-6", "anthropic", "claude-opus-4-6"),
+        ("claude-opus-4-5", "anthropic", "claude-opus-4-5-20251101"),
+        ("claude-sonnet-5", "anthropic", "claude-sonnet-5"),
+        ("claude-sonnet-4-6", "anthropic", "claude-sonnet-4-6"),
+        ("claude-sonnet-4-5", "anthropic", "claude-sonnet-4-5-20250929"),
+    ):
+        selected = CFG.resolve_model_profile(_s(profile_id))
+        mapped = CFG.build_connection_map(_s(profile_id), selected)
+        assert mapped[f"builtin-{provider}"].model_id == model_id
+        assert mapped[f"builtin-{provider}"].enabled is True
+
     CFG.set_model_id_override(s, "nvidia", "qwen/qwen3-vl-32b-instruct", profile_id="qwen3.8-27b")
     assert CFG.build_connection_map(s, prof)["builtin-nvidia"].model_id == "qwen/qwen3-vl-32b-instruct"
     CFG.set_model_id_override(s, "nvidia", "", profile_id="qwen3.8-27b")
@@ -591,7 +618,81 @@ def test_vlm_only_model_guard():
         qwen, "groq",
         ["groq/compound-mini", "qwen/qwen3.8-27b", "llama-3.3-70b-versatile"],
     ) == ["qwen/qwen3.8-27b"]
+    for provider, model_ids in {
+        "openai": ["gpt-4o", "gpt-4o-mini", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"],
+        "anthropic": [
+            "claude-fable-5-1", "claude-fable-5", "claude-opus-5",
+            "claude-opus-4-8", "claude-opus-4-7", "claude-opus-4-6",
+            "claude-opus-4-5-20251101", "claude-sonnet-5", "claude-sonnet-4-6",
+            "claude-sonnet-4-5-20250929", "claude-haiku-4-5-20251001",
+        ],
+    }.items():
+        assert all(M.is_vlm_model_id(gemma, provider, model_id) for model_id in model_ids)
+        assert M.filter_vlm_model_ids(gemma, provider, model_ids) == model_ids
+    assert not M.is_vlm_model_id(
+        M.default_registry().get("openai-gpt-5.6-luna"), "openai", "gpt-5.6-sol")
+    assert not M.is_vlm_model_id(
+        M.default_registry().get("claude-haiku-4-5"), "anthropic", "claude-opus-4-7")
+    assert not M.is_vlm_model_id(
+        M.default_registry().get("claude-haiku-4-5"), "anthropic", "claude-fable-5-1")
+    assert not M.is_vlm_model_id(
+        M.default_registry().get("claude-opus-5"), "anthropic", "claude-sonnet-5")
+    assert not M.is_vlm_model_id(gemma, "groq", "gpt-4o")
+    assert not M.is_vlm_model_id(gemma, "anthropic", "gpt-4o")
+
+    bad_profile = M.VlmModelProfile(
+        profile_id="user-bad", display_name="bad", canonical_model_id="groq/compound-mini",
+        bindings={"groq": M.ModelBinding("groq", "groq/compound-mini")})
+    import types
+    bad_settings = types.SimpleNamespace(
+        model_profile_id="user-bad", paid_connections="", cloudflare_account_id="",
+        anthropic_workspace_id="", verified_bindings="", model_id_overrides="",
+        model_id_override_map=lambda: {}, order_list=lambda: ["groq"])
+    import vlm_config as CFG
+    bad_map = CFG.build_connection_map(bad_settings, bad_profile)
+    assert bad_map["builtin-groq"].enabled is False
     print("  VLM-only model guard: Groq Compound rejected, Qwen vision model retained: OK")
+
+
+def test_catalog_capability_classification_covers_all_builtin_providers():
+    """Static fallbacks cover metadata-less APIs; explicit metadata stays authoritative."""
+    expected = {
+        "gemini": ["gemini-2.5-pro", "gemini-3.8-flash", "gemma-4-31b-it"],
+        "cloudflare": ["@cf/google/gemma-3-12b-it", "@cf/meta/llama-3.2-11b-vision-instruct"],
+        "groq": ["qwen/qwen3.6-27b", "qwen/qwen3.8-27b"],
+        "nvidia": ["google/gemma-4-26b-it", "google/gemma-4-31b-it",
+                    "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",
+                    "nvidia/nemotron-nano-12b-v2-vl"],
+        "openai": ["gpt-4.1", "gpt-5.5", "o4-mini"],
+        "anthropic": ["claude-fable-5-1", "claude-opus-5", "claude-sonnet-5",
+                      "claude-haiku-4-5-20251001"],
+    }
+    for provider, model_ids in expected.items():
+        assert all(M.classify_model_capability(provider, mid)[0] is True
+                   for mid in model_ids), (provider, model_ids)
+    assert M.classify_model_capability("nvidia", "nvidia/llama-3.2-nemoretriever-1b-vlm-embed-v1")[0] is False
+    assert M.classify_model_capability("groq", "groq/compound-mini")[0] is False
+
+    image_text = {"architecture": {"input_modalities": ["text", "image"],
+                                    "output_modalities": ["text"]}}
+    text_only = {"architecture": {"input_modalities": ["text"],
+                                   "output_modalities": ["text"]}}
+    empty_input = {"architecture": {"input_modalities": [],
+                                     "output_modalities": ["text"]}}
+    image_generation = {
+        "architecture": {"input_modalities": ["text", "image"],
+                          "output_modalities": ["text", "image"]},
+        "description": "image generation model",
+    }
+    assert M.classify_model_capability("openrouter", "vendor/vlm", image_text)[0] is True
+    assert M.classify_model_capability("openrouter", "vendor/text", text_only)[0] is False
+    assert M.classify_model_capability("openrouter", "vendor/empty", empty_input)[0] is False
+    assert M.classify_model_capability("openrouter", "vendor/image", image_generation)[0] is False
+    assert M.is_vlm_model_id(None, "gemini", "gemini-2.0-flash") is True
+    assert M.is_vlm_model_id(None, "nvidia", "nvidia/nemotron-nano-12b-v2-vl") is True
+    assert M.is_vlm_model_id(None, "gemini", "gemini-2.5-flash-image") is False
+    assert M.is_vlm_model_id(None, "cloudflare", "@cf/mistral/mistral-small-3.1-24b-instruct") is False
+    print("  capability catalog: all enabled providers + metadata: OK")
 
 
 def test_user_defined_profiles():
@@ -600,7 +701,7 @@ def test_user_defined_profiles():
     old = CFG.VLM_PROFILES_PATH
     CFG.VLM_PROFILES_PATH = Path(tempfile.mkdtemp()) / "vp.json"
     try:
-        assert len(CFG.all_profiles()) == 7 and not CFG.is_user_profile("x")
+        assert len(CFG.all_profiles()) == 20 and not CFG.is_user_profile("x")
 
         CFG.save_user_profiles([{
             "profile_id": "user-g3", "display_name": "My Gemma 3 27B",
@@ -625,7 +726,7 @@ def test_user_defined_profiles():
         ])
         aps = {p.profile_id: p for p in CFG.all_profiles()}
         assert aps["gemma-4-26b-a4b-it"].display_name == "Gemma (mine)"
-        assert len(CFG.all_profiles()) == 8   # 7 shipped (one overridden in place) + user-g3
+        assert len(CFG.all_profiles()) == 21  # 20 shipped (one overridden in place) + user-g3
     finally:
         CFG.VLM_PROFILES_PATH = old
     print("  user-defined profiles: json round-trip, merge, same-id override: OK")

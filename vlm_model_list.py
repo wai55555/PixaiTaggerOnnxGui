@@ -1,25 +1,88 @@
-"""プロバイダーから利用可能なモデル ID の一覧を取得する（260901_VLM_implement_plan 2.2）。
+"""プロバイダーのモデル一覧と、画像入力可否を取得する層。
 
-出荷時の推定モデル ID を人手で直させるのではなく、各サービスの「モデル一覧」API を
-叩いて実在する ID から選ばせるための層。UI スレッドからは呼ばない（ワーカー経由）。
-
-- OpenAI 互換（openai_chat_completions）: GET {base_url}/models -> {"data":[{"id": ...}]}
-- Gemini（gemini_generate_content）  : GET {base_url}/models -> {"models":[{"name":"models/..."}]}
+一覧 API の返す能力メタデータを捨てずに ``ModelCatalogEntry`` として UI へ渡す。
+API が能力を返さないプロバイダーについては ``vlm_models`` の公式カタログ由来の
+保守的な判定へフォールバックする。UI スレッドからは呼ばない（ワーカー経由）。
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from vlm_connections import VlmConnection
 from vlm_errors import VlmAttemptError, VlmErrorReason
+from vlm_models import classify_model_capability, _metadata_modalities
 from vlm_protocols import (
     VlmHttpRequest, apply_connection_auth, apply_request_headers, default_auth_key,
 )
 from vlm_transport import RawHttpResponse, execute_http
 
 
+# Mistral/PixtralはVLM対応でもキャプション品質が弱いため、内蔵プロバイダーの
+# 動的モデル一覧からも選択肢に出さない。手入力のカスタム接続までは妨げない。
+_DISABLED_BUILTIN_VLM_MARKERS = ("mistral", "pixtral")
+
+
+@dataclass(frozen=True)
+class ModelCatalogEntry:
+    """モデル一覧の1行と、キャプション用途に必要な能力判定。"""
+
+    model_id: str
+    supports_image_input: bool | None = None
+    supports_text_output: bool | None = None
+    capability_source: str = ""
+
+    @property
+    def is_vlm(self) -> bool:
+        """画像を入力し、テキストを返せることが確認できたモデルか。"""
+        return self.supports_image_input is True and self.supports_text_output is not False
+
+
+def fetch_model_catalog(conn: VlmConnection, api_key: str | None,
+                       *, connect_timeout: float = 8.0, read_timeout: float = 20.0
+                       ) -> list[ModelCatalogEntry] | VlmAttemptError:
+    """接続先のモデル一覧を取得し、各モデルのVLM可否を付けて返す。"""
+    raw = _fetch_model_body(conn, api_key, connect_timeout=connect_timeout,
+                            read_timeout=read_timeout)
+    if isinstance(raw, VlmAttemptError):
+        return raw
+    entries = _extract_catalog(raw, conn.provider_id)
+    if not entries:
+        return VlmAttemptError(VlmErrorReason.BAD_RESPONSE, 200,
+                               "no model ids in response")
+    seen: set[str] = set()
+    out: list[ModelCatalogEntry] = []
+    for entry in entries:
+        if entry.model_id and entry.model_id not in seen:
+            seen.add(entry.model_id)
+            out.append(entry)
+    return out
+
+
 def fetch_model_ids(conn: VlmConnection, api_key: str | None,
                     *, connect_timeout: float = 8.0, read_timeout: float = 20.0
                     ) -> list[str] | VlmAttemptError:
-    """接続先のモデル一覧を取り、モデル ID の文字列リストを返す。失敗時は VlmAttemptError。"""
+    """互換 API。モデル ID だけを返す（既存の呼び出し元向け）。"""
+    raw = _fetch_model_body(conn, api_key, connect_timeout=connect_timeout,
+                            read_timeout=read_timeout)
+    if isinstance(raw, VlmAttemptError):
+        return raw
+    # 旧 API の挙動を維持するため、Cloudflare の明示的な非生成タスクと、
+    # Gemini の generateContent 非対応行は _extract_ids() で除外する。
+    ids = _extract_ids(raw)
+    if not ids:
+        return VlmAttemptError(VlmErrorReason.BAD_RESPONSE, 200,
+                               "no model ids in response")
+    seen: set[str] = set()
+    out: list[str] = []
+    for mid in ids:
+        if mid and mid not in seen:
+            seen.add(mid)
+            out.append(mid)
+    return out
+
+
+def _fetch_model_body(conn: VlmConnection, api_key: str | None,
+                      *, connect_timeout: float, read_timeout: float):
     base = (conn.base_url or "").rstrip("/")
     if not base or "{account_id}" in base:
         return VlmAttemptError(VlmErrorReason.UNKNOWN, None,
@@ -30,7 +93,12 @@ def fetch_model_ids(conn: VlmConnection, api_key: str | None,
     else:
         url = f"{base}/models"
 
-    req = VlmHttpRequest(method="GET", url=url, headers={}, params={}, json_body={})
+    params: dict[str, str] = {}
+    # Cloudflare の検索 API はデフォルトページサイズが小さいため、現行カタログを
+    # 1回で取りこぼさない値を指定する。API が上限を下げても安全に処理できる。
+    if conn.provider_id == "cloudflare":
+        params["per_page"] = "100"
+    req = VlmHttpRequest(method="GET", url=url, headers={}, params=params, json_body={})
     if conn.protocol == "anthropic_messages":
         req.headers["anthropic-version"] = "2023-06-01"
     default_key = default_auth_key(conn.auth.type, api_key)
@@ -48,50 +116,119 @@ def fetch_model_ids(conn: VlmConnection, api_key: str | None,
     if raw.status != 200 or not isinstance(raw.json_body, (dict, list)):
         return VlmAttemptError(VlmErrorReason.BAD_RESPONSE, raw.status,
                                f"HTTP {raw.status} (model list unavailable)")
-
-    ids = _extract_ids(raw.json_body)
-    if not ids:
-        return VlmAttemptError(VlmErrorReason.BAD_RESPONSE, raw.status, "no model ids in response")
-    # 重複除去しつつ順序維持。
-    seen: set[str] = set()
-    out: list[str] = []
-    for mid in ids:
-        if mid and mid not in seen:
-            seen.add(mid)
-            out.append(mid)
-    return out
+    return raw.json_body
 
 
-def _extract_ids(body) -> list[str]:
-    # OpenAI 互換: {"data": [{"id": "..."}]} もしくは素の list
+def _entry_from_row(provider_id: str, model_id: str, row: dict) -> ModelCatalogEntry:
+    inputs, outputs = _metadata_modalities(row)
+    is_vlm, source = classify_model_capability(provider_id, model_id, row)
+    # 能力を返す一覧では出力も明示的に保持し、画像生成など「画像を扱うが
+    # キャプションを返さない」モデルをVLM一覧へ混ぜない。
+    text_output = ("text" in outputs) if outputs is not None else (True if is_vlm else None)
+    # metadata に画像入力があっても、description/task が画像生成・安全性モデルと
+    # 明示する場合は caption VLM として扱わない（is_vlm=False を優先）。
+    image_input = (("image" in inputs) and is_vlm is not False) if inputs is not None else is_vlm
+    return ModelCatalogEntry(model_id=model_id, supports_image_input=image_input,
+                             supports_text_output=text_output,
+                             capability_source=source)
+
+
+def _extract_catalog(body, provider_id: str) -> list[ModelCatalogEntry]:
+    """プロバイダー別レスポンスを能力付きの共通行へ変換する。"""
     rows = body.get("data") if isinstance(body, dict) else body
-    if isinstance(rows, list) and rows and isinstance(rows[0], dict) and "id" in rows[0]:
-        return [str(r.get("id", "")).strip() for r in rows if r.get("id")]
-    # Cloudflare Workers AI: {"result": [{"name": "@cf/...", "task": {"name": "..."}}]}
-    cf = body.get("result") if isinstance(body, dict) else None
-    if isinstance(cf, list) and cf and isinstance(cf[0], dict) and "name" in cf[0]:
-        _drop = ("embedding", "classification", "speech", "translation", "detection",
-                 "image-to-image", "text-to-image", "text-to-speech", "reranking")
+    if isinstance(rows, list) and any(isinstance(row, dict) and "id" in row for row in rows):
         out = []
-        for r in cf:
-            task = ((r.get("task") or {}).get("name") or "").lower()
-            if task and any(k in task for k in _drop):
+        for row in rows:
+            if not isinstance(row, dict) or not row.get("id"):
                 continue
-            n = str(r.get("name", "")).strip()
-            if n:
-                out.append(n)
+            mid = str(row["id"]).strip()
+            if mid:
+                out.append(_entry_from_row(provider_id, mid, row))
         return out
-    # Gemini: {"models": [{"name": "models/gemma-3-27b-it", "supportedGenerationMethods": [...]}]}
+
+    # Cloudflare Workers AI: {"result": [{"name": "@cf/...", "task": ...}]}
+    cf = body.get("result") if isinstance(body, dict) else None
+    if isinstance(cf, list):
+        out = []
+        for row in cf:
+            if not isinstance(row, dict) or not row.get("name"):
+                continue
+            mid = str(row["name"]).strip()
+            if mid:
+                out.append(_entry_from_row(provider_id, mid, row))
+        return out
+
+    # Gemini: {"models": [{"name": "models/gemma-...", ...}]}
     gm = body.get("models") if isinstance(body, dict) else None
     if isinstance(gm, list):
         out = []
-        for r in gm:
-            if not isinstance(r, dict):
+        for row in gm:
+            if not isinstance(row, dict):
                 continue
-            methods = r.get("supportedGenerationMethods") or r.get("supported_generation_methods") or []
+            methods = row.get("supportedGenerationMethods") or row.get("supported_generation_methods") or []
             if methods and "generateContent" not in methods:
                 continue
-            name = str(r.get("name", "")).strip()
+            name = str(row.get("name", "")).strip()
+            mid = name[len("models/"):] if name.startswith("models/") else name
+            if mid:
+                out.append(_entry_from_row(provider_id, mid, row))
+        return out
+    return []
+
+
+def filter_vlm_catalog(entries: list[ModelCatalogEntry]) -> list[ModelCatalogEntry]:
+    """一覧から、画像→テキストが確認できた行だけを順序維持で返す。"""
+    out: list[ModelCatalogEntry] = []
+    seen: set[str] = set()
+    for entry in entries:
+        model_low = entry.model_id.lower()
+        if (entry.is_vlm
+                and not any(marker in model_low for marker in _DISABLED_BUILTIN_VLM_MARKERS)
+                and entry.model_id not in seen):
+            seen.add(entry.model_id)
+            out.append(entry)
+    return out
+
+
+def catalog_entry_from_id(provider_id: str, model_id: str) -> ModelCatalogEntry:
+    """旧形式のIDリストや手入力値を、静的カタログ判定付き行へ変換する。"""
+    mid = str(model_id or "").strip()
+    is_vlm, source = classify_model_capability(provider_id, mid)
+    return ModelCatalogEntry(model_id=mid, supports_image_input=is_vlm,
+                             supports_text_output=True if is_vlm else None,
+                             capability_source=source)
+
+
+def _extract_ids(body) -> list[str]:
+    """旧 ``fetch_model_ids`` 用のID抽出（従来の除外挙動を維持）。"""
+    rows = body.get("data") if isinstance(body, dict) else body
+    if isinstance(rows, list) and any(isinstance(row, dict) and "id" in row for row in rows):
+        return [str(r.get("id", "")).strip() for r in rows if r.get("id")]
+    # Cloudflare の非キャプションタスクを旧仕様どおり除外。
+    cf = body.get("result") if isinstance(body, dict) else None
+    if isinstance(cf, list) and cf and isinstance(cf[0], dict) and "name" in cf[0]:
+        drop = ("embedding", "classification", "speech", "translation", "detection",
+                "image-to-image", "text-to-image", "text-to-speech", "reranking")
+        out = []
+        for row in cf:
+            task = ((row.get("task") or {}).get("name") or "").lower()
+            if task and any(k in task for k in drop):
+                continue
+            name = str(row.get("name", "")).strip()
+            if name:
+                out.append(name)
+        return out
+    # Gemini は generateContent 非対応行を除外。
+    gm = body.get("models") if isinstance(body, dict) else None
+    if isinstance(gm, list):
+        out = []
+        for row in gm:
+            if not isinstance(row, dict):
+                continue
+            methods = row.get("supportedGenerationMethods") or row.get("supported_generation_methods") or []
+            if methods and "generateContent" not in methods:
+                continue
+            name = str(row.get("name", "")).strip()
             out.append(name[len("models/"):] if name.startswith("models/") else name)
         return [x for x in out if x]
     return []

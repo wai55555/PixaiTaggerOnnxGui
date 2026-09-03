@@ -199,9 +199,14 @@ def build_connection_map(vlm_settings, model_profile=None) -> dict[str, VlmConne
             conn.model_id = override
             if binding is not None:
                 conn.is_known_free_route = binding.free_route
-        elif binding is not None:
+        elif binding is not None and is_vlm_model_id(model_profile, conn.provider_id,
+                                                     binding.model_id):
             conn.model_id = binding.model_id or conn.model_id
             conn.is_known_free_route = binding.free_route
+        elif binding is not None:
+            # User-defined profiles can contain stale or text-only IDs. Do not let a
+            # profile binding bypass the same VLM-only guard used for manual overrides.
+            conn.enabled = False
         elif model_profile is not None:
             # 選択プロファイルはこの provider を経路に持たない。
             conn.enabled = False

@@ -59,7 +59,7 @@ class VlmDiagnosticsWorker(QObject):
 class VlmModelListWorker(QObject):
     """プロバイダーの利用可能モデル一覧をバックグラウンドで取得する。"""
 
-    result_ready = Signal(str, object)   # (connection_id, list[str] | VlmAttemptError)
+    result_ready = Signal(str, object)   # (connection_id, list[ModelCatalogEntry] | VlmAttemptError)
     finished = Signal()
 
     def __init__(self, conn, api_key: str | None):
@@ -70,8 +70,8 @@ class VlmModelListWorker(QObject):
     @Slot()
     def run(self) -> None:
         try:
-            from vlm_model_list import fetch_model_ids
-            res = fetch_model_ids(self._conn, self._api_key)
+            from vlm_model_list import fetch_model_catalog
+            res = fetch_model_catalog(self._conn, self._api_key)
             self.result_ready.emit(self._conn.connection_id, res)
         except Exception as e:  # noqa: BLE001
             write_debug_log(f"vlm model-list worker error: {e}")

@@ -417,7 +417,7 @@ def test_diagnostics_rate_limit_can_mark_binding_verified():
     billing.add("Auth", D.DiagStatus.PASS, "accepted; billing / credits unavailable")
     billing.add("Request build", D.DiagStatus.PASS, "POST https://api.openai.com/v1/responses")
     billing.add("Image input", D.DiagStatus.PASS, "image/jpeg, base64/data-url ready")
-    billing.add("HTTP response", D.DiagStatus.FAIL, "429 billing / credits unavailable")
+    billing.add("HTTP response", D.DiagStatus.WARN, "429 billing / credits unavailable")
     billing.add("Caption extraction", D.DiagStatus.SKIP, "no successful response to extract from")
     billing.http_status = 429
     assert billing.can_mark_binding_verified is False
@@ -433,18 +433,25 @@ def test_diagnostics_billing_block_is_not_auth_failure():
         provider_id="vercel", auth=AuthSpec(type="bearer", secret_ref="x"))
     old = D.execute_http
     try:
-        D.execute_http = lambda *a, **k: RawHttpResponse(
-            403, {}, {"error": {"message":
-                "AI Gateway requires a valid credit card on file to service requests"}}, "")
-        rep = D.diagnose(conn, api_key="valid-key", do_live_request=True)
+        cases = (
+            (403, "AI Gateway requires a valid credit card on file to service requests"),
+            (429, "You have no credits remaining"),
+            (400, "Your credit balance is too low to access the Anthropic API"),
+        )
+        for status, message in cases:
+            D.execute_http = lambda *a, _status=status, _message=message, **k: RawHttpResponse(
+                _status, {}, {"error": {"message": _message}}, "")
+            rep = D.diagnose(conn, api_key="valid-key", do_live_request=True)
+            assert rep.http_status == status
+            assert rep.item("Auth").status is D.DiagStatus.PASS
+            assert "billing / credits unavailable" in rep.item("Auth").detail
+            assert rep.item("HTTP response").status is D.DiagStatus.WARN
+            assert rep.overall is D.DiagStatus.WARN
+            assert message in rep.item("HTTP response").detail
+            assert rep.can_mark_binding_verified is False
     finally:
         D.execute_http = old
-    assert rep.http_status == 403
-    assert rep.item("Auth").status is D.DiagStatus.PASS
-    assert "billing / credits unavailable" in rep.item("Auth").detail
-    assert rep.item("HTTP response").status is D.DiagStatus.FAIL
-    assert "credit card" in rep.item("HTTP response").detail
-    print("  diagnostics: billing/card block remains HTTP FAIL but auth PASS: OK")
+    print("  diagnostics: billing/card blocks are HTTP WARN with auth PASS, never verified: OK")
 
 
 def test_model_list_fetch():
@@ -499,9 +506,32 @@ def test_model_list_fetch():
         assert seen["anthropic_headers"]["anthropic-version"] == "2023-06-01"
         assert seen["anthropic_headers"]["x-api-key"] == "ak"
         assert seen["anthropic_headers"]["anthropic-workspace-id"] == "wrkspc_test"
+
+        # New catalog path retains provider capability metadata and filters only after
+        # classification, so a profile cannot hide unrelated but valid VLMs.
+        catalog = ML._extract_catalog({"data": [
+            {"id": "vendor/vision", "architecture": {
+                "input_modalities": ["text", "image"], "output_modalities": ["text"]}},
+            {"id": "vendor/text", "architecture": {
+                "input_modalities": ["text"], "output_modalities": ["text"]}},
+            {"id": "vendor/image-generator", "architecture": {
+                "input_modalities": ["text", "image"], "output_modalities": ["text", "image"]},
+             "description": "image generation model"},
+        ]}, "openrouter")
+        assert [e.model_id for e in ML.filter_vlm_catalog(catalog)] == ["vendor/vision"]
+        assert catalog[0].capability_source == "model list input/output modalities"
+
+        cf_catalog = ML._extract_catalog({"result": [
+            {"name": "@cf/meta/llama-vision", "task": {"name": "Image-to-Text"}},
+            {"name": "@cf/baai/bge-m3", "task": {"name": "Text Embeddings"}},
+            {"name": "@cf/mistral/mistral-small-3.1-24b-instruct",
+             "task": {"name": "Image-to-Text"}},
+        ]}, "cloudflare")
+        assert [e.model_id for e in ML.filter_vlm_catalog(cf_catalog)] == ["@cf/meta/llama-vision"]
+
     finally:
         ML.execute_http = old
-    print("  model list fetch: openai dedup, gemini strip+filter, cloudflare search endpoint, 401/404: OK")
+    print("  model list fetch: IDs + capability metadata, Gemini/Cloudflare filters, auth: OK")
 
 
 def test_worker_batch_with_mock(tmp=None):

@@ -19,18 +19,23 @@ import vlm_config
 import vlm_models
 import vlm_secrets
 from vlm_connections import default_builtin_connections
+from vlm_model_list import (
+    ModelCatalogEntry, catalog_entry_from_id, filter_vlm_catalog,
+)
 from vlm_worker import VlmModelListWorker
 
 GetString = Callable[..., str]
 _PROVIDERS = (
-    "gemini", "openrouter", "cloudflare", "groq", "nvidia", "mistral",
+    "gemini", "openrouter", "cloudflare", "groq", "nvidia",
+    # "mistral",  # Pixtralは内蔵キャプション経路として一時停止
     "huggingface", "vercel", "openai", "anthropic",
     # "ovhcloud",  # 日本居住者環境で実機検証できるまで無効
 )
 _SECRET_REF = {
     "gemini": "vlm/gemini/api_key", "openrouter": "vlm/openrouter/api_key",
     "cloudflare": "vlm/cloudflare/api_token", "groq": "vlm/groq/api_key",
-    "nvidia": "vlm/nvidia/api_key", "mistral": "vlm/mistral/api_key",
+    "nvidia": "vlm/nvidia/api_key",
+    # "mistral": "vlm/mistral/api_key",  # 内蔵経路停止中
     "huggingface": "vlm/huggingface/api_token",
     "vercel": "vlm/vercel/api_key", "openai": "vlm/openai/api_key",
     "anthropic": "vlm/anthropic/api_key",
@@ -139,17 +144,23 @@ class ProfileEditorDialog(QDialog):
             r["status"].setText(self._t("Vlm", "Settings_Route_FetchModels_Fail",
                                         detail=getattr(result, "message", "") or str(result)))
             return
+        entries = [entry if isinstance(entry, ModelCatalogEntry)
+                   else catalog_entry_from_id(prov, str(entry))
+                   for entry in result]
+        vlm_entries = filter_vlm_catalog(entries)
+        vlm_models.register_discovered_vlm_ids(prov, [e.model_id for e in vlm_entries])
+        model_ids = [e.model_id for e in vlm_entries]
         combo = r["mid"]
         combo.blockSignals(True)
         combo.clear()
-        combo.addItems(result)
+        combo.addItems(model_ids)
         combo.blockSignals(False)
         canon = self.canon_edit.text().strip()
         probe = vlm_models.VlmModelProfile(
             profile_id="_probe", display_name="_", canonical_model_id=canon or "x",
             base_model=canon, aliases=(canon,) if canon else ())
-        best, score = vlm_models.match_model_id(probe, prov, result)
-        okmsg = self._t("Vlm", "Settings_Route_FetchModels_Ok", n=len(result))
+        best, score = vlm_models.match_model_id(probe, prov, model_ids)
+        okmsg = self._t("Vlm", "Settings_Route_FetchModels_Ok", n=len(model_ids))
         if best is not None:
             combo.setCurrentText(best)
             r["inc"].setChecked(True)

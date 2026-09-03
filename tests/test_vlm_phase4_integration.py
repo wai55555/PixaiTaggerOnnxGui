@@ -198,8 +198,9 @@ def test_api_key_dialog_verify_and_save():
     billing = DiagReport("builtin-vercel")
     billing.add("Auth", DiagStatus.PASS, "accepted; billing / credits unavailable")
     billing.add(
-        "HTTP response", DiagStatus.FAIL,
-        "403 billing / credits unavailable: AI Gateway requires a valid credit card on file")
+        "HTTP response", DiagStatus.WARN,
+        "403 billing / credits unavailable (endpoint reached; inference not verified): "
+        "AI Gateway requires a valid credit card on file")
     billing.http_status = 403
     d2c = _run(billing, "KEYOK_CARD_REQUIRED")
     assert stored.get("vlm/gemini/api_key") == "KEYOK_CARD_REQUIRED" and d2c.saved() is True

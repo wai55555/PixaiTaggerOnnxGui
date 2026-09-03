@@ -1,8 +1,9 @@
 """内蔵接続とカスタム接続の定義（260901_VLM_spec.md 2.2・14章 / design.md 4.2・5.2節）。
 
 - 内蔵接続: アプリが URL・プロトコル・既知の無料経路情報を持つ
-  （Gemini / OpenRouter / Cloudflare / Groq / NVIDIA / Mistral / Hugging Face /
+  （Gemini / OpenRouter / Cloudflare / Groq / NVIDIA / Hugging Face /
    Vercel AI Gateway / OpenAI / Anthropic）
+  ※ Mistral/Pixtral はキャプション用途として弱いため、内蔵経路をコメントアウト中。
 - カスタム接続: 利用者が登録する外部 API / ローカル VLM。同一モデル判定は行わない。
   外部・ローカルの判定は安全側（不明なら外部扱い）。
 """
@@ -241,17 +242,19 @@ BUILTIN_CONNECTION_TEMPLATES: list[dict] = [
         "auth": {"type": "bearer", "secret_ref": "vlm/nvidia/api_key"},
         "is_known_free_route": True,
     },
-    {
-        "connection_id": "builtin-mistral",
-        "display_name": "Mistral",
-        "kind": "builtin",
-        "provider_id": "mistral",
-        "protocol": "openai_chat_completions",
-        "base_url": "https://api.mistral.ai/v1",
-        "model_id": "",
-        "auth": {"type": "bearer", "secret_ref": "vlm/mistral/api_key"},
-        "is_known_free_route": True,
-    },
+    # Mistral/Pixtral VLM は対応しているが、キャプション経路としては弱いため
+    # 内蔵プロバイダーから一時的にコメントアウト。必要になればこのブロックを戻す。
+    # {
+    #     "connection_id": "builtin-mistral",
+    #     "display_name": "Mistral",
+    #     "kind": "builtin",
+    #     "provider_id": "mistral",
+    #     "protocol": "openai_chat_completions",
+    #     "base_url": "https://api.mistral.ai/v1",
+    #     "model_id": "",
+    #     "auth": {"type": "bearer", "secret_ref": "vlm/mistral/api_key"},
+    #     "is_known_free_route": True,
+    # },
     {
         "connection_id": "builtin-huggingface",
         "display_name": "Hugging Face",

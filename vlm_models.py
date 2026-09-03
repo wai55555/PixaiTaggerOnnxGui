@@ -147,7 +147,7 @@ class VlmModelRegistry:
 # 診断のフル PASS、認証済み429／診断上限による到達確認、または生成成功で
 # `[Vlm] verified_bindings` に載り VERIFIED 扱いになる（vlm_config._apply_verified_promotions）。
 #
-# providers: gemini / openrouter / cloudflare / groq / nvidia / mistral /
+# providers: gemini / openrouter / cloudflare / groq / nvidia /
 #            huggingface / vercel / openai / anthropic
 #            （ovhcloud は実機検証できるまで無効）
 #   - gemini      : Google Generative Language API（gemini_generate_content）
@@ -155,7 +155,7 @@ class VlmModelRegistry:
 #   - cloudflare  : Cloudflare Workers AI（openai_chat_completions、要 account_id）
 #   - groq        : Groq（openai_chat_completions、無料枠あり）
 #   - nvidia      : NVIDIA NIM / build.nvidia.com（openai_chat_completions、無料クレジット）
-#   - mistral     : Mistral La Plateforme（openai_chat_completions、無料枠あり）
+#   - mistral     : 一時停止（Pixtral VLMはキャプション用途として弱いため）
 #   - huggingface : Hugging Face Inference Providers（openai_chat_completions、従量課金）
 #   - vercel      : Vercel AI Gateway（openai_chat_completions、従量課金）
 #   - openai      : OpenAI Responses API（従量課金）
@@ -254,20 +254,82 @@ QWEN3_6_27B = VlmModelProfile(
     },
 )
 
-# Mistral の VLM（Pixtral 系）。実 ID は接続で確認する。
-PIXTRAL_12B = VlmModelProfile(
-    profile_id="pixtral-12b",
-    display_name="Pixtral 12B",
-    canonical_model_id="pixtral-12b",
-    family="Pixtral",
-    base_model="pixtral-12b",
-    quantization="unknown",
-    aliases=("mistralai/pixtral-12b", "pixtral-12b-2409"),
+# Mistral/Pixtral VLM は対応しているが、キャプション用途では弱いため、内蔵の
+# 出荷プロファイルから一時的にコメントアウト。OpenRouter等で同モデルを明示的に
+# 使う場合の動的モデル一覧・カスタムプロファイルまでは禁止しない。
+# PIXTRAL_12B = VlmModelProfile(
+#     profile_id="pixtral-12b",
+#     display_name="Pixtral 12B",
+#     canonical_model_id="pixtral-12b",
+#     family="Pixtral",
+#     base_model="pixtral-12b",
+#     quantization="unknown",
+#     aliases=("mistralai/pixtral-12b", "pixtral-12b-2409"),
+#     bindings={
+#         "mistral": ModelBinding("mistral", "pixtral-12b-2409", ModelIdentityStatus.UNKNOWN,
+#                                 free_route=True),
+#         "openrouter": ModelBinding("openrouter", "mistralai/pixtral-12b", ModelIdentityStatus.UNKNOWN,
+#                                    free_route=True),
+#     },
+# )
+
+OPENAI_GPT_4O = VlmModelProfile(
+    profile_id="openai-gpt-4o",
+    display_name="OpenAI GPT-4o",
+    canonical_model_id="gpt-4o",
+    family="GPT-4o",
+    base_model="gpt-4o",
+    revision="provider_managed",
+    quantization="provider_managed",
+    aliases=("openai/gpt-4o",),
     bindings={
-        "mistral": ModelBinding("mistral", "pixtral-12b-2409", ModelIdentityStatus.UNKNOWN,
-                                free_route=True),
-        "openrouter": ModelBinding("openrouter", "mistralai/pixtral-12b", ModelIdentityStatus.UNKNOWN,
-                                   free_route=True),
+        "openai": ModelBinding("openai", "gpt-4o", ModelIdentityStatus.DECLARED),
+        "vercel": ModelBinding("vercel", "openai/gpt-4o", ModelIdentityStatus.DECLARED),
+    },
+)
+
+OPENAI_GPT_4O_MINI = VlmModelProfile(
+    profile_id="openai-gpt-4o-mini",
+    display_name="OpenAI GPT-4o mini",
+    canonical_model_id="gpt-4o-mini",
+    family="GPT-4o mini",
+    base_model="gpt-4o-mini",
+    revision="provider_managed",
+    quantization="provider_managed",
+    aliases=("openai/gpt-4o-mini",),
+    bindings={
+        "openai": ModelBinding("openai", "gpt-4o-mini", ModelIdentityStatus.DECLARED),
+        "vercel": ModelBinding("vercel", "openai/gpt-4o-mini", ModelIdentityStatus.DECLARED),
+    },
+)
+
+OPENAI_GPT_5_6_SOL = VlmModelProfile(
+    profile_id="openai-gpt-5.6-sol",
+    display_name="OpenAI GPT-5.6 Sol",
+    canonical_model_id="gpt-5.6-sol",
+    family="GPT-5.6 Sol",
+    base_model="gpt-5.6-sol",
+    revision="provider_managed",
+    quantization="provider_managed",
+    aliases=("gpt-5.6", "openai/gpt-5.6-sol"),
+    bindings={
+        "openai": ModelBinding("openai", "gpt-5.6-sol", ModelIdentityStatus.DECLARED),
+        "vercel": ModelBinding("vercel", "openai/gpt-5.6-sol", ModelIdentityStatus.DECLARED),
+    },
+)
+
+OPENAI_GPT_5_6_TERRA = VlmModelProfile(
+    profile_id="openai-gpt-5.6-terra",
+    display_name="OpenAI GPT-5.6 Terra",
+    canonical_model_id="gpt-5.6-terra",
+    family="GPT-5.6 Terra",
+    base_model="gpt-5.6-terra",
+    revision="provider_managed",
+    quantization="provider_managed",
+    aliases=("openai/gpt-5.6-terra",),
+    bindings={
+        "openai": ModelBinding("openai", "gpt-5.6-terra", ModelIdentityStatus.DECLARED),
+        "vercel": ModelBinding("vercel", "openai/gpt-5.6-terra", ModelIdentityStatus.DECLARED),
     },
 )
 
@@ -275,7 +337,7 @@ OPENAI_GPT_5_6_LUNA = VlmModelProfile(
     profile_id="openai-gpt-5.6-luna",
     display_name="OpenAI GPT-5.6 Luna",
     canonical_model_id="gpt-5.6-luna",
-    family="GPT-5.6",
+    family="GPT-5.6 Luna",
     base_model="gpt-5.6-luna",
     revision="provider_managed",
     quantization="provider_managed",
@@ -286,6 +348,116 @@ OPENAI_GPT_5_6_LUNA = VlmModelProfile(
     },
 )
 
+
+def _claude_profile(profile_id: str, display_name: str, model_id: str, *,
+                    family: str, revision: str = "provider_managed",
+                    aliases: tuple[str, ...] = (),
+                    vercel_model_id: str | None = None) -> VlmModelProfile:
+    """Anthropic の公式モデルIDを、直接APIとVercelの両経路へ束ねる。"""
+    vercel_id = vercel_model_id or f"anthropic/{model_id}"
+    return VlmModelProfile(
+        profile_id=profile_id,
+        display_name=display_name,
+        canonical_model_id=model_id,
+        family=family,
+        base_model=model_id,
+        revision=revision,
+        quantization="provider_managed",
+        aliases=aliases + (vercel_id,),
+        bindings={
+            "anthropic": ModelBinding("anthropic", model_id, ModelIdentityStatus.DECLARED),
+            "vercel": ModelBinding("vercel", vercel_id, ModelIdentityStatus.DECLARED),
+        },
+    )
+
+
+CLAUDE_FABLE_5_1 = _claude_profile(
+    "claude-fable-5-1", "Claude Fable 5.1", "claude-fable-5-1",
+    family="Claude Fable 5.1",
+)
+
+CLAUDE_FABLE_5 = _claude_profile(
+    "claude-fable-5", "Claude Fable 5", "claude-fable-5",
+    family="Claude Fable 5",
+)
+
+CLAUDE_OPUS_5 = _claude_profile(
+    "claude-opus-5", "Claude Opus 5", "claude-opus-5",
+    family="Claude Opus 5",
+)
+
+CLAUDE_OPUS_4_8 = VlmModelProfile(
+    profile_id="claude-opus-4-8",
+    display_name="Claude Opus 4.8",
+    canonical_model_id="claude-opus-4-8",
+    family="Claude Opus 4.8",
+    base_model="claude-opus-4-8",
+    revision="provider_managed",
+    quantization="provider_managed",
+    aliases=("anthropic/claude-opus-4-8",),
+    bindings={
+        "anthropic": ModelBinding("anthropic", "claude-opus-4-8", ModelIdentityStatus.DECLARED),
+        "vercel": ModelBinding("vercel", "anthropic/claude-opus-4-8",
+                                ModelIdentityStatus.DECLARED),
+    },
+)
+
+CLAUDE_OPUS_4_6 = _claude_profile(
+    "claude-opus-4-6", "Claude Opus 4.6", "claude-opus-4-6",
+    family="Claude Opus 4.6",
+)
+
+CLAUDE_OPUS_4_5 = _claude_profile(
+    "claude-opus-4-5", "Claude Opus 4.5", "claude-opus-4-5-20251101",
+    family="Claude Opus 4.5", revision="20251101",
+    aliases=("claude-opus-4-5",),
+    vercel_model_id="anthropic/claude-opus-4.5",
+)
+
+CLAUDE_SONNET_5 = _claude_profile(
+    "claude-sonnet-5", "Claude Sonnet 5", "claude-sonnet-5",
+    family="Claude Sonnet 5",
+)
+
+CLAUDE_OPUS_4_7 = VlmModelProfile(
+    profile_id="claude-opus-4-7",
+    display_name="Claude Opus 4.7",
+    canonical_model_id="claude-opus-4-7",
+    family="Claude Opus 4.7",
+    base_model="claude-opus-4-7",
+    revision="provider_managed",
+    quantization="provider_managed",
+    aliases=("anthropic/claude-opus-4-7",),
+    bindings={
+        "anthropic": ModelBinding("anthropic", "claude-opus-4-7", ModelIdentityStatus.DECLARED),
+        "vercel": ModelBinding("vercel", "anthropic/claude-opus-4-7",
+                                ModelIdentityStatus.DECLARED),
+    },
+)
+
+CLAUDE_SONNET_4_6 = VlmModelProfile(
+    profile_id="claude-sonnet-4-6",
+    display_name="Claude Sonnet 4.6",
+    canonical_model_id="claude-sonnet-4-6",
+    family="Claude Sonnet 4.6",
+    base_model="claude-sonnet-4-6",
+    revision="provider_managed",
+    quantization="provider_managed",
+    aliases=("anthropic/claude-sonnet-4-6",),
+    bindings={
+        "anthropic": ModelBinding("anthropic", "claude-sonnet-4-6", ModelIdentityStatus.DECLARED),
+        "vercel": ModelBinding("vercel", "anthropic/claude-sonnet-4-6",
+                                ModelIdentityStatus.DECLARED),
+    },
+)
+
+CLAUDE_SONNET_4_5 = _claude_profile(
+    "claude-sonnet-4-5", "Claude Sonnet 4.5", "claude-sonnet-4-5-20250929",
+    family="Claude Sonnet 4.5", revision="20250929",
+    aliases=("claude-sonnet-4-5",),
+    vercel_model_id="anthropic/claude-sonnet-4.5",
+)
+
 CLAUDE_HAIKU_4_5 = VlmModelProfile(
     profile_id="claude-haiku-4-5",
     display_name="Claude Haiku 4.5",
@@ -294,7 +466,7 @@ CLAUDE_HAIKU_4_5 = VlmModelProfile(
     base_model="claude-haiku-4-5-20251001",
     revision="20251001",
     quantization="provider_managed",
-    aliases=("anthropic/claude-haiku-4.5",),
+    aliases=("claude-haiku-4-5", "anthropic/claude-haiku-4.5"),
     bindings={
         "anthropic": ModelBinding("anthropic", "claude-haiku-4-5-20251001",
                                   ModelIdentityStatus.DECLARED),
@@ -304,8 +476,12 @@ CLAUDE_HAIKU_4_5 = VlmModelProfile(
 )
 
 _ALL_PROFILES = [
-    GEMMA_4_26B_A4B_IT, GEMMA_4_31B_IT, QWEN3_8_27B, QWEN3_6_27B, PIXTRAL_12B,
-    OPENAI_GPT_5_6_LUNA, CLAUDE_HAIKU_4_5,
+    GEMMA_4_26B_A4B_IT, GEMMA_4_31B_IT, QWEN3_8_27B, QWEN3_6_27B,
+    OPENAI_GPT_4O, OPENAI_GPT_4O_MINI,
+    OPENAI_GPT_5_6_SOL, OPENAI_GPT_5_6_TERRA, OPENAI_GPT_5_6_LUNA,
+    CLAUDE_FABLE_5_1, CLAUDE_FABLE_5, CLAUDE_OPUS_5,
+    CLAUDE_OPUS_4_8, CLAUDE_OPUS_4_7, CLAUDE_OPUS_4_6, CLAUDE_OPUS_4_5,
+    CLAUDE_SONNET_5, CLAUDE_SONNET_4_6, CLAUDE_SONNET_4_5, CLAUDE_HAIKU_4_5,
 ]
 
 
@@ -394,12 +570,281 @@ _KNOWN_NON_VISION_MODEL_IDS = {
 # 既知の画像対応ID。通常のプロファイルでは binding のIDを優先して判定する。
 # Groqの現行Visionドキュメントに掲載されている画像対応モデルもここへ明示する。
 _KNOWN_VISION_MODEL_IDS = {
+    "gemini": frozenset({
+        "gemma-4-26b-a4b-it",
+        "gemma-4-31b-it",
+        "gemini-3.8-flash",
+        "gemini-3.7-flash",
+        "gemini-3.6-flash",
+        "gemini-3.5-flash",
+        "gemini-3.5-flash-lite",
+        "gemini-3.1-flash-lite",
+        "gemini-3.1-flash-lite-preview",
+        "gemini-3.1-pro-preview",
+        "gemini-3.1-pro-preview-customtools",
+        "gemini-3-flash-preview",
+        "gemini-2.5-flash",
+        "gemini-2.5-flash-lite",
+        "gemini-2.5-pro",
+        "gemini-2.5-pro-preview",
+    }),
     "groq": frozenset({
         "meta-llama/llama-4-scout-17b-16e-instruct",
         "qwen/qwen3.6-27b",
         "qwen/qwen3.8-27b",
     }),
+    "openai": frozenset({
+        "gpt-4o",
+        "gpt-4o-mini",
+        "gpt-4.1",
+        "gpt-4.1-mini",
+        "gpt-4.1-nano",
+        "gpt-4-turbo",
+        "gpt-5",
+        "gpt-5-mini",
+        "gpt-5-nano",
+        "gpt-5-pro",
+        "gpt-5.1",
+        "gpt-5.2",
+        "gpt-5.2-pro",
+        "gpt-5.4",
+        "gpt-5.4-mini",
+        "gpt-5.4-nano",
+        "gpt-5.4-pro",
+        "gpt-5.5",
+        "gpt-5.5-pro",
+        "gpt-5.6-sol",
+        "gpt-5.6-terra",
+        "gpt-5.6-luna",
+        "o1",
+        "o1-pro",
+        "o3",
+        "o3-mini",
+        "o3-pro",
+        "o4-mini",
+    }),
+    "anthropic": frozenset({
+        "claude-fable-5-1",
+        "claude-fable-5",
+        "claude-opus-5",
+        "claude-opus-4-8",
+        "claude-opus-4-7",
+        "claude-opus-4-6",
+        "claude-opus-4-5-20251101",
+        "claude-sonnet-5",
+        "claude-sonnet-4-6",
+        "claude-sonnet-4-5-20250929",
+        "claude-haiku-4-5-20251001",
+    }),
+    "cloudflare": frozenset({
+        "@cf/google/gemma-3-12b-it",
+        "@cf/google/gemma-4-26b-a4b-it",
+        "@cf/google/gemma-4-31b-it",
+        "@cf/meta/llama-3.2-11b-vision-instruct",
+        "@cf/meta/llama-4-scout-17b-16e-instruct",
+        # "@cf/mistral/mistral-small-3.1-24b-instruct",  # Mistral系VLMは一時停止
+        "@cf/moonshotai/kimi-k2.5",
+        "@cf/moonshotai/kimi-k2.6",
+        "@cf/moonshotai/kimi-k2.7-code",
+        "@cf/moondream/moondream3.1-9b-a2b",
+        "@cf/uform/uform-gen2-qwen-500m",
+    }),
+    "nvidia": frozenset({
+        "adept/fuyu-8b",
+        "google/gemma-3-4b-it",
+        "google/gemma-3-12b-it",
+        "google/gemma-4-31b-it",
+        "meta/llama-3.2-11b-vision-instruct",
+        "meta/llama-3.2-90b-vision-instruct",
+        "meta/muse-glimmer-30b",
+        "microsoft/kosmos-2",
+        "microsoft/phi-3-vision-128k-instruct",
+        "moonshotai/kimi-k2.6",
+        "nvidia/cosmos-reason2-8b",
+        "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",
+        "nvidia/neva-22b",
+        "nvidia/vila",
+    }),
+    # Mistral/Pixtral: VLMは存在するが、内蔵キャプション経路としては一時停止。
+    # "mistral": frozenset({
+    #     "mistral-large-2512",
+    #     "mistral-medium-2508",
+    #     "mistral-small-2506",
+    #     "mistral-small-3.1-24b-instruct",
+    #     "mistral-small-3.2-24b-instruct",
+    #     "ministral-3b-2512",
+    #     "ministral-8b-2512",
+    #     "ministral-14b-2512",
+    #     "magistral-small-2509",
+    #     "magistral-medium-2509",
+    #     "pixtral-12b-2409",
+    #     "pixtral-large-latest",
+    # }),
 }
+
+# 実際の一覧APIが返した能力確認済みID。プロセス内だけで保持し、設定ファイルへは
+# 保存しない。次回起動後も一覧を再取得すれば同じ判定になるため、古いカタログを
+# 永続化して実行経路を誤って有効化することを避ける。
+_DISCOVERED_VLM_MODEL_IDS: dict[str, set[str]] = {}
+
+
+def register_discovered_vlm_ids(provider_id: str, model_ids: list[str] | set[str]) -> None:
+    """一覧APIでVLMと確認したIDを、現在のプロセスの安全判定へ登録する。"""
+    provider = (provider_id or "").strip().lower()
+    if not provider:
+        return
+    bucket = _DISCOVERED_VLM_MODEL_IDS.setdefault(provider, set())
+    for model_id in model_ids:
+        low = _base_catalog_model_id(str(model_id or ""))
+        if low and low not in _KNOWN_NON_VISION_MODEL_IDS.get(provider, ()):
+            bucket.add(low)
+
+
+def _base_catalog_model_id(model_id: str) -> str:
+    """OpenRouter等の一覧に付く batch/free 修飾子を外した比較用IDを返す。"""
+    low = (model_id or "").strip().lower()
+    if low.endswith(":batch"):
+        return low[:-len(":batch")]
+    return low
+
+
+def _modality_list(value: object) -> set[str] | None:
+    if isinstance(value, (list, tuple, set)):
+        return {str(v).strip().lower() for v in value if str(v).strip()}
+    if isinstance(value, str) and value.strip():
+        return {v.strip().lower() for v in re.split(r"[,+>]+", value) if v.strip()}
+    return None
+
+
+def _metadata_modalities(metadata: dict) -> tuple[set[str] | None, set[str] | None]:
+    """OpenRouter/HF/Vercelの異なる能力フィールドを共通形へ読む。"""
+    architecture = metadata.get("architecture")
+    architecture = architecture if isinstance(architecture, dict) else {}
+    modalities = metadata.get("modalities")
+    modalities = modalities if isinstance(modalities, dict) else {}
+    def first_declared(*values: object) -> set[str] | None:
+        for value in values:
+            parsed = _modality_list(value)
+            if parsed is not None:
+                return parsed
+        return None
+
+    inputs = first_declared(architecture.get("input_modalities"), modalities.get("input"),
+                            metadata.get("input_modalities"))
+    outputs = first_declared(architecture.get("output_modalities"), modalities.get("output"),
+                             metadata.get("output_modalities"))
+    # OpenRouterの旧形式などは配列ではなく ``text+image->text`` だけを返す。
+    if inputs is None and outputs is None:
+        modality = architecture.get("modality") or modalities.get("modality") \
+            or metadata.get("modality")
+        if isinstance(modality, str) and "->" in modality:
+            left, right = modality.split("->", 1)
+            inputs = _modality_list(left)
+            outputs = _modality_list(right)
+    return inputs, outputs
+
+
+def _static_model_capability(provider_id: str, model_id: str) -> tuple[bool | None, str]:
+    """能力メタデータを返さないAPI向けの公式カタログ由来の保守的判定。"""
+    provider = (provider_id or "").strip().lower()
+    low = _base_catalog_model_id(model_id)
+    if not low:
+        return None, "empty model id"
+    if low in _KNOWN_NON_VISION_MODEL_IDS.get(provider, ()):
+        return False, "known non-vision model"
+    if any(x in low for x in ("embedding", "-embed", "/embed", "rerank", "moderation",
+                              "content-safety", "guardrail")):
+        return False, "non-caption model family"
+    if low in _KNOWN_VISION_MODEL_IDS.get(provider, ()):
+        return True, "provider catalog allowlist"
+
+    if provider == "gemini":
+        if low.startswith("gemini-"):
+            if any(x in low for x in ("-image", "-live", "-tts", "-transcribe", "-audio")):
+                return False, "Gemini media/audio model"
+            if "embedding" not in low:
+                return True, "Google Gemini model catalog"
+        if low.startswith("gemma-") and low.startswith(("gemma-3-", "gemma-4-")):
+            return True, "Google Gemma model documentation"
+    elif provider == "anthropic":
+        if low.startswith(("claude-fable-", "claude-opus-", "claude-sonnet-", "claude-haiku-")):
+            return True, "Anthropic Claude model documentation"
+    elif provider == "openai":
+        if any(x in low for x in ("embedding", "whisper", "transcri", "tts", "realtime",
+                                  "moderation", "audio", "image")):
+            return False, "OpenAI non-caption model family"
+        if low.startswith(("gpt-4o", "gpt-4.1", "gpt-4-turbo", "gpt-5", "o1", "o3", "o4-")):
+            return True, "OpenAI model documentation"
+    # elif provider == "mistral":
+    #     if any(x in low for x in ("pixtral", "magistral", "ministral-3", "mistral-large-3",
+    #                               "mistral-medium-3", "mistral-small-3.1", "mistral-small-3.2")):
+    #         return True, "Mistral vision model documentation"
+    elif provider == "nvidia":
+        if (low.startswith(("google/gemma-3-", "google/gemma-4-"))
+                or any(x in low for x in ("vision", "vlm", "-vl", "fuyu", "kosmos",
+                                          "neva", "vila", "muse-glimmer", "omni",
+                                          "cosmos-reason", "phi-3.5-vision", "kimi-k2.6"))):
+            return True, "NVIDIA visual model catalog"
+    elif provider == "cloudflare":
+        if any(x in low for x in ("image-to-text", "moondream", "vision", "gemma-3-",
+                                  "gemma-4-", "kimi-k2.5", "kimi-k2.6", "kimi-k2.7")):
+            return True, "Cloudflare Workers AI model catalog"
+    elif provider == "groq":
+        if low in {"meta-llama/llama-4-scout-17b-16e-instruct", "qwen/qwen3.6-27b",
+                   "qwen/qwen3.8-27b"}:
+            return True, "Groq vision documentation"
+    return None, "capability not declared by provider"
+
+
+def classify_model_capability(provider_id: str, model_id: str,
+                              metadata: dict | None = None) -> tuple[bool | None, str]:
+    """モデルが画像を入力し、テキストを出力するVLMかを判定する。
+
+    一覧APIの能力メタデータを最優先し、メタデータを持たないAPIだけ公式カタログの
+    保守的な判定へフォールバックする。戻り値は (判定, 根拠) で、判定Noneは不明。
+    """
+    data = metadata if isinstance(metadata, dict) else {}
+    provider = (provider_id or "").strip().lower()
+    low_id = (model_id or "").strip().lower()
+    if low_id.endswith(":batch"):
+        return False, "batch-only route is not chat caption API"
+    if provider == "openrouter" and low_id in {
+        "openrouter/auto", "openrouter/auto-beta", "openrouter/free",
+    }:
+        return False, "router route is not a fixed caption model"
+    if provider == "openrouter" and low_id.startswith("~"):
+        return False, "router alias is not a fixed caption model"
+    task = data.get("task") or data.get("task_name") or ""
+    if isinstance(task, dict):
+        task = task.get("name") or task.get("id") or ""
+    task_text = str(task).strip().lower()
+    flags = data.get("tags") or data.get("capabilities") or []
+    flag_text = " ".join(str(x) for x in flags) if isinstance(flags, (list, tuple, set)) else str(flags)
+    searchable = f"{task_text} {flag_text} {(data.get('description') or '')}".lower()
+    if any(x in searchable for x in (
+        "text-to-image", "text to image", "image generation", "image-generation",
+        "text to video", "text-to-video", "music generation", "speech-to-text",
+        "text-to-speech", "embedding", "content safety", "content-safety", "guardrail",
+        "moderation model", "router that", "auto router",
+    )):
+        return False, "model list task is not caption VLM"
+    inputs, outputs = _metadata_modalities(data)
+    if inputs is not None:
+        if "image" not in inputs:
+            return False, "model list input_modalities excludes image"
+        if outputs is not None and "text" not in outputs:
+            return False, "model list output_modalities excludes text"
+        return True, "model list input/output modalities"
+
+    capabilities = data.get("capabilities")
+    if isinstance(capabilities, dict) and "vision" in capabilities:
+        if not bool(capabilities.get("vision")):
+            return False, "model list capabilities.vision=false"
+        return True, "model list capabilities.vision=true"
+
+    if "image-to-text" in searchable or "vision" in searchable or "multimodal" in searchable:
+        return True, "model list task/capability metadata"
+    return _static_model_capability(provider_id, model_id)
 
 
 def is_known_non_vision_model(provider_id: str, model_id: str) -> bool:
@@ -415,9 +860,37 @@ def _known_vision_model_ids(provider_id: str) -> set[str]:
     ids = set(_KNOWN_VISION_MODEL_IDS.get(provider, ()))
     for profile in _ALL_PROFILES:
         binding = profile.binding_for(provider)
-        if binding is not None and binding.model_id:
+        if binding is None:
+            continue
+        if binding.model_id:
             ids.add(binding.model_id.strip().lower())
+        ids.update(a.strip().lower() for a in profile.aliases if a.strip())
+        if profile.canonical_model_id:
+            ids.add(profile.canonical_model_id.strip().lower())
     return ids
+
+
+def _profile_model_ids(profile: VlmModelProfile, provider_id: str) -> set[str]:
+    """プロファイルがこのプロバイダーで表す正規ID・別名を返す。"""
+    ids = {profile.canonical_model_id.strip().lower()} if profile.canonical_model_id else set()
+    ids.update(a.strip().lower() for a in profile.aliases if a.strip())
+    binding = profile.binding_for(provider_id)
+    if binding is not None and binding.model_id:
+        ids.add(binding.model_id.strip().lower())
+    return ids
+
+
+def _known_profile_for_model(provider_id: str, model_id: str) -> VlmModelProfile | None:
+    """既知IDを、同一IDを定義している出荷プロファイルへ結び付ける。"""
+    low = (model_id or "").strip().lower()
+    if not low:
+        return None
+    for candidate in _ALL_PROFILES:
+        if candidate.binding_for(provider_id) is None:
+            continue
+        if low in _profile_model_ids(candidate, provider_id):
+            return candidate
+    return None
 
 
 def is_vlm_model_id(profile: VlmModelProfile | None, provider_id: str,
@@ -430,9 +903,19 @@ def is_vlm_model_id(profile: VlmModelProfile | None, provider_id: str,
     """
     if not (model_id or "").strip() or is_known_non_vision_model(provider_id, model_id):
         return False
+    known_profile = _known_profile_for_model(provider_id, model_id)
     if profile is not None and profile.binding_for(provider_id) is not None:
+        if model_id.strip().lower() in _profile_model_ids(profile, provider_id):
+            return True
+        # 既知の別プロファイルIDを、同じ世代というだけで別モデルとして採用しない。
+        if known_profile is not None and known_profile.profile_id != profile.profile_id:
+            return False
         return looks_same_family(profile, model_id)
-    return (model_id or "").strip().lower() in _known_vision_model_ids(provider_id)
+    low = _base_catalog_model_id(model_id)
+    static_capability, _ = classify_model_capability(provider_id, model_id)
+    return (low in _known_vision_model_ids(provider_id)
+            or low in _DISCOVERED_VLM_MODEL_IDS.get((provider_id or "").strip().lower(), set())
+            or static_capability is True)
 
 
 def filter_vlm_model_ids(profile: VlmModelProfile | None, provider_id: str,

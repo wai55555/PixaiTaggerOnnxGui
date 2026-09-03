@@ -226,11 +226,35 @@ def test_settings_dialog_roundtrip():
     assert dlg._route_rows["builtin-openai"]["model_edit"].currentText() == "gpt-5.6-luna"
     assert dlg._route_rows["builtin-openai"]["conn"].protocol == "openai_responses"
     assert dlg._route_rows["builtin-openai"]["enabled"].isChecked() is False
+    for pid, model_id in (
+        ("openai-gpt-5.6-sol", "gpt-5.6-sol"),
+        ("openai-gpt-5.6-terra", "gpt-5.6-terra"),
+    ):
+        idx = dlg.profile_combo.findData(pid)
+        assert idx >= 0
+        dlg.profile_combo.setCurrentIndex(idx)
+        assert dlg._route_rows["builtin-openai"]["model_edit"].currentText() == model_id
     claude_i = dlg.profile_combo.findData("claude-haiku-4-5")
     dlg.profile_combo.setCurrentIndex(claude_i)
     assert dlg._route_rows["builtin-anthropic"]["model_edit"].currentText() == \
         "claude-haiku-4-5-20251001"
     assert dlg._route_rows["builtin-anthropic"]["conn"].protocol == "anthropic_messages"
+    for pid, model_id in (
+        ("claude-fable-5-1", "claude-fable-5-1"),
+        ("claude-fable-5", "claude-fable-5"),
+        ("claude-opus-5", "claude-opus-5"),
+        ("claude-opus-4-8", "claude-opus-4-8"),
+        ("claude-opus-4-7", "claude-opus-4-7"),
+        ("claude-opus-4-6", "claude-opus-4-6"),
+        ("claude-opus-4-5", "claude-opus-4-5-20251101"),
+        ("claude-sonnet-5", "claude-sonnet-5"),
+        ("claude-sonnet-4-6", "claude-sonnet-4-6"),
+        ("claude-sonnet-4-5", "claude-sonnet-4-5-20250929"),
+    ):
+        idx = dlg.profile_combo.findData(pid)
+        assert idx >= 0
+        dlg.profile_combo.setCurrentIndex(idx)
+        assert dlg._route_rows["builtin-anthropic"]["model_edit"].currentText() == model_id
     print("  settings dialog round-trip (incl. strict_identity <-> allow_declared_identity): OK")
 
 
@@ -282,11 +306,53 @@ def test_settings_dialog_keeps_unbound_route_discoverable():
         assert row["model_edit"].isEnabled()
         assert row["list_btn"].isEnabled()
         assert row["diag_btn"].isEnabled()
+        for cid, other_provider in (
+            ("builtin-nvidia", "nvidia"),
+            ("builtin-openai", "openai"),
+            ("builtin-anthropic", "anthropic"),
+        ):
+            other = dlg._route_rows[cid]
+            assert other["conn"].provider_id == other_provider
+            assert not other["enabled"].isEnabled()
+            assert other["model_edit"].isEnabled()
+            assert other["list_btn"].isEnabled()
+            assert other["register"].isEnabled()
+            assert other["diag_btn"].isEnabled()
 
         dlg._on_model_list("builtin-groq", [
             "groq/compound-mini", "qwen/qwen3.8-27b", "llama-3.3-70b-versatile",
         ])
         assert row["model_ids"] == ["qwen/qwen3.8-27b"]
+        from vlm_model_list import ModelCatalogEntry
+        dlg._on_model_list("builtin-groq", [
+            ModelCatalogEntry("provider/new-vision", True, True, "live metadata"),
+            ModelCatalogEntry("provider/text-only", False, True, "live metadata"),
+        ])
+        assert row["model_ids"] == ["provider/new-vision"]
+        row["model_edit"].setCurrentText("provider/new-vision")
+        dlg._on_model_id_edited("builtin-groq")
+        assert vlm_config.build_connection_map(
+            s.vlm, vlm_config.resolve_model_profile(s.vlm)
+        )["builtin-groq"].model_id == "provider/new-vision"
+        dlg._on_model_list("builtin-openai", [
+            "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "text-only-model",
+        ])
+        assert dlg._route_rows["builtin-openai"]["model_ids"] == [
+            "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"
+        ]
+        dlg._on_model_list("builtin-anthropic", [
+            "claude-fable-5-1", "claude-fable-5", "claude-opus-5",
+            "claude-opus-4-8", "claude-opus-4-7", "claude-opus-4-6",
+            "claude-opus-4-5-20251101", "claude-sonnet-5", "claude-sonnet-4-6",
+            "claude-sonnet-4-5-20250929", "claude-haiku-4-5-20251001",
+            "text-only-model",
+        ])
+        assert dlg._route_rows["builtin-anthropic"]["model_ids"] == [
+            "claude-fable-5-1", "claude-fable-5", "claude-opus-5",
+            "claude-opus-4-8", "claude-opus-4-7", "claude-opus-4-6",
+            "claude-opus-4-5-20251101", "claude-sonnet-5", "claude-sonnet-4-6",
+            "claude-sonnet-4-5-20250929", "claude-haiku-4-5-20251001",
+        ]
         row["model_edit"].setCurrentText("qwen/qwen3.8-27b")
         dlg._on_model_id_edited("builtin-groq")
         assert vlm_config.build_connection_map(
