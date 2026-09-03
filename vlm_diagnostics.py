@@ -20,9 +20,13 @@ from vlm_errors import VlmErrorReason
 from vlm_image import ImagePreprocessConfig, prepare_image
 from vlm_profiles import GenerationProfile, build_system_prompt, build_user_prompt
 from vlm_protocols import (
-    VlmCallSpec, apply_connection_auth, default_auth_key, extract_by_path, get_protocol,
+    VlmCallSpec, VlmHttpRequest, apply_connection_auth, default_auth_key, extract_by_path,
+    get_protocol,
 )
 from vlm_transport import RawHttpResponse, execute_http
+
+# Cloudflare のトークン検証はアカウント ID やモデルに依存しない専用エンドポイント。
+_CLOUDFLARE_TOKEN_VERIFY_URL = "https://api.cloudflare.com/client/v4/user/tokens/verify"
 
 
 class DiagStatus(str, Enum):
@@ -69,6 +73,51 @@ def _tiny_test_image_bytes() -> bytes:
     return buf.getvalue()
 
 
+def _first_cf_message(body: dict) -> str:
+    for coll in (body.get("errors"), body.get("messages")):
+        if isinstance(coll, list) and coll and isinstance(coll[0], dict):
+            msg = coll[0].get("message")
+            if msg:
+                return str(msg)
+    return ""
+
+
+def _cloudflare_token_probe(rep: DiagReport, api_key: str, *, verify_tls: bool = True) -> None:
+    """Cloudflare API トークンを専用エンドポイントで検証し、結果を Auth / HTTP response
+    項目へ反映する（api_key_dialog はこの2項目で保存可否を決める）。"""
+    req = VlmHttpRequest(method="GET", url=_CLOUDFLARE_TOKEN_VERIFY_URL,
+                         headers={"Authorization": f"Bearer {api_key}"})
+    raw = execute_http(req, connect_timeout=10.0, read_timeout=15.0, verify_tls=verify_tls)
+    if not isinstance(raw, RawHttpResponse):
+        rep.add("HTTP response", DiagStatus.FAIL, f"{raw.reason.value}: {raw.message}")
+        rep.add("Caption extraction", DiagStatus.SKIP, "no response to check")
+        return
+    rep.http_status = raw.status
+    body = raw.json_body if isinstance(raw.json_body, dict) else {}
+    result = body.get("result") if isinstance(body.get("result"), dict) else {}
+    token_status = str(result.get("status", "")).lower()
+    auth_item = rep.item("Auth")
+    if raw.status == 200 and body.get("success") is True and token_status in ("", "active"):
+        rep.add("HTTP response", DiagStatus.PASS, "token valid and active")
+        if auth_item is not None:
+            auth_item.status = DiagStatus.PASS
+            auth_item.detail = "Cloudflare token verified"
+    elif raw.status in (401, 403) or body.get("success") is False:
+        msg = _first_cf_message(body) or f"{raw.status} token rejected"
+        rep.add("HTTP response", DiagStatus.FAIL, msg)
+        if auth_item is not None:
+            auth_item.status = DiagStatus.FAIL
+            auth_item.detail = msg
+    elif raw.status == 200 and body.get("success") is True:
+        rep.add("HTTP response", DiagStatus.FAIL, f"token is {token_status or 'not active'}")
+        if auth_item is not None:
+            auth_item.status = DiagStatus.FAIL
+            auth_item.detail = f"token is {token_status or 'not active'}"
+    else:
+        rep.add("HTTP response", DiagStatus.WARN, f"HTTP {raw.status}")
+    rep.add("Caption extraction", DiagStatus.SKIP, "Cloudflare token-verify check only")
+
+
 def diagnose(conn: VlmConnection, api_key: str | None, *,
              do_live_request: bool = True) -> DiagReport:
     """接続を一括診断する。do_live_request=False なら実 HTTP を打たず静的検査だけ。"""
@@ -79,17 +128,23 @@ def diagnose(conn: VlmConnection, api_key: str | None, *,
     if parsed.scheme not in ("http", "https") or not parsed.netloc:
         rep.add("URL format", DiagStatus.FAIL, f"invalid base_url: {conn.base_url!r}")
         return rep
+    is_cloudflare = (conn.provider_id == "cloudflare"
+                     or (parsed.hostname or "").endswith("api.cloudflare.com"))
     # base_url にテンプレート変数（`{account_id}` 等）が残っていると、そのまま実
-    # リクエストして意味不明な 404 になる。ここで止めて原因を明示する
-    # （Cloudflare はアカウント ID 欄が空のとき起きる）。
+    # リクエストして意味不明な 404 になる。Cloudflare のアカウント ID 未設定だけは
+    # WARN 止まり（キー自体は下の専用エンドポイントで検証できる）。それ以外の
+    # 未展開変数は原因を明示して打ち切る。
     unresolved = re.findall(r"\{[A-Za-z_][A-Za-z0-9_]*\}", conn.base_url)
-    if unresolved:
-        detail = ("Cloudflare account ID is not set (fill the account ID field)"
-                  if "{account_id}" in unresolved
-                  else f"unresolved placeholder in base_url: {' '.join(unresolved)}")
-        rep.add("URL format", DiagStatus.FAIL, detail)
+    cf_missing_account = is_cloudflare and unresolved == ["{account_id}"]
+    if unresolved and not cf_missing_account:
+        rep.add("URL format", DiagStatus.FAIL,
+                f"unresolved placeholder in base_url: {' '.join(unresolved)}")
         return rep
-    if parsed.scheme == "http" and not _looks_localish(parsed.hostname or ""):
+    if cf_missing_account:
+        rep.add("URL format", DiagStatus.WARN,
+                "Cloudflare account ID is not set - the key can still be verified, "
+                "but this route will not run until the account ID field is filled")
+    elif parsed.scheme == "http" and not _looks_localish(parsed.hostname or ""):
         rep.add("URL format", DiagStatus.WARN, "plain http to a non-local host")
     else:
         rep.add("URL format", DiagStatus.PASS, conn.base_url)
@@ -142,6 +197,18 @@ def diagnose(conn: VlmConnection, api_key: str | None, *,
         rep.add("Auth", DiagStatus.PASS, f"{conn.auth.type} credential present")
     else:
         rep.add("Auth", DiagStatus.FAIL, f"{conn.auth.type} required but no credential found")
+
+    # 4b. Cloudflare はアカウント ID / モデルに依存しない専用のトークン検証
+    # エンドポイント（`GET /client/v4/user/tokens/verify`）でキーの有効性を確認する。
+    # chat/completions は account_id とモデルが揃わないと 404 になり「キーが通ったのか」を
+    # 判定できないため、キー登録・接続診断ともこちらを使う。
+    if is_cloudflare and conn.auth.type == "bearer" and api_key:
+        if do_live_request:
+            _cloudflare_token_probe(rep, api_key, verify_tls=conn.verify_tls)
+        else:
+            rep.add("HTTP response", DiagStatus.SKIP, "live request disabled")
+            rep.add("Caption extraction", DiagStatus.SKIP, "live request disabled")
+        return rep
 
     # 5. Request build
     try:

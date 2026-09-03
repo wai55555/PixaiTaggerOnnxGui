@@ -239,15 +239,46 @@ def test_diagnostics_static():
     rep2 = D.diagnose(bad, api_key=None, do_live_request=False)
     assert rep2.overall is D.DiagStatus.FAIL
 
-    # unresolved {account_id} -> single URL-format FAIL, stop before the live request
-    # (Cloudflare with an empty account-id field; otherwise a bogus 404 later).
-    tmpl = VlmConnection("c", "c", ConnectionKind.BUILTIN, "openai_chat_completions",
-                         "https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/v1",
-                         "@cf/x", auth=AuthSpec(type="bearer", secret_ref="x"))
+    # a non-cloudflare template hole -> single URL-format FAIL, stop before any probe
+    tmpl = VlmConnection("t", "t", ConnectionKind.CUSTOM_EXTERNAL, "openai_chat_completions",
+                         "https://x.example/{region}/v1", "m",
+                         auth=AuthSpec(type="bearer", secret_ref="x"))
     rep3 = D.diagnose(tmpl, api_key="k", do_live_request=True)
     assert [i.name for i in rep3.items] == ["URL format"]
-    assert rep3.items[0].status is D.DiagStatus.FAIL and "account ID" in rep3.items[0].detail
+    assert rep3.items[0].status is D.DiagStatus.FAIL and "region" in rep3.items[0].detail
     print("  diagnostics static checks: OK")
+
+
+def test_diagnostics_cloudflare_token_verify(monkeypatch):
+    import vlm_diagnostics as D
+    from vlm_transport import RawHttpResponse
+
+    cf = VlmConnection("builtin-cloudflare", "Cloudflare", ConnectionKind.BUILTIN,
+                       "openai_chat_completions",
+                       "https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/v1",
+                       "@cf/x", auth=AuthSpec(type="bearer", secret_ref="x"),
+                       provider_id="cloudflare")
+
+    # valid + active token -> Auth PASS, HTTP response PASS, account-id only a WARN
+    monkeypatch.setattr(D, "execute_http", lambda *a, **k: RawHttpResponse(
+        200, {}, {"success": True, "result": {"status": "active"}}, ""))
+    rep = D.diagnose(cf, api_key="cfut_ok", do_live_request=True)
+    names = {i.name: i for i in rep.items}
+    assert names["URL format"].status is D.DiagStatus.WARN
+    assert names["Auth"].status is D.DiagStatus.PASS
+    assert names["HTTP response"].status is D.DiagStatus.PASS
+    assert rep.http_status == 200
+    assert "Request build" not in names   # generation probe skipped for cloudflare
+
+    # rejected token -> Auth FAIL, http_status 401 (api_key_dialog treats as "key wrong")
+    monkeypatch.setattr(D, "execute_http", lambda *a, **k: RawHttpResponse(
+        401, {}, {"success": False, "errors": [{"message": "Invalid API Token"}]}, ""))
+    rep2 = D.diagnose(cf, api_key="cfut_bad", do_live_request=True)
+    n2 = {i.name: i for i in rep2.items}
+    assert n2["Auth"].status is D.DiagStatus.FAIL
+    assert n2["HTTP response"].status is D.DiagStatus.FAIL
+    assert rep2.http_status == 401
+    print("  cloudflare token verify: valid->PASS, bad->FAIL: OK")
 
 
 def test_diagnostics_live_extraction_branches():
