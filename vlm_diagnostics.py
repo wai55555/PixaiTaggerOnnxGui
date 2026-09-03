@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import io
+import re
 import socket
 import ssl
 from dataclasses import dataclass, field
@@ -75,14 +76,23 @@ def diagnose(conn: VlmConnection, api_key: str | None, *,
 
     # 1. URL / 設定値の形式
     parsed = urlparse(conn.base_url)
-    if parsed.scheme in ("http", "https") and parsed.netloc:
-        if parsed.scheme == "http" and not _looks_localish(parsed.hostname or ""):
-            rep.add("URL format", DiagStatus.WARN, "plain http to a non-local host")
-        else:
-            rep.add("URL format", DiagStatus.PASS, conn.base_url)
-    else:
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
         rep.add("URL format", DiagStatus.FAIL, f"invalid base_url: {conn.base_url!r}")
         return rep
+    # base_url にテンプレート変数（`{account_id}` 等）が残っていると、そのまま実
+    # リクエストして意味不明な 404 になる。ここで止めて原因を明示する
+    # （Cloudflare はアカウント ID 欄が空のとき起きる）。
+    unresolved = re.findall(r"\{[A-Za-z_][A-Za-z0-9_]*\}", conn.base_url)
+    if unresolved:
+        detail = ("Cloudflare account ID is not set (fill the account ID field)"
+                  if "{account_id}" in unresolved
+                  else f"unresolved placeholder in base_url: {' '.join(unresolved)}")
+        rep.add("URL format", DiagStatus.FAIL, detail)
+        return rep
+    if parsed.scheme == "http" and not _looks_localish(parsed.hostname or ""):
+        rep.add("URL format", DiagStatus.WARN, "plain http to a non-local host")
+    else:
+        rep.add("URL format", DiagStatus.PASS, conn.base_url)
     if not conn.model_id:
         rep.add("Model ID", DiagStatus.FAIL, "model_id is empty")
     else:

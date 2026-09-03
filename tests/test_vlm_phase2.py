@@ -238,6 +238,15 @@ def test_diagnostics_static():
                         "not-a-url", "m", auth=AuthSpec(type="bearer", secret_ref="x"))
     rep2 = D.diagnose(bad, api_key=None, do_live_request=False)
     assert rep2.overall is D.DiagStatus.FAIL
+
+    # unresolved {account_id} -> single URL-format FAIL, stop before the live request
+    # (Cloudflare with an empty account-id field; otherwise a bogus 404 later).
+    tmpl = VlmConnection("c", "c", ConnectionKind.BUILTIN, "openai_chat_completions",
+                         "https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/v1",
+                         "@cf/x", auth=AuthSpec(type="bearer", secret_ref="x"))
+    rep3 = D.diagnose(tmpl, api_key="k", do_live_request=True)
+    assert [i.name for i in rep3.items] == ["URL format"]
+    assert rep3.items[0].status is D.DiagStatus.FAIL and "account ID" in rep3.items[0].detail
     print("  diagnostics static checks: OK")
 
 
