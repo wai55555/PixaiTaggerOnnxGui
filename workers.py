@@ -14,7 +14,10 @@ from constants import (
 )
 from app_settings import AppSettings, update_model_verification_status
 from get_pointer_huggingface import get_model_info_from_pointer
-from tagging_core import setup_tagger_from_settings, process_image_loop, get_image_paths_recursive
+from tagging_core import (
+    setup_tagger_from_settings, process_image_loop, get_image_paths_recursive,
+    FileChange, OverwriteDecision,
+)
 import model_registry
 import caption_core
 
@@ -393,14 +396,21 @@ class TaggerThreadWorker(QObject):
     finished = Signal()
     running_state_changed = Signal(bool)
     reload_image_list_signal = Signal()
-    def __init__(self, settings: AppSettings, overwrite_checker: Callable[[Path], bool], get_string: GetString | None = None, selected_file_path: Path | None = None):
+    # バッチ1回で書き換えたファイル群。MainWindow 側で CompositeUndoAction にまとめる。
+    batch_completed = Signal(list)
+    # 進捗（done, total）。ルーチンの「処理中／成功」ログを GUI へ垂れ流す代わりに
+    # これを毎画像発行し、GUI 側で throttle する（issue #10: Qt キュー飽和対策）。
+    progress_update = Signal(int, int)
+    def __init__(self, settings: AppSettings, decision_requester: Callable[[Path], OverwriteDecision] | None, get_string: GetString | None = None, selected_file_path: Path | None = None):
         super().__init__()
         self._settings: AppSettings = settings
-        self._overwrite_checker = overwrite_checker
+        # ASK モードのときだけ呼ばれる GUI 応答ブリッジ（design.md 3.1節）。
+        # ASK 以外ではワーカーからこれを呼ぶことはない。
+        self._decision_requester = decision_requester
         self._selected_file_path = selected_file_path
         self._stop_event = threading.Event()
         self.get_string: GetString = get_string if get_string else default_get_string_fallback
-    
+
     def stop(self):
         write_debug_log(f"DEBUG: {type(self).__name__}.stop() called.")
         self._stop_event.set()
@@ -458,15 +468,17 @@ class TaggerThreadWorker(QObject):
                 write_debug_log(str(self.get_string("Workers", "TaggerThreadWorker_Core_Log", message=message)), self.get_string)
                 self.log_message.emit(message, color)
 
-            process_image_loop(
+            changed_files = process_image_loop(
                 tagger=tagger,
                 image_paths=image_paths,
                 settings=settings_dict,
-                overwrite_checker=self._overwrite_checker,
+                decision_resolver=self._decision_requester,
                 log_gui=log_to_gui,
                 stop_checker=self.is_stopped,
-                get_string=self.get_string
+                get_string=self.get_string,
+                progress_cb=self.progress_update.emit,
             )
+            self.batch_completed.emit(changed_files)
             
         except Exception as e:
             import traceback
@@ -491,11 +503,17 @@ class CaptionerThreadWorker(QObject):
     finished = Signal()
     running_state_changed = Signal(bool)
     reload_image_list_signal = Signal()
+    # バッチ1回で書き換えたファイル群。MainWindow 側で CompositeUndoAction にまとめる。
+    batch_completed = Signal(list)
+    # 進捗（done, total）。GUI 側で throttle する（issue #10: Qt キュー飽和対策）。
+    progress_update = Signal(int, int)
 
-    def __init__(self, settings: AppSettings, overwrite_checker: Callable[[Path], bool], get_string: GetString | None = None, selected_file_path: Path | None = None):
+    def __init__(self, settings: AppSettings, decision_requester: Callable[[Path], OverwriteDecision] | None, get_string: GetString | None = None, selected_file_path: Path | None = None):
         super().__init__()
         self._settings: AppSettings = settings
-        self._overwrite_checker = overwrite_checker
+        # ASK モードのときだけ呼ばれる GUI 応答ブリッジ（design.md 3.1節）。
+        # ASK 以外ではワーカーからこれを呼ぶことはない。
+        self._decision_requester = decision_requester
         self._selected_file_path = selected_file_path
         self._stop_event = threading.Event()
         self.get_string: GetString = get_string if get_string else default_get_string_fallback
@@ -558,15 +576,17 @@ class CaptionerThreadWorker(QObject):
             def log_to_gui(message: str, color: str):
                 self.log_message.emit(message, color)
 
-            caption_core.process_caption_loop(
+            changed_files = caption_core.process_caption_loop(
                 captioner=captioner,
                 settings=settings_dict,
                 image_paths=image_paths,
-                overwrite_checker=self._overwrite_checker,
+                decision_resolver=self._decision_requester,
                 log_gui=log_to_gui,
                 stop_checker=self.is_stopped,
                 get_string=self.get_string,
+                progress_cb=self.progress_update.emit,
             )
+            self.batch_completed.emit(changed_files)
 
         except Exception as e:
             import traceback

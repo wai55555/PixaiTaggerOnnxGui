@@ -1,4 +1,5 @@
 import configparser
+import os
 from typing import Any
 from dataclasses import dataclass, field, is_dataclass, fields
 from pathlib import Path
@@ -70,6 +71,13 @@ class Limits:
 class Behavior:
     enable_solo_character_limit: bool
     convert_underscore_to_space: bool
+    # 既存 .txt が存在する場合の処理方針: ASK / OVERWRITE / SKIP / APPEND。
+    # 既定値により、このキーを持たない旧 config.ini でも従来どおり動作する。
+    existing_file_mode: str = "ASK"
+    # ONNX Runtime の intra-op スレッド数。0 = 既定（全物理コア＝このオプション追加前と同じ）。
+    # 正の N を指定すると N に制限し、大量枚数のタグ付けでマシンが張り付くのを避けられる。
+    # GUI には出さない隠し設定（config.ini を手で編集する人向け）。
+    onnx_threads: int = 0
 
 @dataclass
 class Window:
@@ -82,9 +90,40 @@ class Model:
     model_id: str = "pixai-tagger-v0.9"
     verified_models: dict[str, bool] = field(default_factory=dict)
 
+# 生成キャプションを既存 .txt の内容とどう組み合わせるか。
+# danbooru タグ＋自然言語を1ファイルに同居させるモデルがあるため、単純な上書き以外に
+# 前後への挿入が必要になる（2026-08-31 ユーザー要望）。
+CAPTION_PLACEMENTS: tuple[str, ...] = ("PREPEND", "APPEND", "OVERWRITE")
+
+
+def parse_caption_placement(raw: str) -> str:
+    """config.ini の文字列を検証する。不正値は OVERWRITE（従来動作）へフォールバック。"""
+    value = str(raw).strip().upper()
+    return value if value in CAPTION_PLACEMENTS else "OVERWRITE"
+
+
+def _parse_onnx_threads(raw: str) -> int:
+    """[Behavior] onnx_threads を検証する。手書きの想定なので空文字・非数値・小数・
+    負値は全て 0（= ONNX Runtime 既定 = 全コア）へフォールバックする。
+
+    実コア数を超える値をそのまま ONNX Runtime の SessionOptions.intra_op_num_threads に
+    渡すとセッション生成に失敗しうる（タガー/キャプショナーが起動しなくなる）ので、
+    実コア数（取得できなければ 32）でクランプする（PR#16 レビュー指摘）。"""
+    try:
+        n = int(str(raw).strip())
+    except (TypeError, ValueError):
+        return 0
+    if n <= 0:
+        return 0
+    return min(n, os.cpu_count() or 32)
+
+
 @dataclass
 class Caption:
     task: str = "MORE_DETAILED_CAPTION"
+    # PREPEND / APPEND / OVERWRITE。既定は OVERWRITE で、この項目を持たない
+    # 旧 config.ini はこれまでと同じ挙動になる。
+    placement: str = "OVERWRITE"
 
 @dataclass
 class Debug:
@@ -112,10 +151,10 @@ def get_default_config() -> configparser.ConfigParser:
         'Paths': {'input_dir': str(BASE_DIR / "inputs"), 'model_dir': MODEL_DIR_NAME, 'model_filename': 'model.onnx'},
         'Thresholds': {'general': '0.40', 'character': '0.65', 'rating': '0.50', 'copyright': '0.50', 'artist': '0.50', 'meta': '0.50', 'model': '0.50', 'quality': '0.50', 'year': '0.50', 'touched': ''},
         'Limits': {'general': '55', 'character': '1', 'rating': '0', 'copyright': '0', 'artist': '0', 'meta': '0', 'model': '0', 'quality': '0', 'year': '0', 'touched': ''},
-        'Behavior': {'enable_solo_character_limit': 'True', 'convert_underscore_to_space': 'True'},
+        'Behavior': {'enable_solo_character_limit': 'True', 'convert_underscore_to_space': 'True', 'existing_file_mode': 'ASK', 'onnx_threads': '0'},
         'Window': {'geometry': '986x976+50+50', 'tag_display_rows': '6', 'tag_display_cols': '5'},
         'Model': {'model_id': 'pixai-tagger-v0.9', 'verified_models': ''},
-        'Caption': {'task': 'MORE_DETAILED_CAPTION'},
+        'Caption': {'task': 'MORE_DETAILED_CAPTION', 'placement': 'OVERWRITE'},
         'Debug': {'debug_log': 'False'},
         'General': {'language_code': ''}
     }
@@ -204,7 +243,9 @@ def load_settings(config: configparser.ConfigParser) -> AppSettings:
         ),
         behavior=Behavior(
             enable_solo_character_limit=config.getboolean('Behavior', 'enable_solo_character_limit', fallback=True),
-            convert_underscore_to_space=config.getboolean('Behavior', 'convert_underscore_to_space', fallback=True)
+            convert_underscore_to_space=config.getboolean('Behavior', 'convert_underscore_to_space', fallback=True),
+            existing_file_mode=config.get('Behavior', 'existing_file_mode', fallback='ASK'),
+            onnx_threads=_parse_onnx_threads(config.get('Behavior', 'onnx_threads', fallback='0'))
         ),
         window=Window(
             geometry=config.get('Window', 'geometry', fallback='986x976+50+50'),
@@ -216,7 +257,8 @@ def load_settings(config: configparser.ConfigParser) -> AppSettings:
             verified_models=_parse_verified_models(config)
         ),
         caption=Caption(
-            task=config.get('Caption', 'task', fallback='MORE_DETAILED_CAPTION')
+            task=config.get('Caption', 'task', fallback='MORE_DETAILED_CAPTION'),
+            placement=parse_caption_placement(config.get('Caption', 'placement', fallback='OVERWRITE'))
         ),
         debug=Debug(
             debug_log=config.getboolean('Debug', 'debug_log', fallback=False) # Default is False for debug_log

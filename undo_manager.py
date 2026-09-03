@@ -4,12 +4,39 @@ Manages the history of tag editing operations and provides undo/redo functionali
 """
 
 from __future__ import annotations
+import os
+import sys
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
 from utils import write_debug_log
+
+
+def _long_path_str(path: Path) -> str:
+    """Windows の MAX_PATH（260文字）制限を避ける `\\\\?\\` プレフィックス付き絶対パス。
+
+    tagging_core.process_image_loop / caption_core.process_caption_loop の書き込みと
+    同じ狙い（長いパスでも書けるのに undo/redo だけ素の Path 経由で失敗する非対称を防ぐ）。
+
+    - `os.path.abspath()` を使う（`Path.resolve()` ではない）: `\\\\?\\` パスは OS がそのまま
+      使うので `..` の正規化は必要だが、**symlink は解決しない**。resolve() だと、新規
+      作成した出力がその後 symlink に差し替えられていた場合、undo の unlink が
+      リンク先の実体を消してしまう（PR#16 レビュー指摘）。
+    - UNC パス（`\\\\server\\share\\...`）は `\\\\?\\UNC\\server\\share\\...` の形にする必要が
+      あり、単純に `\\\\?\\` を前置すると不正なパスになる（PR#16 レビュー指摘）。
+    - 既に `\\\\?\\` 付き（拡張長パス）が渡された場合はそのまま返す。二重に前置すると
+      `\\\\?\\UNC\\?\\...` のような不正パスになる（PR#16 レビュー第2ラウンド指摘）。
+    """
+    p = os.path.abspath(path)
+    if sys.platform != "win32":
+        return p
+    if p.startswith("\\\\?\\"):
+        return p
+    if p.startswith("\\\\"):
+        return "\\\\?\\UNC" + p[1:]
+    return "\\\\?\\" + p
 
 
 class GetString(Protocol):
@@ -205,6 +232,12 @@ class EditCaptionAction(UndoAction):
     new_text: str
     file_existed_before: bool = True
 
+    def __post_init__(self) -> None:
+        # 作成時に絶対パスへ固定する（理由は _FileSnapshotAction.__post_init__ と同じ。
+        # このクラスは _long_path_str を通さず直接 write_text / unlink するので、相対の
+        # まま持つと undo 時点の CWD 基準で別ファイルに当たりうる）。
+        self.file_path = Path(os.path.abspath(self.file_path))
+
     def _write(self, text: str) -> bool:
         try:
             self.file_path.write_text(text, encoding='utf-8')
@@ -230,6 +263,98 @@ class EditCaptionAction(UndoAction):
 
     def description(self) -> str:
         return "キャプションの編集"
+
+
+@dataclass
+class _FileSnapshotAction(UndoAction):
+    """全文スナップショットによる undo/redo の共通実装（PR#16 レビュー指摘: 従来
+    OverwriteFileAction と AppendTagsActionV2 が完全に同じ実装を重複させていた）。
+
+    previous_content が None のときは「変更前にファイルが存在しなかった」ことを表し、
+    undo はファイル削除まで行う。undo / redo とも全文スナップショットの復元で対称。
+    `description()` はサブクラスで実装する（抽象のまま = 直接インスタンス化はしない）。
+    """
+    file_path: Path
+    previous_content: str | None
+    new_content: str
+
+    def __post_init__(self) -> None:
+        # 作成時に絶対パスへ固定する。undo/redo はずっと後に走りうるので、
+        # 相対パス（利用者が相対の入力フォルダを指定した場合など）のまま持つと
+        # `_long_path_str()` の `os.path.abspath()` が「undo した時点の CWD」基準で
+        # 解決してしまい、別ファイルを書き換え／削除しかねない（PR#16 レビュー: coderabbit）。
+        # `resolve()` ではなく `os.path.abspath()`: symlink を解決しない点を _long_path_str と揃える。
+        self.file_path = Path(os.path.abspath(self.file_path))
+
+    def _write(self, text: str) -> bool:
+        try:
+            with open(_long_path_str(self.file_path), 'w', encoding='utf-8') as f:
+                f.write(text)
+            return True
+        except Exception as e:
+            write_debug_log(f"{type(self).__name__} write failed for {self.file_path}: {e}")
+            return False
+
+    def undo(self) -> bool:
+        if self.previous_content is None:
+            try:
+                os.unlink(_long_path_str(self.file_path))
+            except FileNotFoundError:
+                pass
+            except Exception as e:
+                write_debug_log(f"{type(self).__name__} undo unlink failed for {self.file_path}: {e}")
+                return False
+            return True
+        return self._write(self.previous_content)
+
+    def redo(self) -> bool:
+        return self._write(self.new_content)
+
+
+@dataclass
+class OverwriteFileAction(_FileSnapshotAction):
+    """タグ付けバッチによる1ファイルの上書き / 新規作成（spec.md 4.1節）。"""
+
+    def description(self) -> str:
+        return f"「{self.file_path.name}」の上書き"
+
+
+@dataclass
+class AppendTagsActionV2(_FileSnapshotAction):
+    """タグ付けバッチによる1ファイルへの追記（spec.md 4.1節）。
+
+    undo/redo は _FileSnapshotAction 共通の全文スナップショット方式で行い、
+    added_tags は説明文・ログ用のメタ情報として保持する。
+    """
+    added_tags: list[str]
+
+    def description(self) -> str:
+        return f"「{self.file_path.name}」へ{len(self.added_tags)}件のタグを追記"
+
+
+@dataclass
+class CompositeUndoAction(UndoAction):
+    """バッチ1回分の複数ファイル変更を、Undo履歴上の1エントリとして扱う（spec.md 4.2節）。
+
+    undo は逆順、redo は元の順で実行する。max_history=50 が大量画像処理で
+    即座に消費されるのを防ぐのが目的。
+    """
+    actions: list[UndoAction]
+    label: str = ""
+
+    def undo(self) -> bool:
+        # 逆順に戻す。1つでも成功していれば「元に戻した」とみなす（部分成功を許容）
+        results = [action.undo() for action in reversed(self.actions)]
+        return any(results)
+
+    def redo(self) -> bool:
+        results = [action.redo() for action in self.actions]
+        return any(results)
+
+    def description(self) -> str:
+        if self.label:
+            return self.label
+        return f"タグ付けによる{len(self.actions)}ファイルの変更"
 
 
 @dataclass

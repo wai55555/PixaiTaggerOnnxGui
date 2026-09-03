@@ -6,7 +6,7 @@ from PySide6.QtCore import (
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout,
     QGridLayout, QGroupBox, QLabel, QLineEdit, QPushButton,
-    QTextEdit, QSizePolicy, QSplitter, QStackedWidget, QComboBox
+    QTextEdit, QSizePolicy, QSplitter, QStackedWidget, QComboBox, QButtonGroup
 )
 from PySide6.QtGui import (
     QIcon
@@ -74,7 +74,6 @@ class Ui_MainWindow(object):
         main_window.grid_view_widget.tag_hovered.connect(main_window._highlight_files_for_tag)  # type: ignore
         main_window.grid_view_widget.tag_hover_cleared.connect(main_window._clear_highlight)  # type: ignore
         main_window._resize_timer.timeout.connect(main_window._handle_resize_debounced)  # type: ignore
-        main_window.overwrite_dialog_requested.connect(main_window._handle_overwrite_request)
 
     def _create_main_view(self, main_window: 'MainWindow') -> QWidget:
         """Constructs the main view widget with its layout and components."""
@@ -233,6 +232,33 @@ class Ui_MainWindow(object):
         main_window.caption_text_edit.setPlaceholderText(main_window.locale_manager.get_string("MainWindow", "Caption_Placeholder"))
         main_window.caption_text_edit.setVisible(False)
         tag_panel.addWidget(main_window.caption_text_edit)
+
+        # 生成キャプションを既存 .txt にどう入れるか（前に追加 / 後に追加 / 上書き）。
+        # 排他のトグルボタンで、押した1つだけが押しっぱなしになる。danbooru タグと
+        # 自然言語を1ファイルに同居させるモデル向け（2026-08-31 ユーザー要望）。
+        main_window.caption_placement_widget = QWidget()
+        placement_row = QHBoxLayout(main_window.caption_placement_widget)
+        placement_row.setContentsMargins(0, 0, 0, 0)
+        main_window.caption_placement_group = QButtonGroup(main_window)
+        main_window.caption_placement_group.setExclusive(True)
+        main_window.caption_placement_buttons = {}
+        for key, label_key in (("PREPEND", "Caption_Placement_Prepend"),
+                               ("APPEND", "Caption_Placement_Append"),
+                               ("OVERWRITE", "Caption_Placement_Overwrite")):
+            btn = QPushButton(main_window.locale_manager.get_string("MainWindow", label_key))
+            btn.setCheckable(True)
+            btn.setToolTip(main_window.locale_manager.get_string("MainWindow", f"{label_key}_Tooltip"))
+            btn.setProperty("placement", key)
+            main_window.caption_placement_group.addButton(btn)
+            main_window.caption_placement_buttons[key] = btn
+            placement_row.addWidget(btn)
+        placement_row.addStretch(1)
+        current_placement = str(main_window.settings.caption.placement).upper()
+        main_window.caption_placement_buttons.get(
+            current_placement, main_window.caption_placement_buttons["OVERWRITE"]).setChecked(True)
+        main_window.caption_placement_group.buttonClicked.connect(main_window._on_caption_placement_changed)  # type: ignore
+        main_window.caption_placement_widget.setVisible(False)
+        tag_panel.addWidget(main_window.caption_placement_widget)
 
         main_window.task_combo = QComboBox()
         main_window.task_combo.setToolTip(main_window.locale_manager.get_string("MainWindow", "Task_Combo_Tooltip"))
@@ -399,7 +425,31 @@ class Ui_MainWindow(object):
         layout.addWidget(thresh_group, 1)
         layout.addWidget(limit_group, 1)
         layout.addWidget(main_window.category_settings_button, 0)
-        return widget
+
+        # 既存 .txt の扱い（ASK / OVERWRITE / SKIP / APPEND）。スライダー行は既に
+        # 混み合っているので、独立した行に置く（spec.md 6.1節）。
+        outer = QVBoxLayout()
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.addWidget(widget)
+
+        mode_row = QHBoxLayout()
+        mode_row.addWidget(QLabel(main_window.locale_manager.get_string("MainWindow", "Existing_Mode_Label")))
+        main_window.existing_mode_combo = QComboBox()
+        for key, label_key in (("ASK", "Existing_Mode_Ask"), ("OVERWRITE", "Existing_Mode_Overwrite"),
+                               ("SKIP", "Existing_Mode_Skip"), ("APPEND", "Existing_Mode_Append")):
+            main_window.existing_mode_combo.addItem(
+                main_window.locale_manager.get_string("MainWindow", label_key), key)
+        current = str(main_window.settings.behavior.existing_file_mode).upper()
+        idx = main_window.existing_mode_combo.findData(current)
+        main_window.existing_mode_combo.setCurrentIndex(idx if idx >= 0 else 0)
+        main_window.existing_mode_combo.currentIndexChanged.connect(main_window._on_existing_mode_changed)  # type: ignore
+        mode_row.addWidget(main_window.existing_mode_combo)
+        mode_row.addStretch(1)
+        outer.addLayout(mode_row)
+
+        container = QWidget()
+        container.setLayout(outer)
+        return container
 
     def _create_log_group(self, main_window: 'MainWindow') -> QGroupBox:
         """Creates the group for the execution log."""

@@ -9,7 +9,10 @@ from typing import Any, Callable, TYPE_CHECKING
 
 from utils import log_dbg, GetString
 from app_settings import AppSettings
-from tagging_core import _normalize_np_chw, BASE_DIR
+from tagging_core import (
+    _normalize_np_chw, BASE_DIR, ExistingFileMode, FileChange, OverwriteDecision,
+    make_cpu_session_options, parse_existing_file_mode,
+)
 
 if TYPE_CHECKING:
     import numpy as np
@@ -83,7 +86,8 @@ class Florence2Captioner:
     Greedy decoding only - no beam search (design.md 8.2節, spec.md 7章).
     """
 
-    def __init__(self, config: CaptionerConfig, get_string: GetString | None = None):
+    def __init__(self, config: CaptionerConfig, get_string: GetString | None = None,
+                 intra_op_num_threads: int = 0):
         self.get_string = get_string if get_string else _get_string
         self.config = config
 
@@ -92,11 +96,15 @@ class Florence2Captioner:
 
         onnx_dir = config.model_dir / "onnx"
         providers = ["CPUExecutionProvider"]
+        # config.ini [Behavior] onnx_threads。0 なら None（ORT 既定 = 全コア）。
+        so = make_cpu_session_options(intra_op_num_threads)
+        if so is not None:
+            log_dbg(f"Florence2Captioner: intra_op_num_threads capped at {so.intra_op_num_threads} ([Behavior] onnx_threads)")
         log_dbg(self.get_string("CaptionCore", "Info_Loading_Sessions", model_dir=str(config.model_dir)))
-        self.vision_encoder = ort.InferenceSession(str(onnx_dir / "vision_encoder_quantized.onnx"), providers=providers)
-        self.embed_tokens = ort.InferenceSession(str(onnx_dir / "embed_tokens_quantized.onnx"), providers=providers)
-        self.encoder_model = ort.InferenceSession(str(onnx_dir / "encoder_model_quantized.onnx"), providers=providers)
-        self.decoder_model_merged = ort.InferenceSession(str(onnx_dir / "decoder_model_merged_quantized.onnx"), providers=providers)
+        self.vision_encoder = ort.InferenceSession(str(onnx_dir / "vision_encoder_quantized.onnx"), sess_options=so, providers=providers)
+        self.embed_tokens = ort.InferenceSession(str(onnx_dir / "embed_tokens_quantized.onnx"), sess_options=so, providers=providers)
+        self.encoder_model = ort.InferenceSession(str(onnx_dir / "encoder_model_quantized.onnx"), sess_options=so, providers=providers)
+        self.decoder_model_merged = ort.InferenceSession(str(onnx_dir / "decoder_model_merged_quantized.onnx"), sess_options=so, providers=providers)
         self._decoder_output_names = [o.name for o in self.decoder_model_merged.get_outputs()]
         self.tokenizer = Tokenizer.from_file(str(config.model_dir / "tokenizer.json"))
         log_dbg(self.get_string("CaptionCore", "Info_Sessions_Loaded"))
@@ -223,8 +231,11 @@ def setup_captioner_from_settings(app_settings: AppSettings, get_string: GetStri
         settings_dict: dict[str, Any] = {
             "INPUT_DIR": Path(app_settings.paths.input_dir),
             "TASK": app_settings.caption.task,
+            "EXISTING_FILE_MODE": parse_existing_file_mode(app_settings.behavior.existing_file_mode, _get_string_internal),
+            "CAPTION_PLACEMENT": app_settings.caption.placement,
         }
-        captioner = Florence2Captioner(captioner_config, get_string=_get_string_internal)
+        captioner = Florence2Captioner(captioner_config, get_string=_get_string_internal,
+                                       intra_op_num_threads=app_settings.behavior.onnx_threads)
         return captioner, settings_dict
     except Exception as e:
         log_dbg(f"Error during Captioner initialization: {type(e).__name__}: {e}")
@@ -232,26 +243,74 @@ def setup_captioner_from_settings(app_settings: AppSettings, get_string: GetStri
         return None, {}
 
 
+def combine_caption(existing: str, caption: str, placement: str) -> str:
+    """生成キャプションを既存内容と組み合わせる（2026-08-31 ユーザー要望）。
+
+    danbooru タグ＋自然言語を1つの .txt に同居させるモデルがあるため、上書き以外に
+    「前に追加」「後に追加」が要る。区切りは学習用キャプションの慣習に合わせて ", "。
+    既存が空なら生成文のみ、生成文が空なら既存のみを返す。
+    """
+    existing = existing.strip().strip(",").strip()
+    caption = caption.strip()
+    if not existing:
+        return caption
+    if not caption:
+        # 生成文が空なら、OVERWRITE でも既存を残す（空文字で潰さない）。docstring どおり。
+        return existing
+    if placement == "OVERWRITE":
+        return caption
+    if placement == "PREPEND":
+        return f"{caption}, {existing}"
+    return f"{existing}, {caption}"
+
+
 def process_caption_loop(
     captioner: Florence2Captioner,
     settings: dict[str, Any],
     image_paths: list[Path],
-    overwrite_checker: Callable[[Path], bool] | None,
+    decision_resolver: Callable[[Path], OverwriteDecision] | None,
     log_gui: Callable[[str, str], None] | None,
     stop_checker: Callable[[], bool] | None,
     get_string: GetString | None,
-):
-    """Captioner counterpart of tagging_core.process_image_loop."""
+    progress_cb: Callable[[int, int], None] | None = None,
+) -> list[FileChange]:
+    """Captioner counterpart of tagging_core.process_image_loop.
+
+    既存ファイルの扱い（ASK / OVERWRITE / SKIP / APPEND）は「そのファイルに書くか」
+    だけを決める。実際にどう書くか — 生成キャプションを既存内容の前に入れるか、後ろに
+    足すか、丸ごと置き換えるか — は CAPTION_PLACEMENT が担当する（combine_caption）。
+    """
 
     def core_log_gui(message: str, color: str = "black") -> None:
         if log_gui:
             log_gui(message, color)
 
     _get_string_internal = get_string if get_string else _get_string
+    mode: ExistingFileMode = settings.get("EXISTING_FILE_MODE", ExistingFileMode.ASK)
+    placement: str = settings.get("CAPTION_PLACEMENT", "OVERWRITE")
+    # 「既存ファイルの扱い」で APPEND（＝常に追記）を選んでいるのに、キャプション挿入位置が
+    # 既定の OVERWRITE のままだと、combine_caption が既存キャプションを丸ごと捨ててしまう
+    # （PR#16 レビュー指摘: ラベルは「追記」なのに実際は上書き）。矛盾する組み合わせでは
+    # 明示的な「追記」意図を優先し、既存内容を壊さない APPEND として扱う。PREPEND は尊重。
+    if mode is ExistingFileMode.APPEND and placement == "OVERWRITE":
+        placement = "APPEND"
+    changed_files: list[FileChange] = []
     task_key = settings.get("TASK", captioner.config.default_task)
     task_prompt = captioner.config.tasks.get(task_key, captioner.config.tasks.get(captioner.config.default_task, "Describe with a paragraph what is shown in the image."))
+    total = len(image_paths)
+    # issue #10: 1画像=1 GUI ログだと大量画像で Qt キューが飽和する。個々の skip / 成功は
+    # debug log だけに残し、GUI へは末尾のサマリ1行だけ出す。
+    n_skipped = 0
+    n_errors = 0
+    n_unchanged = 0
+    # progress_cb もクロススレッド signal なので毎画像発行を避け、全体で ~200 回に間引く
+    # （PR#16 レビュー指摘）。最後の1枚は必ず発行して N/N に到達させる。
+    # 天井除算: total//200 だと 201〜399 枚で step=1 になり間引きが効かない。
+    progress_step = max(1, (total + 199) // 200)
 
     for i, image_path in enumerate(image_paths):
+        if progress_cb and ((i + 1) % progress_step == 0 or i == total - 1):
+            progress_cb(i + 1, total)
         if stop_checker and stop_checker():
             core_log_gui(_get_string_internal("TaggerCore", "Tagging_Process_Aborted_By_User"), "red")
             break
@@ -261,16 +320,31 @@ def process_caption_loop(
         relative_path = image_path.relative_to(settings["INPUT_DIR"])
         current_index_str = f"[{i+1}/{len(image_paths)}]"
 
-        if output_path.is_file() and overwrite_checker and not overwrite_checker(output_path):
-            core_log_gui(_get_string_internal("TaggerCore", "Tag_Skipped_Existing_File_Short", current_index_str=current_index_str, output_path_name=output_path.name), "orange")
-            continue
+        if output_path.is_file():
+            if mode is ExistingFileMode.SKIP:
+                n_skipped += 1
+                log_dbg(_get_string_internal("TaggerCore", "Tag_Skipped_Existing_File_Short", current_index_str=current_index_str, output_path_name=output_path.name))
+                continue
+            if mode is ExistingFileMode.ASK:
+                if decision_resolver is None:
+                    n_skipped += 1
+                    log_dbg("process_caption_loop: ASK モードだが decision_resolver が未設定のためスキップします")
+                    continue
+                if stop_checker and stop_checker():
+                    break
+                if decision_resolver(output_path) is OverwriteDecision.SKIP:
+                    n_skipped += 1
+                    log_dbg(_get_string_internal("TaggerCore", "Tag_Skipped_Existing_File_Short", current_index_str=current_index_str, output_path_name=output_path.name))
+                    continue
 
-        core_log_gui(_get_string_internal("TaggerCore", "Processing_Image", current_index_str=current_index_str, relative_path=str(relative_path)), "black")
+        # ルーチンの「処理中」表示は GUI へ流さず debug log のみ（issue #10）。GUI は progress_cb 経由。
+        log_dbg(_get_string_internal("TaggerCore", "Processing_Image", current_index_str=current_index_str, relative_path=str(relative_path)))
 
         try:
             with open(image_path, "rb") as f:
                 image = Image.open(f).convert("RGB")
         except Exception as e:
+            n_errors += 1
             log_dbg(f"Caption image load failed for {relative_path}: {type(e).__name__}: {e}")
             core_log_gui(_get_string_internal("TaggerCore", "Image_Load_Failed_Short", current_index_str=current_index_str, relative_path_name=relative_path.name), "red")
             continue
@@ -278,6 +352,7 @@ def process_caption_loop(
         try:
             caption, cancelled = captioner.generate(image, task_prompt, stop_checker)
         except Exception as e:
+            n_errors += 1
             log_dbg(f"Caption generation failed for {relative_path}: {type(e).__name__}: {e}")
             core_log_gui(_get_string_internal("TaggerCore", "Tag_Inference_Failed_Short", current_index_str=current_index_str, relative_path_name=relative_path.name), "red")
             continue
@@ -290,12 +365,55 @@ def process_caption_loop(
             core_log_gui(_get_string_internal("TaggerCore", "Caption_Cancelled_Short", current_index_str=current_index_str, relative_path_name=relative_path.name), "orange")
             break
 
+        if not caption.strip():
+            # 生成が空文字を返した（モデルの不具合・極端な画像など）。OVERWRITE だと
+            # combine_caption が空文字をそのまま返し、既存キャプションを空ファイルで
+            # 潰してしまう。新規側でも中身のない .txt を作って「生成済み」に見せてしまう。
+            # 失敗扱いにして触らない（PR#16 レビュー指摘: coderabbit）。
+            n_errors += 1
+            log_dbg(f"Caption generation returned empty text for {relative_path}; leaving the file untouched.")
+            core_log_gui(_get_string_internal("TaggerCore", "Caption_Empty_Short", current_index_str=current_index_str, relative_path_name=relative_path.name), "orange")
+            continue
+
+        previous_content: str | None = None
+        if output_path.is_file():
+            try:
+                previous_content = output_path.read_text(encoding="utf-8")
+            except Exception as e:
+                # 既存だが読めないファイルはここで previous_content=None のまま書くと
+                # 「元は存在しなかった」と undo に誤認され、undo でファイルごと削除して
+                # 原本を破壊する（PR#16 レビュー指摘）。OVERWRITE でも同じ undo 経由の
+                # 破壊が起きるので placement を問わず触らずスキップする。
+                n_errors += 1
+                log_dbg(f"caption: 既存ファイルの読み込みに失敗したためスキップします {output_path.name}: {type(e).__name__}: {e}")
+                core_log_gui(_get_string_internal("TaggerCore", "Save_Failed_Short", current_index_str=current_index_str, output_path_name=output_path.name), "red")
+                continue
+
+        new_content = combine_caption(previous_content or "", caption, placement)
+        if previous_content is not None and new_content == previous_content:
+            # 内容が変わらないなら mtime も変えない。ルーチン結果なので GUI へは出さず debug log のみ（issue #10）。
+            n_unchanged += 1
+            log_dbg(_get_string_internal("TaggerCore", "Log_No_New_Tags", current_index_str=current_index_str, file_name=output_path.name))
+            continue
+
         try:
             resolved_path = output_path.resolve()
             long_path_str = f"\\\\?\\{resolved_path}" if sys.platform == "win32" else str(resolved_path)
             with open(long_path_str, "w", encoding="utf-8") as f:
-                f.write(caption)
-            core_log_gui(_get_string_internal("TaggerCore", "Tag_Output_Success", current_index_str=current_index_str, output_path_name=output_path.name), "green")
+                f.write(new_content)
+            changed_files.append(FileChange(
+                path=output_path, previous_content=previous_content,
+                new_content=new_content, was_append=(placement != "OVERWRITE" and previous_content is not None)))
+            # ルーチンの出力成功は GUI へ流さず debug log のみ（issue #10）。
+            log_dbg(_get_string_internal("TaggerCore", "Tag_Output_Success", current_index_str=current_index_str, output_path_name=output_path.name))
         except Exception as e:
+            n_errors += 1
             log_dbg(f"Caption save failed for {output_path.name}: {type(e).__name__}: {e}")
             core_log_gui(_get_string_internal("TaggerCore", "Save_Failed_Short", current_index_str=current_index_str, output_path_name=output_path.name), "red")
+
+    n_appended = sum(1 for c in changed_files if c.was_append)
+    core_log_gui(_get_string_internal(
+        "TaggerCore", "Batch_Summary",
+        written=len(changed_files), appended=n_appended, skipped=n_skipped,
+        unchanged=n_unchanged, errors=n_errors, total=total), "blue")
+    return changed_files

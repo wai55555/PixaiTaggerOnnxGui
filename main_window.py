@@ -1,17 +1,19 @@
 from pathlib import Path
 from datetime import datetime
-from typing import Any, Mapping, Protocol
+from typing import Any, Callable, Mapping, Protocol
 import functools
 import sys
+import time
 
 from PySide6.QtCore import (
-    Qt, QThread, QObject, Signal, Slot, QTimer, QPoint, QRect, QEvent, QEventLoop
+    Qt, QThread, QObject, Signal, Slot, QTimer, QPoint, QEvent,
+    QMetaObject, Q_ARG, Q_RETURN_ARG
 )
 from PySide6.QtWidgets import (
     QMainWindow, QWidget,
     QGridLayout, QLabel, QLineEdit, QPushButton,
     QSlider, QTextEdit, QFileDialog, QMessageBox, QDialog,
-    QStackedWidget, QApplication, QSplitter, QListWidgetItem, QComboBox
+    QStackedWidget, QApplication, QSplitter, QListWidgetItem, QComboBox, QButtonGroup
 )
 from PySide6.QtGui import (
     QPixmap, QImage, QKeyEvent, QResizeEvent, QDragEnterEvent,
@@ -26,12 +28,16 @@ from app_settings import load_config, load_settings, save_config # Updated impor
 from custom_widgets import PathLineEdit, TagListWidget
 import tag_utils
 from tag_utils import load_tag_translation_map
+from tagging_core import ExistingFileMode, OverwriteDecision
 from custom_dialogs import ClickableLabel, ImageViewerDialog, CategoryTagSettingsDialog
 from grid_view_widget import GridViewWidget
 from workers import DownloaderWorker, TaggerThreadWorker, CaptionerThreadWorker, TagLoader, BulkTagWorker
 from locale_manager import LocaleManager
 from ui_main_window import Ui_MainWindow
-from undo_manager import UndoManager, AddTagsAction, RemoveTagAction, BulkAddTagsAction, BulkRemoveTagsAction, EditCaptionAction
+from undo_manager import (
+    UndoManager, AddTagsAction, RemoveTagAction, BulkAddTagsAction, BulkRemoveTagsAction,
+    EditCaptionAction, OverwriteFileAction, AppendTagsActionV2, CompositeUndoAction,
+)
 from model_registry import ModelEntry, config_mapping, discover_models, get_model_entry
 from model_mode_controller import ModelModeController
 
@@ -98,6 +104,10 @@ class MainWindow(QMainWindow):
     tag_button_grid: QGridLayout
     language_combo: QComboBox
     model_combo: QComboBox
+    existing_mode_combo: QComboBox
+    caption_placement_widget: QWidget
+    caption_placement_group: QButtonGroup
+    caption_placement_buttons: dict[str, QPushButton]
     prev_page_btn: QPushButton
     next_page_btn: QPushButton
     add_tag_line: QLineEdit
@@ -112,7 +122,6 @@ class MainWindow(QMainWindow):
 
     # --- Signals ---
     request_overwrite_check = Signal(str, str)
-    overwrite_dialog_requested = Signal(Path) 
     _request_worker_stop = Signal() # Signal to request workers to stop
     
     def __init__(self):
@@ -145,7 +154,7 @@ class MainWindow(QMainWindow):
             self.settings.language_code = os_lang
             save_config(self.settings)
 
-        self.locale_manager = LocaleManager(self.settings.language_code, constants.LANG_DIR)
+        self.locale_manager = LocaleManager(self.settings.language_code, constants.LANG_DIR, constants.LANG_RESOURCE_DIR)
         app_settings.set_get_string_func(self.locale_manager.get_string) # Add this line
         write_debug_log(self.locale_manager.get_string("MainWindow", "Application_Startup"))
 
@@ -177,9 +186,12 @@ class MainWindow(QMainWindow):
         # Processing State variables
         self._is_downloading = False
         self._is_bulk_deleting = False 
-        self._always_overwrite: bool = False
-        self._always_skip: bool = False
-        
+        # ASK セッション中に「常に〜」が選ばれたときの上書き先。タギング開始ごとに
+        # None へリセットされ、config.ini の保存値は変更しない（spec.md 1.3節）。
+        self._session_mode_override: ExistingFileMode | None = None
+        # ワーカーからの進捗通知を GUI へ反映した最後の時刻（issue #10: 毎画像反映すると固まる）。
+        self._progress_last_shown_at: float = 0.0
+
         # Timers and Dialogs
         self._resize_timer = QTimer(self)
         self._resize_timer.setSingleShot(True)
@@ -202,15 +214,12 @@ class MainWindow(QMainWindow):
         self._category_settings_dialog: QDialog | None = None
         self._image_viewer_dialog: ImageViewerDialog | None = None
         
-        self._overwrite_event_loop: QEventLoop | None = None
         
         # Undo/Redo Manager
         self.undo_manager = UndoManager(max_history=50)
 
         # Consolidates all model-switch side effects (design.md 6.8節).
         self._model_mode = ModelModeController(self)
-        self._overwrite_response: bool | None = None
-        self._worker_finished_event_loop: QEventLoop | None = None
         self._last_navigation_event_time: datetime | None = None # 追加
         
         self.tag_translation_map: dict[str, list[str]] = {}
@@ -494,6 +503,32 @@ class MainWindow(QMainWindow):
         self._update_undo_redo_buttons()
 
     @Slot(int)
+    def _on_existing_mode_changed(self, index: int):
+        """既存ファイルの扱いを設定へ即時反映し、既存の保存フローで永続化する
+        （spec.md 6.1節）。"""
+        mode = self.existing_mode_combo.itemData(index)
+        if not mode or mode == self.settings.behavior.existing_file_mode:
+            return
+        self.settings.behavior.existing_file_mode = mode
+        self.save_current_config()
+        write_debug_log(f"existing_file_mode -> {mode}")
+
+    @Slot()
+    def _on_caption_placement_changed(self, button=None):
+        """生成キャプションの挿入位置（前に追加 / 後に追加 / 上書き）を保存する。
+        QButtonGroup が排他なので、押されたボタンだけが checked のまま残る。"""
+        if button is None:
+            button = self.caption_placement_group.checkedButton()
+        if button is None:
+            return
+        placement = button.property("placement")
+        if not placement or placement == self.settings.caption.placement:
+            return
+        self.settings.caption.placement = placement
+        self.save_current_config()
+        write_debug_log(f"caption placement -> {placement}")
+
+    @Slot(int)
     def _on_task_combo_changed(self, index: int):
         """Persists the selected Florence-2 caption detail level (spec.md 8.2節)."""
         task_key = self.task_combo.itemData(index)
@@ -693,6 +728,12 @@ class MainWindow(QMainWindow):
         # settings/UI away from the model the active worker is using.
         self.model_combo.setEnabled(enabled)
         self.task_combo.setEnabled(enabled)
+        # The active worker already captured EXISTING_FILE_MODE / CAPTION_PLACEMENT at
+        # start; changing them mid-run has no effect on this run but is immediately
+        # persisted to config.ini, silently changing the default for the next run
+        # (PR#16 review). Lock them the same way model_combo/task_combo are locked.
+        self.existing_mode_combo.setEnabled(enabled)
+        self.caption_placement_widget.setEnabled(enabled)
         # The worker rewrites the same .txt files, so every path that can also write them
         # has to be locked: the main caption box, the grid-view cells, and Undo/Redo.
         self.caption_text_edit.setEnabled(enabled)
@@ -1096,8 +1137,8 @@ class MainWindow(QMainWindow):
 
         self._cleanup_tagger_thread()
 
-        self._always_overwrite = False
-        self._always_skip = False
+        self._session_mode_override = None
+        self._progress_last_shown_at = 0.0
 
         self._update_ui_for_processing(True, 'tagging')
 
@@ -1115,18 +1156,68 @@ class MainWindow(QMainWindow):
 
         self._tagger_thread = QThread()
         if is_captioner:
-            self._tagger_worker = CaptionerThreadWorker(self.settings, self._show_overwrite_dialog, self.locale_manager.get_string, selected_file_path=selected_path)
+            self._tagger_worker = CaptionerThreadWorker(self.settings, self._make_decision_requester(), self.locale_manager.get_string, selected_file_path=selected_path)
             self._tagger_thread.started.connect(self._tagger_worker.run_captioning)
         else:
-            self._tagger_worker = TaggerThreadWorker(self.settings, self._show_overwrite_dialog, self.locale_manager.get_string, selected_file_path=selected_path)
+            self._tagger_worker = TaggerThreadWorker(self.settings, self._make_decision_requester(), self.locale_manager.get_string, selected_file_path=selected_path)
             self._tagger_thread.started.connect(self._tagger_worker.run_tagging)
         self._tagger_worker.moveToThread(self._tagger_thread)
 
         self._tagger_worker.log_message.connect(self.update_log)
+        self._tagger_worker.batch_completed.connect(self._on_batch_completed)
+        self._tagger_worker.progress_update.connect(self._on_tagging_progress)
         self._tagger_worker.model_status_changed.connect(self._check_model_status_and_update_ui)
         self._tagger_worker.finished.connect(self._on_tagger_finished)
 
         self._tagger_thread.start()
+
+    @Slot(int, int)
+    def _on_tagging_progress(self, done: int, total: int):
+        """ワーカーからの進捗通知。毎画像来るので ~0.5s に1回だけ GUI へ反映する
+        （issue #10: 1画像=1ログだと Qt イベントキューが飽和して固まる）。"""
+        if self._is_shutting_down:
+            return
+        now = time.monotonic()
+        if done < total and now - self._progress_last_shown_at < 0.5:
+            return
+        self._progress_last_shown_at = now
+        # 停止処理中はボタン文言を「停止中...」に固定したいので触らない。
+        if not self.run_button.isEnabled():
+            return
+        base = self.locale_manager.get_string("Constants", "Stop_Tagging_Process")
+        self.run_button.setText(f"{base} ({done} / {total})")
+
+    @Slot(list)
+    def _on_batch_completed(self, changed_files: list):
+        """タギング/キャプション1回分の変更を、Undo履歴上の1エントリとして積む
+        （spec.md 4.2節）。50件の履歴が大量画像処理で即座に消費されるのを防ぐ。"""
+        if not changed_files:
+            return
+        if len(changed_files) > constants.UNDO_BATCH_SNAPSHOT_LIMIT:
+            # 全ファイルの旧内容＋新内容を1つの CompositeUndoAction に抱えると、
+            # 数万ファイル規模ではメモリを圧迫する（issue #10）。今回のバッチだけ
+            # スナップショットを諦める。既存の Undo 履歴（別バッチ・バルク編集等）は
+            # 無関係なので消さない（PR#16 レビュー指摘: 以前は clear() で全部消していた）。
+            self.update_log(self.locale_manager.get_string(
+                "MainWindow", "Undo_Batch_Too_Large", count=len(changed_files)), "orange")
+            write_debug_log(
+                f"batch_completed: {len(changed_files)} 件 > {constants.UNDO_BATCH_SNAPSHOT_LIMIT} のため今回のバッチは Undo スナップショットを作成しません（既存履歴は保持）")
+            return
+        actions = []
+        for change in changed_files:
+            if change.was_append:
+                actions.append(AppendTagsActionV2(
+                    file_path=change.path, previous_content=change.previous_content,
+                    new_content=change.new_content, added_tags=list(change.added_tags)))
+            else:
+                actions.append(OverwriteFileAction(
+                    file_path=change.path, previous_content=change.previous_content,
+                    new_content=change.new_content))
+        label = self.locale_manager.get_string(
+            "MainWindow", "Undo_Batch_Tagging", count=len(actions))
+        self.undo_manager.push(CompositeUndoAction(actions=actions, label=label))
+        self._update_undo_redo_buttons()
+        write_debug_log(f"batch_completed: {len(actions)} 件のファイル変更を1つのUndoエントリにまとめました")
 
     def _cleanup_tagger_thread(self):
         """Safely cleans up the existing tagger thread and worker."""
@@ -1711,40 +1802,50 @@ class MainWindow(QMainWindow):
 
     @Slot()
     def show_enlarged_image(self):
-        """Shows the currently selected image, positioned next to the tag panel."""
+        """Shows the currently selected image in the area to the left of the tag panel,
+        maximised to fit, so the tags stay visible and clickable while viewing it.
+        The display is chosen from the main window's own screen (multi-monitor safe)."""
         if not self._original_image_pixmap or self._original_image_pixmap.isNull():
             return
 
-        screen_geom = QApplication.primaryScreen().availableGeometry()
-        
+        # マルチディスプレイ対策: 本体ウィンドウの左上が乗っているスクリーンを基準にする。
+        # 左上が画面外（前回終了時のオフスクリーン位置など）なら順にフォールバック。
+        anchor = self.frameGeometry().topLeft()
+        target_screen = (QApplication.screenAt(anchor)
+                         or self.screen()
+                         or QApplication.primaryScreen())
+        screen_geom = target_screen.availableGeometry()
+
         tag_panel_widget = self.tag_display_grid.parentWidget().parentWidget() # Get the splitter child widget
         if not tag_panel_widget:
             return
-            
-        global_top_left = tag_panel_widget.mapToGlobal(QPoint(0,0))
-        tag_panel_global_rect = QRect(global_top_left, tag_panel_widget.size())
-        
-        available_width = tag_panel_global_rect.left()
+
+        # 画像を出す領域＝「タグパネルの左端」から「基準スクリーンの左端」までの帯。
+        # ここに収まる最大サイズにフィットさせ、タグ欄には決してかぶせない（編集用途）。
+        tag_panel_left_global = tag_panel_widget.mapToGlobal(QPoint(0, 0)).x()
+        available_width = tag_panel_left_global - screen_geom.x()
+        available_width = max(200, min(available_width, screen_geom.width()))
         available_height = screen_geom.height()
 
         if self._original_image_pixmap.height() == 0:
             return
         img_ratio = self._original_image_pixmap.width() / self._original_image_pixmap.height()
-        
+
         dialog_width = available_width
         dialog_height = int(dialog_width / img_ratio) if img_ratio > 0 else available_height
 
         if dialog_height > available_height:
             dialog_height = available_height
             dialog_width = int(dialog_height * img_ratio)
-        
-        dialog_width = max(200, dialog_width)
-        dialog_height = max(200, dialog_height)
 
-        # --- MODIFIED: Position dialog to the left of the tag panel ---
-        dialog_x = tag_panel_global_rect.left() - dialog_width
+        dialog_width = max(200, min(dialog_width, available_width))
+        dialog_height = max(200, min(dialog_height, available_height))
+
+        # 右辺をタグパネルの左端に合わせて配置（タグ欄に非かぶり）。基準スクリーンの
+        # 左端より外へは出さない。縦は基準スクリーン内で中央寄せ。
+        dialog_x = max(screen_geom.x(), tag_panel_left_global - dialog_width)
         dialog_y = screen_geom.y() + (screen_geom.height() - dialog_height) // 2
-        
+
         if self._image_viewer_dialog is None:
             # Launch in navigation mode (default)
             self._image_viewer_dialog = ImageViewerDialog(self) # Removed tag_panel_global_rect
@@ -1787,73 +1888,105 @@ class MainWindow(QMainWindow):
         self.reload_tags_only()
         self._load_and_fit_image(self.image_list.currentItem())
 
-    def _show_overwrite_dialog(self, file_path: Path) -> bool:
+    # --- 既存ファイル処理: 追加同期機構（design.md 4.1節） ---------------------
+    #
+    # 旧実装（QEventLoop + 共有変数 _overwrite_response）は、ワーカースレッドと GUI
+    # スレッドの間で手作りの同期を行っていたためレースが起き、大量画像の「常に上書き」で
+    # 処理が凍結することがあった（Issue #12）。ここでは Qt の BlockingQueuedConnection に
+    # 委ね、共有可変状態を持たない形に置き換えている。
+
+    _SESSION_OVERRIDE_DECISION = {
+        ExistingFileMode.OVERWRITE: OverwriteDecision.OVERWRITE,
+        ExistingFileMode.SKIP: OverwriteDecision.SKIP,
+        ExistingFileMode.APPEND: OverwriteDecision.APPEND,
+    }
+
+    @Slot(str, result=str)
+    def ask_existing_file_decision(self, file_path_str: str) -> str:
+        """GUI スレッドで実行され、ワーカーへ決定を文字列で返す。
+
+        Qt のメタオブジェクト経由で Enum をそのまま渡すのは環境差があるため、
+        OverwriteDecision の名前（"OVERWRITE" / "SKIP" / "APPEND"）で受け渡しする。
         """
-        Called from a worker thread to display an overwrite confirmation dialog in the GUI thread.
-        It safely blocks the worker thread and returns the user's response (True/False) using a signal and QEventLoop.
+        if self._is_shutting_down:
+            return OverwriteDecision.SKIP.name
+        if self._session_mode_override is not None:
+            return self._SESSION_OVERRIDE_DECISION[self._session_mode_override].name
+        return self._ask_overwrite_confirmation(Path(file_path_str)).name
+
+    def _make_decision_requester(self) -> Callable[[Path], OverwriteDecision]:
+        """ワーカースレッドから GUI スレッドの ask_existing_file_decision を
+        同期呼び出しするブリッジを作る（design.md 4.1節）。
+
+        ダイアログが本当に必要なのは「ASK モードで、まだ『常に〜』が押されていない」
+        ときだけ。それ以外は GUI スレッドへの BlockingQueuedConnection を張らずに
+        ワーカー側で即決する:
+        - 終了処理中は SKIP（closeEvent が thread.wait 中だと invokeMethod がデッドロック
+          しうるため、往復自体を回避する）
+        - セッション内オーバーライド（「常に上書き/スキップ/追記」）が決まっていれば
+          その決定を返す（10K 枚で 10K 回の同期クロススレッド呼び出しを省く）
         """
-        # This method is called from a non-GUI thread.
-        # We need to wait for the result from the GUI thread.
-        
-        self._overwrite_response = None
-        loop = QEventLoop()
-        self._overwrite_event_loop = loop
+        def resolve(file_path: Path) -> OverwriteDecision:
+            if self._is_shutting_down:
+                return OverwriteDecision.SKIP
+            override = self._session_mode_override  # GIL-atomic な単一参照の読み取り
+            if override is not None:
+                return self._SESSION_OVERRIDE_DECISION[override]
 
-        # Emit a signal to the main thread to show the dialog
-        self.overwrite_dialog_requested.emit(file_path)
+            result = QMetaObject.invokeMethod(
+                self, "ask_existing_file_decision",
+                Qt.ConnectionType.BlockingQueuedConnection,
+                Q_RETURN_ARG(str), Q_ARG(str, str(file_path)),
+            )
+            try:
+                return OverwriteDecision[str(result)]
+            except KeyError:
+                # 戻り値取得に失敗した環境では、既存ファイルに触れない側へ倒す
+                write_debug_log(f"ask_existing_file_decision: 想定外の戻り値 {result!r} -> SKIP として扱います")
+                return OverwriteDecision.SKIP
+        return resolve
 
-        # Wait until the main thread signals that it's done.
-        loop.exec()
+    def _ask_overwrite_confirmation(self, file_path: Path) -> OverwriteDecision:
+        """実際にダイアログを表示する。GUI スレッドで実行されること（spec.md 6.2節）。
 
-        response = self._overwrite_response
-        
-        # Clean up
-        self._overwrite_event_loop = None
-        self._overwrite_response = None
-        
-        return response if response is not None else False
+        上段 [上書き] [スキップ] [追記] / 下段 [常に上書き] [常にスキップ] [常に追記]。
+        「常に〜」を選ぶとセッション内オーバーライドを設定し、以降は確認を省略する。
+        追記系のボタンは captioner モードでは表示しない（自由文に追記は成立しないため）。
+        """
+        is_captioner = self._current_model_entry().model_type == "captioner"
 
-    @Slot(Path)
-    def _handle_overwrite_request(self, file_path: Path):
-        """This slot runs in the GUI thread."""
-        # It shows the dialog and sets the response.
-        response = self._ask_overwrite_confirmation(file_path)
-        self._overwrite_response = response
-        
-        # Quit the event loop to unblock the worker thread.
-        if self._overwrite_event_loop:
-            self._overwrite_event_loop.quit()
-
-    def _ask_overwrite_confirmation(self, file_path: Path) -> bool:
-        """Method that actually displays the dialog and asks for confirmation from the user. Executed in the GUI thread."""
-        if self._always_overwrite:
-            return True
-        if self._always_skip:
-            return False
-
-    
-        msg = QMessageBox()
+        msg = QMessageBox(self)
         msg.setWindowTitle(self.locale_manager.get_string("MainWindow", "Overwrite_Confirmation_Title"))
         msg.setText(self.locale_manager.get_string("MainWindow", "Overwrite_Confirmation_Message", path_name=file_path.name))
         msg.setIcon(QMessageBox.Icon.Question)
-        
+
         btn_yes = msg.addButton(self.locale_manager.get_string("MainWindow", "Overwrite"), QMessageBox.ButtonRole.YesRole)
-        _ = msg.addButton(self.locale_manager.get_string("MainWindow", "Skip"), QMessageBox.ButtonRole.NoRole)
+        btn_skip = msg.addButton(self.locale_manager.get_string("MainWindow", "Skip"), QMessageBox.ButtonRole.NoRole)
+        btn_append = None if is_captioner else msg.addButton(
+            self.locale_manager.get_string("MainWindow", "Append_Button"), QMessageBox.ButtonRole.AcceptRole)
         btn_yes_all = msg.addButton(self.locale_manager.get_string("MainWindow", "Always_Overwrite"), QMessageBox.ButtonRole.YesRole)
         btn_no_all = msg.addButton(self.locale_manager.get_string("MainWindow", "Always_Skip"), QMessageBox.ButtonRole.NoRole)
-        
+        btn_append_all = None if is_captioner else msg.addButton(
+            self.locale_manager.get_string("MainWindow", "Always_Append_Button"), QMessageBox.ButtonRole.AcceptRole)
+
         msg.exec()
-        clicked_button = msg.clickedButton()
+        clicked = msg.clickedButton()
 
-        if clicked_button == btn_yes_all:
-            self._always_overwrite = True
-        elif clicked_button == btn_no_all:
-            self._always_skip = True
-        
-        if clicked_button is None: # type: ignore
-            return False
-
-        return clicked_button in (btn_yes, btn_yes_all)
+        if clicked == btn_yes_all:
+            self._session_mode_override = ExistingFileMode.OVERWRITE
+            return OverwriteDecision.OVERWRITE
+        if clicked == btn_no_all:
+            self._session_mode_override = ExistingFileMode.SKIP
+            return OverwriteDecision.SKIP
+        if btn_append_all is not None and clicked == btn_append_all:
+            self._session_mode_override = ExistingFileMode.APPEND
+            return OverwriteDecision.APPEND
+        if clicked == btn_yes:
+            return OverwriteDecision.OVERWRITE
+        if btn_append is not None and clicked == btn_append:
+            return OverwriteDecision.APPEND
+        # btn_skip、ダイアログを閉じた場合（clicked is None）はいずれもスキップ扱い
+        return OverwriteDecision.SKIP
 
     @Slot(str)
     def _update_input_dir(self, text: str):
