@@ -67,6 +67,9 @@ _ENV_ALIASES = {
     "vlm/nvidia/api_key": ("NVIDIA_API_KEY", "NVIDIA_NIM_API_KEY"),
     "vlm/mistral/api_key": ("MISTRAL_API_KEY",),
     "vlm/huggingface/api_token": ("HF_TOKEN", "HUGGINGFACEHUB_API_TOKEN"),
+    "vlm/vercel/api_key": ("AI_GATEWAY_API_KEY", "VERCEL_AI_GATEWAY_API_KEY"),
+    "vlm/openai/api_key": ("OPENAI_API_KEY",),
+    "vlm/anthropic/api_key": ("ANTHROPIC_API_KEY",),
     # "vlm/ovhcloud/api_key": ("OVH_AI_ENDPOINTS_ACCESS_TOKEN", "OVHCLOUD_API_KEY"),
 }
 

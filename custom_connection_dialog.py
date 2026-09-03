@@ -20,6 +20,8 @@ GetString = Callable[..., str]
 
 _PROTOCOLS = [
     ("openai_chat_completions", "OpenAI Chat Completions"),
+    ("openai_responses", "OpenAI Responses API"),
+    ("anthropic_messages", "Anthropic Messages API"),
     ("gemini_generate_content", "Google Gemini generateContent"),
 ]
 _AUTH_TYPES = [

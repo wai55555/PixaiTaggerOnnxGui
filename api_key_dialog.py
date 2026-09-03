@@ -10,14 +10,14 @@ from dataclasses import replace
 from typing import Callable
 
 from PySide6.QtCore import Qt, QThread, QUrl
-from PySide6.QtGui import QDesktopServices
+from PySide6.QtGui import QDesktopServices, QGuiApplication
 from PySide6.QtWidgets import (
     QDialog, QDialogButtonBox, QHBoxLayout, QLabel, QLineEdit, QMessageBox,
     QPushButton, QVBoxLayout, QWidget,
 )
 
 import vlm_secrets
-from vlm_diagnostics import DiagStatus
+from vlm_diagnostics import DiagStatus, is_billing_or_credit_block
 from vlm_worker import VlmDiagnosticsWorker
 
 GetString = Callable[..., str]
@@ -28,6 +28,8 @@ class ApiKeyDialog(QDialog):
                  conn, key_url: str, login_url: str, instructions: str,
                  cloudflare_account_id: str = "",
                  on_cloudflare_verified: Callable[[str], None] | None = None,
+                 anthropic_workspace_id: str = "",
+                 on_anthropic_workspace_saved: Callable[[str], None] | None = None,
                  parent: QWidget | None = None):
         super().__init__(parent)
         self._t = get_string
@@ -36,8 +38,11 @@ class ApiKeyDialog(QDialog):
         self._key_url = key_url
         self._login_url = login_url
         self._is_cloudflare = getattr(conn, "provider_id", "") == "cloudflare"
+        self._is_anthropic = getattr(conn, "provider_id", "") == "anthropic"
         self._cloudflare_account_id = cloudflare_account_id
         self._on_cloudflare_verified = on_cloudflare_verified
+        self._anthropic_workspace_id = anthropic_workspace_id
+        self._on_anthropic_workspace_saved = on_anthropic_workspace_saved
         self._saved = False
         self._check_thread: QThread | None = None
         self._check_worker: VlmDiagnosticsWorker | None = None
@@ -82,8 +87,12 @@ class ApiKeyDialog(QDialog):
             "env": self._t("Vlm", "ApiKey_Where_Env"),
             "session": self._t("Vlm", "ApiKey_Where_Session"),
         }.get(where, where)
-        registered_key = "ApiKey_Current_Registered_Cloudflare" if self._is_cloudflare \
-            else "ApiKey_Current_Registered"
+        if self._is_cloudflare:
+            registered_key = "ApiKey_Current_Registered_Cloudflare"
+        elif self._is_anthropic:
+            registered_key = "ApiKey_Current_Registered_Anthropic"
+        else:
+            registered_key = "ApiKey_Current_Registered"
         self.current_label = QLabel(
             self._t("Vlm", registered_key, where=where_label) if registered
             else self._t("Vlm", "ApiKey_Current_None"))
@@ -99,6 +108,16 @@ class ApiKeyDialog(QDialog):
             account_row.addWidget(self.account_id_edit, 1)
             root.addLayout(account_row)
 
+        self.workspace_id_edit: QLineEdit | None = None
+        if self._is_anthropic:
+            workspace_row = QHBoxLayout()
+            workspace_row.addWidget(QLabel(self._t("Vlm", "ApiKey_Anthropic_Workspace")))
+            self.workspace_id_edit = QLineEdit(self._anthropic_workspace_id)
+            self.workspace_id_edit.setPlaceholderText(
+                self._t("Vlm", "ApiKey_Anthropic_Workspace_Placeholder"))
+            workspace_row.addWidget(self.workspace_id_edit, 1)
+            root.addLayout(workspace_row)
+
         self.key_edit = QLineEdit()
         self.key_edit.setEchoMode(QLineEdit.EchoMode.Password)
         self.key_edit.setPlaceholderText(self._t(
@@ -112,7 +131,14 @@ class ApiKeyDialog(QDialog):
 
         self.status = QLabel("")
         self.status.setWordWrap(True)
+        self.status.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+            | Qt.TextInteractionFlag.TextSelectableByKeyboard)
         root.addWidget(self.status)
+
+        self.copy_status_btn = QPushButton(self._t("Vlm", "ApiKey_Copy_Details"))
+        self.copy_status_btn.clicked.connect(self._copy_status)
+        root.addWidget(self.copy_status_btn)
 
         box = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel)
         box.rejected.connect(self.reject)
@@ -124,7 +150,7 @@ class ApiKeyDialog(QDialog):
             return
         entered_key = self.key_edit.text().strip()
         key = entered_key
-        if not key and self._is_cloudflare:
+        if not key and (self._is_cloudflare or self._is_anthropic):
             key = vlm_secrets.get_secret(self._secret_ref) or ""
         if not key:
             self.status.setText(self._t("Vlm", "ApiKey_Empty"))
@@ -143,6 +169,17 @@ class ApiKeyDialog(QDialog):
                 self._conn,
                 base_url=f"https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/v1",
             )
+        if self._is_anthropic:
+            workspace_id = self.workspace_id_edit.text().strip() if self.workspace_id_edit else ""
+            if workspace_id and re.fullmatch(r"wrkspc_[A-Za-z0-9]+", workspace_id) is None:
+                self.status.setText(self._t("Vlm", "ApiKey_Anthropic_Workspace_Invalid"))
+                return
+            self._pending_workspace_id = workspace_id
+            headers = dict(getattr(self._conn, "request_headers", {}) or {})
+            headers.pop("anthropic-workspace-id", None)
+            if workspace_id:
+                headers["anthropic-workspace-id"] = workspace_id
+            check_conn = replace(self._conn, request_headers=headers)
         self._set_busy(True)
         self.status.setText(self._t("Vlm", "ApiKey_Checking"))
         self._pending_key = key
@@ -162,10 +199,24 @@ class ApiKeyDialog(QDialog):
         認証を通っているので保存する（モデル ID 違い等は警告どまりで別途直す）。"""
         self._verify_failed = ""
         self._model_warning = ""
+        self._service_warning = ""
         items = {i.name: i for i in report.items}
         auth = items.get("Auth")
         http = items.get("HTTP response")
         extraction = items.get("Caption extraction")
+        # HTTPへ到達する前のDNS/TLS失敗や、診断ワーカー内部の例外も汎用文言へ
+        # 潰さず表示する。Cloudflareは成功条件が厳しいため、このフォールバックがないと
+        # 「キーが受け付けられませんでした」だけになり原因を判別できない。
+        first_failure = next(
+            (i.detail for i in report.items
+             if i.status is DiagStatus.FAIL and getattr(i, "detail", "")), "")
+
+        if self._is_anthropic and http is not None and http.status is not DiagStatus.PASS:
+            low = (http.detail or "").lower()
+            if "anthropic-workspace-id" in low or "workspace" in low:
+                self._verify_failed = http.detail or first_failure \
+                    or self._t("Vlm", "ApiKey_Failed_Generic")
+                return
 
         if self._is_cloudflare:
             # Account ID・トークン・Workers AI 権限・モデル・画像入力・応答抽出の全部が
@@ -177,12 +228,18 @@ class ApiKeyDialog(QDialog):
                 (http.detail if http is not None and http.status is not DiagStatus.PASS else "")
                 or (extraction.detail if extraction is not None else "")
                 or (auth.detail if auth is not None and auth.status is DiagStatus.FAIL else "")
+                or first_failure
                 or self._t("Vlm", "ApiKey_Failed_Generic")
             )
             return
 
         if http is not None and http.status is DiagStatus.PASS:
             return   # 200: キーもモデルも通った
+        if http is not None and is_billing_or_credit_block(http.detail):
+            # Vercelのカード未登録やOpenAIの残高不足など。キー自体は受理されているので
+            # 保存し、モデルID不正とは別の請求・利用枠警告を表示する。
+            self._service_warning = http.detail
+            return
         if (auth is not None and auth.status is DiagStatus.FAIL) or report.http_status in (401, 403):
             self._verify_failed = ((http.detail if http is not None else None)
                                    or (auth.detail if auth is not None else None)
@@ -225,20 +282,35 @@ class ApiKeyDialog(QDialog):
             success_msg = self._t("Vlm", "ApiKey_Connected_Existing")
         if self._is_cloudflare and self._on_cloudflare_verified is not None:
             self._on_cloudflare_verified(self._pending_account_id)
+        if self._is_anthropic and self._on_anthropic_workspace_saved is not None:
+            self._on_anthropic_workspace_saved(getattr(self, "_pending_workspace_id", ""))
         self._saved = True
-        warn = getattr(self, "_model_warning", "")
-        if warn:
+        service_warn = getattr(self, "_service_warning", "")
+        model_warn = getattr(self, "_model_warning", "")
+        if service_warn:
+            msg = self._t("Vlm", "ApiKey_Service_Warning",
+                          success=success_msg, detail=service_warn)
+            # 接続はまだ実行不能なので閉じず、本文を選択／コピーできる状態で残す。
+            self._set_busy(False)
+            self.status.setText(msg)
+            return
+        if model_warn:
             where = self._t("Vlm", "ApiKey_Stored_Keyring" if persisted else "ApiKey_Stored_Session")
-            msg = self._t("Vlm", "ApiKey_Saved_Model_Warning", where=where, detail=warn)
+            msg = self._t("Vlm", "ApiKey_Saved_Model_Warning", where=where, detail=model_warn)
         else:
             msg = success_msg
         QMessageBox.information(self, self.windowTitle(), msg)
         self.accept()
 
+    def _copy_status(self) -> None:
+        QGuiApplication.clipboard().setText(self.status.text())
+
     def _set_busy(self, busy: bool) -> None:
         self.key_edit.setEnabled(not busy)
         if self.account_id_edit is not None:
             self.account_id_edit.setEnabled(not busy)
+        if self.workspace_id_edit is not None:
+            self.workspace_id_edit.setEnabled(not busy)
         self.save_btn.setEnabled(not busy)
 
     def saved(self) -> bool:

@@ -142,7 +142,25 @@ def test_protocol_parse():
     gthink_only = gm.parse_response(200, {"candidates": [{"content": {"parts": [
         {"text": "", "thought": True}]}, "finishReason": "MAX_TOKENS"}]}, "")
     assert not gthink_only.ok and gthink_only.error.reason is E.VlmErrorReason.EMPTY_RESPONSE
-    print("  protocol parse (openai + gemini, incl. thinking parts): OK")
+
+    responses = PROTO.OpenAIResponsesProtocol()
+    rok = responses.parse_response(200, {
+        "status": "completed",
+        "output": [{"type": "message", "content": [
+            {"type": "output_text", "text": "first "},
+            {"type": "output_text", "text": "caption"}]}],
+        "usage": {"input_tokens": 11, "output_tokens": 22}}, "")
+    assert rok.ok and rok.text == "first caption" and rok.completion_tokens == 22
+
+    anthropic = PROTO.AnthropicMessagesProtocol()
+    aok = anthropic.parse_response(200, {
+        "content": [{"type": "text", "text": "Claude "},
+                    {"type": "text", "text": "caption"}],
+        "stop_reason": "end_turn", "usage": {"input_tokens": 12, "output_tokens": 23}}, "")
+    assert aok.ok and aok.text == "Claude caption" and aok.prompt_tokens == 12
+    assert anthropic.parse_response(401, {"error": {"type": "authentication_error"}},
+                                    "bad key").error.reason is E.VlmErrorReason.AUTH_ERROR
+    print("  protocol parse (chat/responses/anthropic/gemini): OK")
 
 
 def test_protocol_build_request():
@@ -162,6 +180,21 @@ def test_protocol_build_request():
     assert greq.url == "https://x/v1beta/models/m:generateContent"
     assert greq.headers["x-goog-api-key"] == "GKEY"
     assert greq.json_body["contents"][0]["parts"][1]["inlineData"]["mimeType"] == "image/jpeg"
+
+    responses = PROTO.OpenAIResponsesProtocol()
+    rreq = responses.build_request("https://api.openai.com/v1", "OKEY", spec)
+    assert rreq.url == "https://api.openai.com/v1/responses"
+    assert rreq.headers["Authorization"] == "Bearer OKEY"
+    assert rreq.json_body["store"] is False
+    assert rreq.json_body["input"][0]["content"][1]["type"] == "input_image"
+
+    anthropic = PROTO.AnthropicMessagesProtocol()
+    areq = anthropic.build_request("https://api.anthropic.com/v1", "AKEY", spec)
+    assert areq.url == "https://api.anthropic.com/v1/messages"
+    assert areq.headers["x-api-key"] == "AKEY"
+    assert areq.headers["anthropic-version"] == "2023-06-01"
+    source = areq.json_body["messages"][0]["content"][0]["source"]
+    assert source["type"] == "base64" and source["media_type"] == "image/jpeg"
 
     rendered = PROTO.render_template('{"m":"{{model}}","p":"{{system_prompt}}"}', spec)
     assert rendered == '{"m":"m","p":"sys"}'
@@ -440,7 +473,8 @@ def test_multi_provider_profiles():
     import vlm_config as CFG
 
     ids = {p.profile_id for p in M.default_registry().all_profiles()}
-    assert {"gemma-4-26b-a4b-it", "gemma-4-31b-it", "qwen3.8-27b", "qwen3.6-27b", "pixtral-12b"} <= ids
+    assert {"gemma-4-26b-a4b-it", "gemma-4-31b-it", "qwen3.8-27b", "qwen3.6-27b",
+            "pixtral-12b", "openai-gpt-5.6-luna", "claude-haiku-4-5"} <= ids
 
     def _s(profile_id):
         s = types.SimpleNamespace(model_profile_id=profile_id, paid_connections="",
@@ -481,6 +515,33 @@ def test_multi_provider_profiles():
     enabled_hf.order_list = lambda: ["gemini", "openrouter", "cloudflare", "huggingface"]
     assert CFG.ordered_builtin_provider_ids(enabled_hf, gemma)[-1] == "huggingface"
 
+    assert gemma_cm["builtin-vercel"].model_id == "google/gemma-4-26b-a4b-it"
+    assert gemma_cm["builtin-vercel"].free_for_automation is False
+    gpt = CFG.resolve_model_profile(_s("openai-gpt-5.6-luna"))
+    gpt_cm = CFG.build_connection_map(_s("openai-gpt-5.6-luna"), gpt)
+    assert gpt_cm["builtin-openai"].model_id == "gpt-5.6-luna"
+    assert gpt_cm["builtin-openai"].protocol == "openai_responses"
+    assert gpt_cm["builtin-vercel"].model_id == "openai/gpt-5.6-luna"
+    auth = {cid: True for cid in gpt_cm}
+    blocked = R.select_candidates(gpt, gpt_cm, R.RouterPolicy(free_only=True), has_auth=auth)
+    assert not blocked.has_candidates
+    assert blocked.excluded["builtin-openai"] == "fee_policy"
+    assert blocked.excluded["builtin-vercel"] == "fee_policy"
+    for cid in ("builtin-openai", "builtin-vercel"):
+        gpt_cm[cid].paid_continuation_allowed = True
+    paid = R.select_candidates(
+        gpt, gpt_cm, R.RouterPolicy(free_only=True, paid_continuation=True), has_auth=auth)
+    assert paid.connection_ids == ["builtin-openai", "builtin-vercel"]
+    claude_settings = _s("claude-haiku-4-5")
+    claude_settings.anthropic_workspace_id = "wrkspc_test123"
+    claude = CFG.resolve_model_profile(claude_settings)
+    claude_cm = CFG.build_connection_map(claude_settings, claude)
+    assert claude_cm["builtin-anthropic"].model_id == "claude-haiku-4-5-20251001"
+    assert claude_cm["builtin-anthropic"].protocol == "anthropic_messages"
+    assert claude_cm["builtin-anthropic"].request_headers == {
+        "anthropic-workspace-id": "wrkspc_test123"}
+    assert claude_cm["builtin-vercel"].model_id == "anthropic/claude-haiku-4.5"
+
     CFG.set_model_id_override(s, "nvidia", "qwen/qwen3-vl-32b-instruct", profile_id="qwen3.8-27b")
     assert CFG.build_connection_map(s, prof)["builtin-nvidia"].model_id == "qwen/qwen3-vl-32b-instruct"
     CFG.set_model_id_override(s, "nvidia", "", profile_id="qwen3.8-27b")
@@ -520,7 +581,7 @@ def test_user_defined_profiles():
     old = CFG.VLM_PROFILES_PATH
     CFG.VLM_PROFILES_PATH = Path(tempfile.mkdtemp()) / "vp.json"
     try:
-        assert len(CFG.all_profiles()) == 5 and not CFG.is_user_profile("x")
+        assert len(CFG.all_profiles()) == 7 and not CFG.is_user_profile("x")
 
         CFG.save_user_profiles([{
             "profile_id": "user-g3", "display_name": "My Gemma 3 27B",
@@ -545,7 +606,7 @@ def test_user_defined_profiles():
         ])
         aps = {p.profile_id: p for p in CFG.all_profiles()}
         assert aps["gemma-4-26b-a4b-it"].display_name == "Gemma (mine)"
-        assert len(CFG.all_profiles()) == 6   # 5 shipped (one overridden in place) + user-g3
+        assert len(CFG.all_profiles()) == 8   # 7 shipped (one overridden in place) + user-g3
     finally:
         CFG.VLM_PROFILES_PATH = old
     print("  user-defined profiles: json round-trip, merge, same-id override: OK")

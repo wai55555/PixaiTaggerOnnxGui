@@ -53,6 +53,9 @@ _BUILTIN_SECRET_REF = {
     "builtin-nvidia": "vlm/nvidia/api_key",
     "builtin-mistral": "vlm/mistral/api_key",
     "builtin-huggingface": "vlm/huggingface/api_token",
+    "builtin-vercel": "vlm/vercel/api_key",
+    "builtin-openai": "vlm/openai/api_key",
+    "builtin-anthropic": "vlm/anthropic/api_key",
     # "builtin-ovhcloud": "vlm/ovhcloud/api_key",
 }
 
@@ -70,7 +73,7 @@ _PROVIDER_KEY_INFO = {
         "instructions_key": "ApiKey_Steps_OpenRouter",
     },
     "cloudflare": {
-        "key_url": "https://dash.cloudflare.com/profile/api-tokens",
+        "key_url": "https://dash.cloudflare.com/?to=/:account/ai/workers-ai",
         "login_url": "https://dash.cloudflare.com/sign-up",
         "instructions_key": "ApiKey_Steps_Cloudflare",
     },
@@ -93,6 +96,22 @@ _PROVIDER_KEY_INFO = {
         "key_url": "https://huggingface.co/settings/tokens",
         "login_url": "https://huggingface.co/login",
         "instructions_key": "ApiKey_Steps_HuggingFace",
+    },
+    "vercel": {
+        # Team slugを含むキー画面URLはアカウントごとに異なるため、共通のDashboard入口。
+        "key_url": "https://vercel.com/dashboard",
+        "login_url": "https://vercel.com/login",
+        "instructions_key": "ApiKey_Steps_Vercel",
+    },
+    "openai": {
+        "key_url": "https://platform.openai.com/api-keys",
+        "login_url": "https://platform.openai.com/login",
+        "instructions_key": "ApiKey_Steps_OpenAI",
+    },
+    "anthropic": {
+        "key_url": "https://console.anthropic.com/settings/keys",
+        "login_url": "https://console.anthropic.com/",
+        "instructions_key": "ApiKey_Steps_Anthropic",
     },
     # OVHcloud は日本居住者環境で実機検証できるまで無効。
     # "ovhcloud": {
@@ -688,6 +707,10 @@ class VlmSettingsDialog(QDialog):
                                    if conn.provider_id == "cloudflare" else ""),
             on_cloudflare_verified=(self._on_cloudflare_verified
                                     if conn.provider_id == "cloudflare" else None),
+            anthropic_workspace_id=(self._vlm.anthropic_workspace_id
+                                    if conn.provider_id == "anthropic" else ""),
+            on_anthropic_workspace_saved=(self._on_anthropic_workspace_saved
+                                           if conn.provider_id == "anthropic" else None),
             parent=self,
         )
         dlg.exec()
@@ -697,6 +720,11 @@ class VlmSettingsDialog(QDialog):
         """実生成まで通った Account ID を保存し、現在の binding を VERIFIED にする。"""
         self._vlm.cloudflare_account_id = account_id
         vlm_config.mark_binding_verified(self._vlm, "cloudflare")
+        save_config(self._settings)
+
+    def _on_anthropic_workspace_saved(self, workspace_id: str) -> None:
+        """検証に使えた任意のWorkspace IDを保存する。空は単一Workspaceキーを表す。"""
+        self._vlm.anthropic_workspace_id = workspace_id
         save_config(self._settings)
 
     def _set_diag_buttons_enabled(self, enabled: bool) -> None:

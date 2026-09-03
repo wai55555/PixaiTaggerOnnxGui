@@ -169,6 +169,8 @@ class Vlm:
     paid_connections: str = ""
     # Cloudflare Workers AI はアカウント ID を URL に含むため別途保持する。
     cloudflare_account_id: str = ""
+    # 複数Workspace対象のAnthropic APIキーで必要。単一Workspaceキーなら空でよい。
+    anthropic_workspace_id: str = ""
     # 生成プロファイルの内訳（フラットに保持。vlm_profiles.GenerationProfile へ写す）
     language: str = "en"
     detail_level: str = "maximum_detail"
@@ -239,6 +241,7 @@ def get_default_config() -> configparser.ConfigParser:
             'execution_mode': 'builtin_fallback', 'selected_connection_id': '',
             'connection_order': 'gemini,openrouter,cloudflare', 'paid_connections': '',
             'cloudflare_account_id': '',
+            'anthropic_workspace_id': '',
             'language': 'en', 'detail_level': 'maximum_detail',
             'sentence_mode': 'automatic_long_detailed', 'character_name_mode': 'explicit_only',
             'markdown': 'disabled', 'max_output_tokens': '1024', 'image_max_long_edge': '1536',
@@ -374,6 +377,7 @@ def _load_vlm(config: configparser.ConfigParser) -> Vlm:
         connection_order=g('connection_order', d.connection_order),
         paid_connections=g('paid_connections', d.paid_connections),
         cloudflare_account_id=g('cloudflare_account_id', d.cloudflare_account_id).strip(),
+        anthropic_workspace_id=g('anthropic_workspace_id', d.anthropic_workspace_id).strip(),
         language=g('language', d.language),
         detail_level=g('detail_level', d.detail_level),
         sentence_mode=g('sentence_mode', d.sentence_mode),

@@ -21,7 +21,7 @@ from vlm_image import ImagePreprocessConfig, prepare_image
 from vlm_profiles import GenerationProfile, build_system_prompt, build_user_prompt
 from vlm_protocols import (
     VlmCallSpec, VlmHttpRequest, apply_connection_auth, default_auth_key, extract_by_path,
-    get_protocol,
+    get_protocol, apply_request_headers,
 )
 from vlm_transport import RawHttpResponse, execute_http
 
@@ -80,6 +80,34 @@ def _first_cf_message(body: dict) -> str:
             if msg:
                 return str(msg)
     return ""
+
+
+def _response_error_detail(raw: RawHttpResponse) -> str:
+    """プロバイダーのJSONエラーを、キー値を含めず診断画面へ返す。"""
+    body = raw.json_body if isinstance(raw.json_body, dict) else {}
+    message = _first_cf_message(body)
+    error = body.get("error")
+    if not message and isinstance(error, dict):
+        message = str(error.get("message") or error.get("type") or error.get("code") or "")
+    if not message and isinstance(error, str):
+        message = error
+    if not message:
+        message = (raw.text_body or "")[:300].replace("\n", " ")
+    return message.strip()
+
+
+def is_billing_or_credit_block(detail: str) -> bool:
+    """認証後に返る請求設定・残高不足を、キー不正と区別する。"""
+    low = (detail or "").lower()
+    return any(marker in low for marker in (
+        "credit card",
+        "no credits remaining",
+        "credit balance",
+        "insufficient credit",
+        "insufficient_quota",
+        "billing",
+        "payment method",
+    ))
 
 
 def _cloudflare_token_probe(rep: DiagReport, api_key: str, *, verify_tls: bool = True) -> None:
@@ -153,7 +181,8 @@ def diagnose(conn: VlmConnection, api_key: str | None, *,
         rep.add("Model ID", DiagStatus.FAIL, "model_id is empty")
     else:
         rep.add("Model ID", DiagStatus.PASS, conn.model_id)
-    if conn.protocol not in ("openai_chat_completions", "gemini_generate_content"):
+    if conn.protocol not in ("openai_chat_completions", "openai_responses",
+                             "anthropic_messages", "gemini_generate_content"):
         rep.add("Protocol", DiagStatus.WARN, f"unknown protocol {conn.protocol!r}, treated as OpenAI compatible")
     else:
         rep.add("Protocol", DiagStatus.PASS, conn.protocol)
@@ -223,6 +252,7 @@ def diagnose(conn: VlmConnection, api_key: str | None, *,
             protocol.default_text_path = conn.text_path
         req = protocol.build_request(conn.base_url, default_auth_key(conn.auth.type, api_key), call)
         apply_connection_auth(req, conn.auth.type, api_key, conn.auth.header_name, conn.auth.query_param)
+        apply_request_headers(req, conn.request_headers)
         rep.add("Request build", DiagStatus.PASS, f"{req.method} {req.url}")
     except Exception as e:  # noqa: BLE001 - 診断なので全部拾う
         rep.add("Request build", DiagStatus.FAIL, f"{type(e).__name__}: {e}")
@@ -246,22 +276,44 @@ def diagnose(conn: VlmConnection, api_key: str | None, *,
         return rep
 
     rep.http_status = raw.status
+    provider_detail = _response_error_detail(raw)
+    billing_blocked = is_billing_or_credit_block(provider_detail)
     if raw.status == 200:
         rep.add("HTTP response", DiagStatus.PASS, "200 OK")
+    elif billing_blocked:
+        detail = f"{raw.status} billing / credits unavailable"
+        if provider_detail:
+            detail += f": {provider_detail}"
+        rep.add("HTTP response", DiagStatus.FAIL, detail)
     elif raw.status in (401, 403):
-        rep.add("HTTP response", DiagStatus.FAIL, f"{raw.status} auth rejected")
+        detail = f"{raw.status} auth rejected"
+        if provider_detail:
+            detail += f": {provider_detail}"
+        rep.add("HTTP response", DiagStatus.FAIL, detail)
     elif raw.status in (404, 400, 422):
-        rep.add("HTTP response", DiagStatus.FAIL, f"{raw.status} model / request rejected (auth was accepted)")
+        detail = f"{raw.status} model / request rejected (auth was accepted)"
+        if provider_detail:
+            detail += f": {provider_detail}"
+        rep.add("HTTP response", DiagStatus.FAIL, detail)
     elif raw.status == 429:
-        rep.add("HTTP response", DiagStatus.WARN, "429 rate limited (endpoint reachable)")
+        detail = "429 rate limited (endpoint reachable)"
+        if provider_detail:
+            detail += f": {provider_detail}"
+        rep.add("HTTP response", DiagStatus.WARN, detail)
     else:
-        rep.add("HTTP response", DiagStatus.WARN, f"HTTP {raw.status}")
+        detail = f"HTTP {raw.status}"
+        if provider_detail:
+            detail += f": {provider_detail}"
+        rep.add("HTTP response", DiagStatus.WARN, detail)
 
-    # 4'. Auth の判定を実応答で上書きする。401/403 だけが「キー不正」で、それ以外の
-    # ステータスが返っているなら認証は通っている（モデル ID 違い等は別問題）。
+    # 4'. Auth の判定を実応答で上書きする。請求設定・残高不足が明記された403等は
+    # 認証成功として扱い、それ以外の401/403だけを「キー不正」とする。
     auth_item = rep.item("Auth")
     if auth_item is not None and conn.auth.type != "none":
-        if raw.status in (401, 403):
+        if billing_blocked:
+            auth_item.status = DiagStatus.PASS
+            auth_item.detail = f"accepted; billing / credits unavailable (server responded {raw.status})"
+        elif raw.status in (401, 403):
             auth_item.status = DiagStatus.FAIL
             auth_item.detail = f"rejected by the server ({raw.status})"
         else:
@@ -296,9 +348,11 @@ def _classify_extraction(raw: RawHttpResponse, protocol) -> tuple[DiagStatus, st
         return DiagStatus.SKIP, "no successful response to extract from"
     finish_reason = str(
         extract_by_path(raw.json_body, "candidates[0].finishReason")
-        or extract_by_path(raw.json_body, "choices[0].finish_reason") or ""
+        or extract_by_path(raw.json_body, "choices[0].finish_reason")
+        or extract_by_path(raw.json_body, "incomplete_details.reason")
+        or extract_by_path(raw.json_body, "stop_reason") or ""
     ).upper()
-    if finish_reason in ("MAX_TOKENS", "LENGTH"):
+    if finish_reason in ("MAX_TOKENS", "MAX_OUTPUT_TOKENS", "LENGTH"):
         return DiagStatus.WARN, "response truncated at the diagnostic token cap (endpoint reachable)"
     preview = (raw.text_body or "")[:200].replace("\n", " ")
     detail = "200 OK but the response text path did not match"

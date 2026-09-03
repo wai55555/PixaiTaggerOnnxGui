@@ -1,6 +1,7 @@
 """通信形式ごとのリクエスト生成とレスポンス抽出（260901_VLM_spec.md 14章 / design.md 4.4節）。
 
-初期対応: Google Gemini `generateContent` と OpenAI Chat Completions 互換。
+対応形式: Google Gemini `generateContent`、OpenAI Chat Completions 互換、
+OpenAI Responses API、Anthropic Messages API。
 レスポンス抽出は JSONPath 全実装ではなく「ドット区切り + 配列インデックス」に限定する
 （spec.md 8.5節）。カスタムテンプレートは定義済みプレースホルダー置換のみ。任意コードは
 評価しない。
@@ -79,6 +80,13 @@ def apply_connection_auth(req: "VlmHttpRequest", auth_type: str, api_key: str | 
     elif auth_type == "query_key":
         req.headers.pop("Authorization", None)
         req.params[query_param or "key"] = api_key
+
+
+def apply_request_headers(req: "VlmHttpRequest", headers: dict[str, str] | None) -> None:
+    """秘密値ではない接続固有ヘッダーを適用する。空値は送らない。"""
+    for name, value in (headers or {}).items():
+        if name and value:
+            req.headers[name] = value
 
 
 @dataclass(frozen=True)
@@ -183,6 +191,104 @@ class OpenAIChatCompletionsProtocol(VlmProtocol):
         return VlmParseResult(text=text.strip(), finish_reason=finish, prompt_tokens=pt, completion_tokens=ct)
 
 
+class OpenAIResponsesProtocol(VlmProtocol):
+    """OpenAI Responses API（画像入力対応）。"""
+
+    name = "openai_responses"
+    default_text_path = "output[0].content[0].text"
+
+    def build_request(self, base_url: str, api_key: str | None, spec: VlmCallSpec) -> VlmHttpRequest:
+        url = base_url.rstrip("/") + "/responses"
+        headers = {"Content-Type": "application/json"}
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
+        body: dict[str, Any] = {
+            "model": spec.model_id,
+            "instructions": spec.system_prompt,
+            "input": [{
+                "role": "user",
+                "content": [
+                    {"type": "input_text", "text": spec.user_prompt},
+                    {"type": "input_image", "image_url": spec.image.data_url},
+                ],
+            }],
+            "max_output_tokens": spec.profile.max_output_tokens,
+            # キャプション生成に会話履歴は不要。API 側への保存も行わない。
+            "store": False,
+        }
+        if spec.profile.temperature is not None:
+            body["temperature"] = spec.profile.temperature
+        if spec.profile.top_p is not None:
+            body["top_p"] = spec.profile.top_p
+        return VlmHttpRequest(method="POST", url=url, headers=headers, json_body=body)
+
+    def parse_response(self, status: int, body: Any, text_body: str) -> VlmParseResult:
+        if status != 200 or not isinstance(body, dict):
+            code = str(extract_by_path(body, "error.code") if isinstance(body, dict) else "")
+            err = self._error_from_status(status or 0, text_body, code)
+            if code in ("content_filter", "content_policy"):
+                err = VlmAttemptError(VlmErrorReason.CONTENT_POLICY, status or None, err.message, code)
+            return VlmParseResult(error=err)
+        text = _openai_responses_text(body, self.default_text_path)
+        status_text = str(body.get("status") or "")
+        incomplete = str(extract_by_path(body, "incomplete_details.reason") or "")
+        finish = incomplete or status_text
+        pt = _as_int(extract_by_path(body, "usage.input_tokens"))
+        ct = _as_int(extract_by_path(body, "usage.output_tokens"))
+        if not text:
+            return VlmParseResult(error=VlmAttemptError(
+                VlmErrorReason.EMPTY_RESPONSE, 200, "no output_text in response output"))
+        return VlmParseResult(text=text, finish_reason=finish,
+                              prompt_tokens=pt, completion_tokens=ct)
+
+
+class AnthropicMessagesProtocol(VlmProtocol):
+    """Anthropic Messages API（base64 画像ブロック対応）。"""
+
+    name = "anthropic_messages"
+    default_text_path = "content[0].text"
+
+    def build_request(self, base_url: str, api_key: str | None, spec: VlmCallSpec) -> VlmHttpRequest:
+        url = base_url.rstrip("/") + "/messages"
+        headers = {"Content-Type": "application/json", "anthropic-version": "2023-06-01"}
+        if api_key:
+            headers["x-api-key"] = api_key
+        body: dict[str, Any] = {
+            "model": spec.model_id,
+            "system": spec.system_prompt,
+            "messages": [{
+                "role": "user",
+                "content": [
+                    {"type": "image", "source": {
+                        "type": "base64", "media_type": spec.image.mime_type,
+                        "data": spec.image.base64,
+                    }},
+                    {"type": "text", "text": spec.user_prompt},
+                ],
+            }],
+            "max_tokens": spec.profile.max_output_tokens,
+        }
+        if spec.profile.temperature is not None:
+            body["temperature"] = spec.profile.temperature
+        if spec.profile.top_p is not None:
+            body["top_p"] = spec.profile.top_p
+        return VlmHttpRequest(method="POST", url=url, headers=headers, json_body=body)
+
+    def parse_response(self, status: int, body: Any, text_body: str) -> VlmParseResult:
+        if status != 200 or not isinstance(body, dict):
+            code = str(extract_by_path(body, "error.type") if isinstance(body, dict) else "")
+            return VlmParseResult(error=self._error_from_status(status or 0, text_body, code))
+        text = _anthropic_text(body, self.default_text_path)
+        finish = str(body.get("stop_reason") or "")
+        pt = _as_int(extract_by_path(body, "usage.input_tokens"))
+        ct = _as_int(extract_by_path(body, "usage.output_tokens"))
+        if not text:
+            return VlmParseResult(error=VlmAttemptError(
+                VlmErrorReason.EMPTY_RESPONSE, 200, "no text in Anthropic content blocks"))
+        return VlmParseResult(text=text, finish_reason=finish,
+                              prompt_tokens=pt, completion_tokens=ct)
+
+
 class GeminiGenerateContentProtocol(VlmProtocol):
     """Google Generative Language API `:generateContent`。"""
 
@@ -257,6 +363,31 @@ def _as_int(v: Any) -> int | None:
         return None
 
 
+def _openai_responses_text(body: dict, path: str) -> str:
+    if path != OpenAIResponsesProtocol.default_text_path:
+        value = extract_by_path(body, path)
+        return value.strip() if isinstance(value, str) else ""
+    chunks: list[str] = []
+    for output in body.get("output") or []:
+        if not isinstance(output, dict):
+            continue
+        for part in output.get("content") or []:
+            if isinstance(part, dict) and part.get("type") == "output_text" \
+                    and isinstance(part.get("text"), str):
+                chunks.append(part["text"])
+    return "".join(chunks).strip()
+
+
+def _anthropic_text(body: dict, path: str) -> str:
+    if path != AnthropicMessagesProtocol.default_text_path:
+        value = extract_by_path(body, path)
+        return value.strip() if isinstance(value, str) else ""
+    chunks = [part["text"] for part in body.get("content") or []
+              if isinstance(part, dict) and part.get("type") == "text"
+              and isinstance(part.get("text"), str)]
+    return "".join(chunks).strip()
+
+
 def _gemini_answer_text(body: Any) -> str:
     """candidates[0].content.parts から回答テキストだけを拾う。
 
@@ -282,6 +413,8 @@ def _looks_like_content_policy(text_body: str) -> bool:
 
 PROTOCOLS: dict[str, type[VlmProtocol]] = {
     OpenAIChatCompletionsProtocol.name: OpenAIChatCompletionsProtocol,
+    OpenAIResponsesProtocol.name: OpenAIResponsesProtocol,
+    AnthropicMessagesProtocol.name: AnthropicMessagesProtocol,
     GeminiGenerateContentProtocol.name: GeminiGenerateContentProtocol,
 }
 

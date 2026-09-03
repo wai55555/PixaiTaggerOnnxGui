@@ -10,7 +10,9 @@ from __future__ import annotations
 
 from vlm_connections import VlmConnection
 from vlm_errors import VlmAttemptError, VlmErrorReason
-from vlm_protocols import VlmHttpRequest, apply_connection_auth, default_auth_key
+from vlm_protocols import (
+    VlmHttpRequest, apply_connection_auth, apply_request_headers, default_auth_key,
+)
 from vlm_transport import RawHttpResponse, execute_http
 
 
@@ -29,10 +31,13 @@ def fetch_model_ids(conn: VlmConnection, api_key: str | None,
         url = f"{base}/models"
 
     req = VlmHttpRequest(method="GET", url=url, headers={}, params={}, json_body={})
+    if conn.protocol == "anthropic_messages":
+        req.headers["anthropic-version"] = "2023-06-01"
     default_key = default_auth_key(conn.auth.type, api_key)
     if default_key:
         req.headers["Authorization"] = f"Bearer {default_key}"
     apply_connection_auth(req, conn.auth.type, api_key, conn.auth.header_name, conn.auth.query_param)
+    apply_request_headers(req, conn.request_headers)
 
     raw = execute_http(req, connect_timeout=connect_timeout, read_timeout=read_timeout,
                        verify_tls=conn.verify_tls)

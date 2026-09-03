@@ -183,10 +183,12 @@ def test_transport_applies_header_and_query_auth():
 
         # bearer auth -> Authorization: Bearer
         c3 = VlmConnection("b", "b", ConnectionKind.CUSTOM_EXTERNAL, "openai_chat_completions",
-                           "http://x/v1", "m", auth=AuthSpec(type="bearer", secret_ref="r"))
+                           "http://x/v1", "m", auth=AuthSpec(type="bearer", secret_ref="r"),
+                           request_headers={"anthropic-workspace-id": "wrkspc_test"})
         ex3 = VlmExecutor({"b": c3}, lambda ref: "SECRET")
         ex3.caption_one(_spec(), ["b"])
         assert seen["headers"].get("Authorization") == "Bearer SECRET"
+        assert seen["headers"].get("anthropic-workspace-id") == "wrkspc_test"
     finally:
         T.execute_http = old
     print("  transport auth routing (header_key / query_key / bearer): OK")
@@ -246,7 +248,31 @@ def test_diagnostics_static():
     rep3 = D.diagnose(tmpl, api_key="k", do_live_request=True)
     assert [i.name for i in rep3.items] == ["URL format"]
     assert rep3.items[0].status is D.DiagStatus.FAIL and "region" in rep3.items[0].detail
+
+    for protocol in ("openai_responses", "anthropic_messages"):
+        direct = _conn(f"direct-{protocol}", protocol)
+        rep4 = D.diagnose(direct, api_key=None, do_live_request=False)
+        assert rep4.item("Protocol").status is D.DiagStatus.PASS
     print("  diagnostics static checks: OK")
+
+
+def test_diagnostics_worker_surfaces_internal_error():
+    import vlm_diagnostics as D
+    from vlm_worker import VlmDiagnosticsWorker
+    old = D.diagnose
+    reports = []
+    D.diagnose = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("probe exploded"))
+    try:
+        worker = VlmDiagnosticsWorker(_conn("broken"), None)
+        worker.report_ready.connect(reports.append)
+        worker.run()
+    finally:
+        D.diagnose = old
+    assert len(reports) == 1
+    item = reports[0].item("Internal diagnostic error")
+    assert item is not None and item.status is D.DiagStatus.FAIL
+    assert "probe exploded" in item.detail
+    print("  diagnostics worker exception -> visible failure report: OK")
 
 
 def test_diagnostics_cloudflare_token_verify(monkeypatch):
@@ -306,6 +332,17 @@ def test_diagnostics_live_extraction_branches():
     st, _ = _cls({"candidates": [{"finishReason": "MAX_TOKENS"}], "usageMetadata": {}})
     assert st is D.DiagStatus.WARN
 
+    cf_error = RawHttpResponse(403, {}, {
+        "success": False, "errors": [{"code": 10000, "message": "Authentication error"}]}, "")
+    assert D._response_error_detail(cf_error) == "Authentication error"
+
+    assert D.is_billing_or_credit_block(
+        "AI Gateway requires a valid credit card on file to service requests")
+    assert D.is_billing_or_credit_block(
+        "Your credit balance is too low to access the Anthropic API")
+    assert D.is_billing_or_credit_block("You have no credits remaining")
+    assert not D.is_billing_or_credit_block("Invalid API key")
+
     # genuinely wrong shape -> FAIL with a body preview
     st, detail = _cls({"unexpected": "shape"}, '{"unexpected": "shape"}')
     assert st is D.DiagStatus.FAIL and "unexpected" in detail
@@ -313,7 +350,41 @@ def test_diagnostics_live_extraction_branches():
     # non-200 -> SKIP (nothing to extract)
     st, _ = D._classify_extraction(RawHttpResponse(500, {}, {}, "boom"), proto)
     assert st is D.DiagStatus.SKIP
+
+    responses = get_protocol("openai_responses")
+    st, _ = D._classify_extraction(RawHttpResponse(200, {}, {
+        "status": "incomplete", "incomplete_details": {"reason": "max_output_tokens"},
+        "output": []}, "{}"), responses)
+    assert st is D.DiagStatus.WARN
+
+    anthropic = get_protocol("anthropic_messages")
+    st, _ = D._classify_extraction(RawHttpResponse(200, {}, {
+        "content": [], "stop_reason": "max_tokens"}, "{}"), anthropic)
+    assert st is D.DiagStatus.WARN
     print("  diagnostics extraction: text->PASS, MAX_TOKENS->WARN, bad shape->FAIL+preview, 500->SKIP: OK")
+
+
+def test_diagnostics_billing_block_is_not_auth_failure():
+    import vlm_diagnostics as D
+
+    conn = VlmConnection(
+        "builtin-vercel", "Vercel", ConnectionKind.BUILTIN,
+        "openai_chat_completions", "http://localhost/v1", "google/gemma-4-26b-a4b-it",
+        provider_id="vercel", auth=AuthSpec(type="bearer", secret_ref="x"))
+    old = D.execute_http
+    try:
+        D.execute_http = lambda *a, **k: RawHttpResponse(
+            403, {}, {"error": {"message":
+                "AI Gateway requires a valid credit card on file to service requests"}}, "")
+        rep = D.diagnose(conn, api_key="valid-key", do_live_request=True)
+    finally:
+        D.execute_http = old
+    assert rep.http_status == 403
+    assert rep.item("Auth").status is D.DiagStatus.PASS
+    assert "billing / credits unavailable" in rep.item("Auth").detail
+    assert rep.item("HTTP response").status is D.DiagStatus.FAIL
+    assert "credit card" in rep.item("HTTP response").detail
+    print("  diagnostics: billing/card block remains HTTP FAIL but auth PASS: OK")
 
 
 def test_model_list_fetch():
@@ -353,6 +424,21 @@ def test_model_list_fetch():
         ML.execute_http = _cf
         assert ML.fetch_model_ids(cf, "k") == ["@cf/meta/llama-3.2-11b-vision"]
         assert seen["url"].endswith("/ai/models/search")
+
+        # Anthropic uses the same {data:[{id:...}]} shape but requires a version header.
+        anthropic = VlmConnection("an", "an", ConnectionKind.BUILTIN, "anthropic_messages",
+                                  "https://api.anthropic.com/v1", "m", provider_id="anthropic",
+                                  auth=AuthSpec(type="header_key", secret_ref="r",
+                                                header_name="x-api-key"),
+                                  request_headers={"anthropic-workspace-id": "wrkspc_test"})
+        def _anthropic(req, **kw):
+            seen["anthropic_headers"] = dict(req.headers)
+            return RawHttpResponse(200, {}, {"data": [{"id": "claude-haiku-4-5-20251001"}]}, "")
+        ML.execute_http = _anthropic
+        assert ML.fetch_model_ids(anthropic, "ak") == ["claude-haiku-4-5-20251001"]
+        assert seen["anthropic_headers"]["anthropic-version"] == "2023-06-01"
+        assert seen["anthropic_headers"]["x-api-key"] == "ak"
+        assert seen["anthropic_headers"]["anthropic-workspace-id"] == "wrkspc_test"
     finally:
         ML.execute_http = old
     print("  model list fetch: openai dedup, gemini strip+filter, cloudflare search endpoint, 401/404: OK")

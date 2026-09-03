@@ -148,7 +148,8 @@ class VlmModelRegistry:
 # （vlm_config._apply_verified_promotions）。
 #
 # providers: gemini / openrouter / cloudflare / groq / nvidia / mistral /
-#            huggingface（ovhcloud は実機検証できるまで無効）
+#            huggingface / vercel / openai / anthropic
+#            （ovhcloud は実機検証できるまで無効）
 #   - gemini      : Google Generative Language API（gemini_generate_content）
 #   - openrouter  : OpenRouter（openai_chat_completions、`:free` サフィックスで無料経路）
 #   - cloudflare  : Cloudflare Workers AI（openai_chat_completions、要 account_id）
@@ -156,6 +157,9 @@ class VlmModelRegistry:
 #   - nvidia      : NVIDIA NIM / build.nvidia.com（openai_chat_completions、無料クレジット）
 #   - mistral     : Mistral La Plateforme（openai_chat_completions、無料枠あり）
 #   - huggingface : Hugging Face Inference Providers（openai_chat_completions、従量課金）
+#   - vercel      : Vercel AI Gateway（openai_chat_completions、従量課金）
+#   - openai      : OpenAI Responses API（従量課金）
+#   - anthropic   : Anthropic Messages API（従量課金）
 #   - ovhcloud    : OVHcloud AI Endpoints（日本居住者環境で実機検証できるまで無効）
 
 GEMMA_4_26B_A4B_IT = VlmModelProfile(
@@ -182,6 +186,8 @@ GEMMA_4_26B_A4B_IT = VlmModelProfile(
                                    ModelIdentityStatus.DECLARED),
         "huggingface": ModelBinding("huggingface", "google/gemma-4-26B-A4B-it",
                                      ModelIdentityStatus.UNKNOWN),
+        "vercel": ModelBinding("vercel", "google/gemma-4-26b-a4b-it",
+                                ModelIdentityStatus.DECLARED),
     },
 )
 
@@ -205,6 +211,8 @@ GEMMA_4_31B_IT = VlmModelProfile(
         "groq": ModelBinding("groq", "gemma-4-31b-it", ModelIdentityStatus.UNKNOWN, free_route=True),
         "huggingface": ModelBinding("huggingface", "google/gemma-4-31B-it",
                                      ModelIdentityStatus.UNKNOWN),
+        "vercel": ModelBinding("vercel", "google/gemma-4-31b-it",
+                                ModelIdentityStatus.DECLARED),
     },
 )
 
@@ -263,7 +271,42 @@ PIXTRAL_12B = VlmModelProfile(
     },
 )
 
-_ALL_PROFILES = [GEMMA_4_26B_A4B_IT, GEMMA_4_31B_IT, QWEN3_8_27B, QWEN3_6_27B, PIXTRAL_12B]
+OPENAI_GPT_5_6_LUNA = VlmModelProfile(
+    profile_id="openai-gpt-5.6-luna",
+    display_name="OpenAI GPT-5.6 Luna",
+    canonical_model_id="gpt-5.6-luna",
+    family="GPT-5.6",
+    base_model="gpt-5.6-luna",
+    revision="provider_managed",
+    quantization="provider_managed",
+    aliases=("openai/gpt-5.6-luna",),
+    bindings={
+        "openai": ModelBinding("openai", "gpt-5.6-luna", ModelIdentityStatus.DECLARED),
+        "vercel": ModelBinding("vercel", "openai/gpt-5.6-luna", ModelIdentityStatus.DECLARED),
+    },
+)
+
+CLAUDE_HAIKU_4_5 = VlmModelProfile(
+    profile_id="claude-haiku-4-5",
+    display_name="Claude Haiku 4.5",
+    canonical_model_id="claude-haiku-4-5-20251001",
+    family="Claude 4.5",
+    base_model="claude-haiku-4-5-20251001",
+    revision="20251001",
+    quantization="provider_managed",
+    aliases=("anthropic/claude-haiku-4.5",),
+    bindings={
+        "anthropic": ModelBinding("anthropic", "claude-haiku-4-5-20251001",
+                                  ModelIdentityStatus.DECLARED),
+        "vercel": ModelBinding("vercel", "anthropic/claude-haiku-4.5",
+                                ModelIdentityStatus.DECLARED),
+    },
+)
+
+_ALL_PROFILES = [
+    GEMMA_4_26B_A4B_IT, GEMMA_4_31B_IT, QWEN3_8_27B, QWEN3_6_27B, PIXTRAL_12B,
+    OPENAI_GPT_5_6_LUNA, CLAUDE_HAIKU_4_5,
+]
 
 
 def _profile_reference_tokens(profile: VlmModelProfile) -> set[str]:

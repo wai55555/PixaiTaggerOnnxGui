@@ -191,6 +191,22 @@ def test_api_key_dialog_verify_and_save():
     assert stored.get("vlm/gemini/api_key") == "KEYOK_MODELBAD" and d2b.saved() is True
     assert d2b._model_warning
 
+    # A 403 can mean the key was accepted but account billing is not enabled. Save the
+    # credential and show a service warning instead of misreporting an auth failure.
+    stored.clear()
+    billing = DiagReport("builtin-vercel")
+    billing.add("Auth", DiagStatus.PASS, "accepted; billing / credits unavailable")
+    billing.add(
+        "HTTP response", DiagStatus.FAIL,
+        "403 billing / credits unavailable: AI Gateway requires a valid credit card on file")
+    billing.http_status = 403
+    d2c = _run(billing, "KEYOK_CARD_REQUIRED")
+    assert stored.get("vlm/gemini/api_key") == "KEYOK_CARD_REQUIRED" and d2c.saved() is True
+    assert "credit card" in d2c._service_warning
+    assert d2c.result() != ApiKeyDialog.DialogCode.Accepted
+    assert d2c.status.text() == "ApiKey_Service_Warning"
+    d2c.close()
+
     stored.clear()
     offline = DiagReport("builtin-gemini")
     offline.add("DNS / TCP", DiagStatus.FAIL, "cannot resolve host")
@@ -211,6 +227,9 @@ def test_api_key_dialog_verify_and_save():
                       conn=conn, key_url="http://k", login_url="http://l", instructions="x")
     assert d5.current_label.text() == "ApiKey_Current_None"
     assert d5.key_edit.placeholderText() == "ApiKey_Paste_Placeholder"
+    d5.status.setText("403 billing details to copy")
+    d5._copy_status()
+    assert _APP.clipboard().text() == "403 billing details to copy"
     d5.close()
 
     # Cloudflare keeps Account ID in this dialog only and requires a full image response.
@@ -253,6 +272,19 @@ def test_api_key_dialog_verify_and_save():
     assert d6.saved() is False and "vlm/cloudflare/api_token" not in stored
     assert cf_ids == [], "token verification alone must not save the Account ID"
 
+    # DNS/TLS/internal failures happen before an HTTP item exists. Their actual detail must
+    # remain visible instead of collapsing to the generic Cloudflare failure message.
+    cf_offline = DiagReport("builtin-cloudflare")
+    cf_offline.add("DNS / TCP", DiagStatus.FAIL, "cannot resolve api.cloudflare.com")
+    D.diagnose = lambda c, k, do_live_request=True: cf_offline
+    d6._check_and_save()
+    for _ in range(300):
+        _APP.processEvents()
+        time.sleep(0.01)
+        if d6._check_thread is None:
+            break
+    assert d6._verify_failed == "cannot resolve api.cloudflare.com"
+
     cf_good = DiagReport("builtin-cloudflare")
     cf_good.add("Auth", DiagStatus.PASS, "ok")
     cf_good.add("HTTP response", DiagStatus.PASS, "200 OK")
@@ -290,6 +322,82 @@ def test_api_key_dialog_verify_and_save():
     assert d7.saved() is True and cf_ids == [account_id]
     assert stored == {}, "an existing token should not be copied into another secret tier"
 
+    # Multi-workspace Anthropic identity keys need anthropic-workspace-id. The key dialog
+    # keeps a missing/invalid workspace error open, then saves a verified workspace ID.
+    anthropic = VlmConnection(
+        "builtin-anthropic", "Anthropic Claude", ConnectionKind.BUILTIN,
+        "anthropic_messages", "https://api.anthropic.com/v1", "claude-haiku-4-5-20251001",
+        provider_id="anthropic",
+        auth=AuthSpec(type="header_key", secret_ref="vlm/anthropic/api_key",
+                      header_name="x-api-key"),
+    )
+    workspace_ids = []
+    da = ApiKeyDialog(
+        tr, display_name="Anthropic Claude", secret_ref="vlm/anthropic/api_key",
+        conn=anthropic, key_url="http://k", login_url="http://l", instructions="x",
+        on_anthropic_workspace_saved=workspace_ids.append,
+    )
+    assert da.workspace_id_edit is not None
+    da.key_edit.setText("ANTHROPIC_KEY")
+    da.workspace_id_edit.setText("invalid")
+    da._check_and_save()
+    assert da._check_thread is None
+    assert da.status.text() == "ApiKey_Anthropic_Workspace_Invalid"
+
+    workspace_required = DiagReport("builtin-anthropic")
+    workspace_required.add("Auth", DiagStatus.PASS, "accepted")
+    workspace_required.add(
+        "HTTP response", DiagStatus.FAIL,
+        "400 model / request rejected: anthropic-workspace-id is required")
+    workspace_required.http_status = 400
+    D.diagnose = lambda c, k, do_live_request=True: workspace_required
+    da.workspace_id_edit.setText("")
+    da._check_and_save()
+    for _ in range(300):
+        _APP.processEvents()
+        time.sleep(0.01)
+        if da._check_thread is None:
+            break
+    assert da.saved() is False and "anthropic-workspace-id" in da._verify_failed
+
+    anthropic_good = DiagReport("builtin-anthropic")
+    anthropic_good.add("Auth", DiagStatus.PASS, "accepted")
+    anthropic_good.add("HTTP response", DiagStatus.PASS, "200 OK")
+    anthropic_good.add("Caption extraction", DiagStatus.PASS, "got text")
+    anthropic_good.http_status = 200
+    checked_headers = []
+    D.diagnose = lambda c, k, do_live_request=True: (
+        checked_headers.append(dict(c.request_headers)) or anthropic_good)
+    da.workspace_id_edit.setText("wrkspc_01Test123")
+    da._check_and_save()
+    for _ in range(300):
+        _APP.processEvents()
+        time.sleep(0.01)
+        if da._check_thread is None:
+            break
+    assert da.saved() is True and workspace_ids == ["wrkspc_01Test123"]
+    assert checked_headers == [{"anthropic-workspace-id": "wrkspc_01Test123"}]
+
+    stored.clear()
+    workspace_ids.clear()
+    vlm_secrets.secret_status = lambda ref: "keyring"
+    vlm_secrets.get_secret = lambda ref: "EXISTING_ANTHROPIC_KEY"
+    da2 = ApiKeyDialog(
+        tr, display_name="Anthropic Claude", secret_ref="vlm/anthropic/api_key",
+        conn=anthropic, key_url="http://k", login_url="http://l", instructions="x",
+        on_anthropic_workspace_saved=workspace_ids.append,
+    )
+    D.diagnose = lambda c, k, do_live_request=True: anthropic_good
+    da2.workspace_id_edit.setText("wrkspc_Existing123")
+    da2._check_and_save()
+    for _ in range(300):
+        _APP.processEvents()
+        time.sleep(0.01)
+        if da2._check_thread is None:
+            break
+    assert da2.saved() is True and workspace_ids == ["wrkspc_Existing123"]
+    assert stored == {}, "workspace-only update must not copy an existing key"
+
     (AKD.QMessageBox.information, vlm_secrets.set_secret, vlm_secrets.get_secret,
      vlm_secrets.keyring_available, D.diagnose, vlm_secrets.secret_status) = _orig
     print("  ApiKeyDialog: generic key checks + Cloudflare Account ID/full request: OK")
@@ -307,6 +415,8 @@ def test_dotenv_loading():
     (d / ".env").write_text(
         'GEMINI_API_KEY=g_key\n# note\nexport MISTRAL_API_KEY="m_key"\n'
         'HF_TOKEN=hf_key\n'
+        'AI_GATEWAY_API_KEY=vercel_key\nOPENAI_API_KEY=openai_key\n'
+        'ANTHROPIC_API_KEY=anthropic_key\n'
         'CLOUDFLARE_ACCOUNT_ID=acct-x\n',
         encoding="utf-8")
     cwd = os.getcwd()
@@ -351,6 +461,9 @@ def test_dotenv_loading():
             assert vlm_secrets.get_secret("vlm/gemini/api_key") == "g_key"
             assert vlm_secrets.get_secret("vlm/mistral/api_key") == "m_key"      # quotes stripped
             assert vlm_secrets.get_secret("vlm/huggingface/api_token") == "hf_key"
+            assert vlm_secrets.get_secret("vlm/vercel/api_key") == "vercel_key"
+            assert vlm_secrets.get_secret("vlm/openai/api_key") == "openai_key"
+            assert vlm_secrets.get_secret("vlm/anthropic/api_key") == "anthropic_key"
             assert os.environ["CLOUDFLARE_ACCOUNT_ID"] == "acct-x"
             assert os.environ["GROQ_API_KEY"] == "preset"                        # not overwritten
         finally:
@@ -377,7 +490,11 @@ def test_lang_files_parse_and_expose_vlm_keys():
     import configparser
     root = Path(__file__).resolve().parent.parent
     want = ["Settings_Mode_Builtin", "ApiKey_Steps_Gemini", "ApiKey_Steps_Cloudflare",
-            "ApiKey_Steps_HuggingFace", "ApiKey_Cf_Account_Invalid",
+            "ApiKey_Steps_HuggingFace", "ApiKey_Steps_Vercel", "ApiKey_Steps_OpenAI",
+            "ApiKey_Steps_Anthropic", "ApiKey_Cf_Account_Invalid",
+            "ApiKey_Anthropic_Workspace", "ApiKey_Anthropic_Workspace_Invalid",
+            "ApiKey_Current_Registered_Anthropic", "ApiKey_Copy_Details",
+            "ApiKey_Service_Warning",
             "Opt_Detail_maximum_detail", "Opt_Sentence_5", "Opt_CharName_explicit_only",
             "Opt_Markdown_disabled", "Settings_Language_Fixed_Tooltip"]
     for name in ("lang/en.ini", "lang/ja.ini"):

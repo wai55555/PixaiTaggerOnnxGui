@@ -46,7 +46,12 @@ class VlmDiagnosticsWorker(QObject):
             report = diagnose(self._conn, self._api_key, do_live_request=True)
             self.report_ready.emit(report)
         except Exception as e:  # noqa: BLE001
-            write_debug_log(f"vlm diagnostics worker error: {e}")
+            from vlm_diagnostics import DiagReport, DiagStatus
+            detail = f"{type(e).__name__}: {e}"
+            write_debug_log(f"vlm diagnostics worker error: {detail}")
+            report = DiagReport(connection_id=getattr(self._conn, "connection_id", ""))
+            report.add("Internal diagnostic error", DiagStatus.FAIL, detail)
+            self.report_ready.emit(report)
         finally:
             self.finished.emit()
 

@@ -24,7 +24,7 @@ from vlm_worker import VlmModelListWorker
 GetString = Callable[..., str]
 _PROVIDERS = (
     "gemini", "openrouter", "cloudflare", "groq", "nvidia", "mistral",
-    "huggingface",
+    "huggingface", "vercel", "openai", "anthropic",
     # "ovhcloud",  # 日本居住者環境で実機検証できるまで無効
 )
 _SECRET_REF = {
@@ -32,6 +32,8 @@ _SECRET_REF = {
     "cloudflare": "vlm/cloudflare/api_token", "groq": "vlm/groq/api_key",
     "nvidia": "vlm/nvidia/api_key", "mistral": "vlm/mistral/api_key",
     "huggingface": "vlm/huggingface/api_token",
+    "vercel": "vlm/vercel/api_key", "openai": "vlm/openai/api_key",
+    "anthropic": "vlm/anthropic/api_key",
     # "ovhcloud": "vlm/ovhcloud/api_key",
 }
 

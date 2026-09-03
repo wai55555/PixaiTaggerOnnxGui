@@ -177,6 +177,9 @@ def build_connection_map(vlm_settings, model_profile=None) -> dict[str, VlmConne
     paid_set = {p.strip() for p in str(getattr(vlm_settings, "paid_connections", "")).split(",") if p.strip()}
     cf_account = (str(getattr(vlm_settings, "cloudflare_account_id", "") or "").strip()
                   or os.environ.get("CLOUDFLARE_ACCOUNT_ID", "").strip())
+    anthropic_workspace = (
+        str(getattr(vlm_settings, "anthropic_workspace_id", "") or "").strip()
+        or os.environ.get("ANTHROPIC_WORKSPACE_ID", "").strip())
     overrides = vlm_settings.model_id_override_map() if hasattr(vlm_settings, "model_id_override_map") else {}
     profile_id = getattr(model_profile, "profile_id", "") or getattr(vlm_settings, "model_profile_id", "")
     result: dict[str, VlmConnection] = {}
@@ -207,6 +210,8 @@ def build_connection_map(vlm_settings, model_profile=None) -> dict[str, VlmConne
                 conn.base_url = conn.base_url.replace("{account_id}", cf_account)
             else:
                 conn.enabled = False
+        if conn.provider_id == "anthropic" and anthropic_workspace:
+            conn.request_headers["anthropic-workspace-id"] = anthropic_workspace
         result[conn.connection_id] = conn
     for raw in load_custom_connections():
         try:
@@ -309,7 +314,7 @@ def mark_binding_verified(vlm_settings, provider_id: str, *, profile_id: str | N
 
 KNOWN_BUILTIN_PROVIDERS = (
     "gemini", "openrouter", "cloudflare", "groq", "nvidia", "mistral",
-    "huggingface",
+    "huggingface", "vercel", "openai", "anthropic",
     # "ovhcloud",  # 日本居住者環境で実機検証できるまで無効
 )
 

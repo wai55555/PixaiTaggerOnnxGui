@@ -192,6 +192,9 @@ def test_settings_dialog_roundtrip():
             r["paid_ok"].setChecked(True)
     assert not hasattr(dlg, "cf_account_edit")
     assert dlg._route_rows["builtin-huggingface"]["enabled"].isChecked() is False
+    for cid in ("builtin-vercel", "builtin-openai", "builtin-anthropic"):
+        assert dlg._route_rows[cid]["enabled"].isChecked() is False
+        assert dlg._route_rows[cid]["conn"].is_known_free_route is False
     assert "builtin-ovhcloud" not in dlg._route_rows
     dlg._on_cloudflare_verified("fedcba9876543210fedcba9876543210")
     assert dlg.strict_check.isChecked() is False       # default off
@@ -205,11 +208,29 @@ def test_settings_dialog_roundtrip():
     assert "gemma-4-26b-a4b-it:cloudflare" in s.vlm.verified_set()
     assert s.vlm.language == "en"
     assert s.vlm.strict_identity is True
+    dlg._on_anthropic_workspace_saved("wrkspc_test123")
+    assert s.vlm.anthropic_workspace_id == "wrkspc_test123"
+    assert A.load_settings(A.load_config()).vlm.anthropic_workspace_id == "wrkspc_test123"
 
     import vlm_config
     assert vlm_config.build_router_policy(s.vlm).allow_declared_identity is False
     s.vlm.strict_identity = False
     assert vlm_config.build_router_policy(s.vlm).allow_declared_identity is True
+
+    # Earlier worker tests replace this resolver with a fixed Gemma profile.
+    # Restore profile-aware resolution before checking the newly shipped profiles.
+    vlm_config.resolve_model_profile = lambda v: next(
+        (p for p in vlm_config.all_profiles() if p.profile_id == v.model_profile_id), None)
+    gpt_i = dlg.profile_combo.findData("openai-gpt-5.6-luna")
+    dlg.profile_combo.setCurrentIndex(gpt_i)
+    assert dlg._route_rows["builtin-openai"]["model_edit"].currentText() == "gpt-5.6-luna"
+    assert dlg._route_rows["builtin-openai"]["conn"].protocol == "openai_responses"
+    assert dlg._route_rows["builtin-openai"]["enabled"].isChecked() is False
+    claude_i = dlg.profile_combo.findData("claude-haiku-4-5")
+    dlg.profile_combo.setCurrentIndex(claude_i)
+    assert dlg._route_rows["builtin-anthropic"]["model_edit"].currentText() == \
+        "claude-haiku-4-5-20251001"
+    assert dlg._route_rows["builtin-anthropic"]["conn"].protocol == "anthropic_messages"
     print("  settings dialog round-trip (incl. strict_identity <-> allow_declared_identity): OK")
 
 

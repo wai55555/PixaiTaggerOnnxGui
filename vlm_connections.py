@@ -1,7 +1,8 @@
 """内蔵接続とカスタム接続の定義（260901_VLM_spec.md 2.2・14章 / design.md 4.2・5.2節）。
 
 - 内蔵接続: アプリが URL・プロトコル・既知の無料経路情報を持つ
-  （Gemini / OpenRouter / Cloudflare / Groq / NVIDIA / Mistral / Hugging Face）
+  （Gemini / OpenRouter / Cloudflare / Groq / NVIDIA / Mistral / Hugging Face /
+   Vercel AI Gateway / OpenAI / Anthropic）
 - カスタム接続: 利用者が登録する外部 API / ローカル VLM。同一モデル判定は行わない。
   外部・ローカルの判定は安全側（不明なら外部扱い）。
 """
@@ -106,6 +107,9 @@ class VlmConnection:
     # レスポンス抽出パスの上書き（空ならプロトコル既定）。
     text_path: str = ""
     error_path: str = ""
+    # APIキー以外のプロバイダー必須ヘッダー。現在は複数Workspace対象のAnthropic
+    # personal/service-account keyで使う anthropic-workspace-id を保持する。
+    request_headers: dict[str, str] = field(default_factory=dict)
 
     @property
     def is_custom(self) -> bool:
@@ -251,6 +255,41 @@ BUILTIN_CONNECTION_TEMPLATES: list[dict] = [
         "model_id": "",
         "auth": {"type": "bearer", "secret_ref": "vlm/huggingface/api_token"},
         # Monthly credits exist, but routed inference is metered and can consume paid credits.
+        "is_known_free_route": False,
+    },
+    {
+        "connection_id": "builtin-vercel",
+        "display_name": "Vercel AI Gateway",
+        "kind": "builtin",
+        "provider_id": "vercel",
+        "protocol": "openai_chat_completions",
+        "base_url": "https://ai-gateway.vercel.sh/v1",
+        "model_id": "",
+        "auth": {"type": "bearer", "secret_ref": "vlm/vercel/api_key"},
+        # 無料クレジットが付く場合もあるが、経路自体は従量課金。
+        "is_known_free_route": False,
+    },
+    {
+        "connection_id": "builtin-openai",
+        "display_name": "OpenAI",
+        "kind": "builtin",
+        "provider_id": "openai",
+        "protocol": "openai_responses",
+        "base_url": "https://api.openai.com/v1",
+        "model_id": "",
+        "auth": {"type": "bearer", "secret_ref": "vlm/openai/api_key"},
+        "is_known_free_route": False,
+    },
+    {
+        "connection_id": "builtin-anthropic",
+        "display_name": "Anthropic Claude",
+        "kind": "builtin",
+        "provider_id": "anthropic",
+        "protocol": "anthropic_messages",
+        "base_url": "https://api.anthropic.com/v1",
+        "model_id": "",
+        "auth": {"type": "header_key", "header_name": "x-api-key",
+                 "secret_ref": "vlm/anthropic/api_key"},
         "is_known_free_route": False,
     },
     # OVHcloud は日本居住者によるアカウント作成・実機検証ができなかったため無効化。
