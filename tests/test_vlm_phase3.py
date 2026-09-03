@@ -234,6 +234,37 @@ def test_settings_dialog_roundtrip():
     print("  settings dialog round-trip (incl. strict_identity <-> allow_declared_identity): OK")
 
 
+def test_settings_dialog_rejects_non_vlm_model():
+    import app_settings as A
+    from vlm_settings_dialog import VlmSettingsDialog
+
+    s = A.load_settings(A.get_default_config())
+    s.vlm.model_profile_id = "qwen3.8-27b"
+    old_resolver = vlm_config.resolve_model_profile
+    vlm_config.resolve_model_profile = lambda v: next(
+        (p for p in vlm_config.all_profiles() if p.profile_id == v.model_profile_id), None)
+    dlg = None
+    try:
+        dlg = VlmSettingsDialog(s, lambda sec, key, **kw: key)
+        row = dlg._route_rows["builtin-groq"]
+        assert row["enabled"].isEnabled()
+
+        row["model_edit"].setCurrentText("groq/compound-mini")
+        dlg._on_model_id_edited("builtin-groq")
+        assert row["model_edit"].currentText() == "qwen3.8-27b"
+        assert "qwen3.8-27b:groq" not in s.vlm.model_id_override_map()
+
+        dlg._on_model_list("builtin-groq", [
+            "groq/compound-mini", "qwen/qwen3.8-27b", "llama-3.3-70b-versatile",
+        ])
+        assert row["model_ids"] == ["qwen/qwen3.8-27b"]
+    finally:
+        if dlg is not None:
+            dlg.close()
+        vlm_config.resolve_model_profile = old_resolver
+    print("  settings dialog rejects non-VLM model IDs and filters model list: OK")
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     for t in tests:

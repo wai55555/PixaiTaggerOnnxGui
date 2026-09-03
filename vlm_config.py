@@ -14,7 +14,7 @@ from constants import BASE_DIR
 from utils import write_debug_log
 from vlm_connections import VlmConnection, default_builtin_connections
 from vlm_models import (
-    ModelBinding, ModelIdentityStatus, VlmModelProfile, default_registry,
+    ModelBinding, ModelIdentityStatus, VlmModelProfile, default_registry, is_vlm_model_id,
 )
 from vlm_profiles import GenerationProfile
 from vlm_router import RouterPolicy, parse_execution_mode
@@ -191,7 +191,11 @@ def build_connection_map(vlm_settings, model_profile=None) -> dict[str, VlmConne
 
         binding = model_profile.binding_for(conn.provider_id) if model_profile is not None else None
         override = overrides.get(f"{profile_id}:{conn.provider_id}")
-        if override:
+        # 内蔵VLM経路では、保存済みの古い／手入力の非VLM IDを実行に使わない。
+        # 既知の不適合IDや選択プロファイルと別モデルのIDは、bindingの安全な既定値へ
+        # 戻す。設定文字列自体はここでは書き換えず、設定画面で利用者が置き換えられる
+        # ようにする。
+        if override and is_vlm_model_id(model_profile, conn.provider_id, override):
             conn.model_id = override
             if binding is not None:
                 conn.is_known_free_route = binding.free_route

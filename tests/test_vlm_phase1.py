@@ -546,6 +546,9 @@ def test_multi_provider_profiles():
     assert CFG.build_connection_map(s, prof)["builtin-nvidia"].model_id == "qwen/qwen3-vl-32b-instruct"
     CFG.set_model_id_override(s, "nvidia", "", profile_id="qwen3.8-27b")
     assert "qwen3.8-27b:nvidia" not in s.model_id_override_map()
+    CFG.set_model_id_override(s, "groq", "groq/compound-mini", profile_id="qwen3.8-27b")
+    assert CFG.build_connection_map(s, prof)["builtin-groq"].model_id == "qwen3.8-27b"
+    CFG.set_model_id_override(s, "groq", "", profile_id="qwen3.8-27b")
     print("  multi-provider profiles: HF opt-in, OVH disabled, model-id override: OK")
 
 
@@ -573,6 +576,19 @@ def test_model_id_match_against_profile():
     assert M.looks_same_family(gemma, "gpt-4o") is False
     assert M.looks_same_family(gemma, "gemma-3-27b-it") is False   # different size -> different model
     print("  model-id match: exact alias, size mismatch rejected, family check: OK")
+
+
+def test_vlm_only_model_guard():
+    qwen = M.default_registry().get("qwen3.8-27b")
+    assert qwen is not None
+    assert M.is_known_non_vision_model("groq", "groq/compound-mini") is True
+    assert M.is_vlm_model_id(qwen, "groq", "groq/compound-mini") is False
+    assert M.is_vlm_model_id(qwen, "groq", "qwen/qwen3.8-27b") is True
+    assert M.filter_vlm_model_ids(
+        qwen, "groq",
+        ["groq/compound-mini", "qwen/qwen3.8-27b", "llama-3.3-70b-versatile"],
+    ) == ["qwen/qwen3.8-27b"]
+    print("  VLM-only model guard: Groq Compound rejected, Qwen vision model retained: OK")
 
 
 def test_user_defined_profiles():

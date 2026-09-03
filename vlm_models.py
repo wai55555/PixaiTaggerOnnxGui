@@ -374,6 +374,55 @@ def looks_same_family(profile: VlmModelProfile, model_id: str) -> bool:
     return len(ref & ct) >= 1
 
 
+# 現在のVLM UIで取得できても、画像入力を受け付けないことが公式仕様で明確な
+# モデル群。GroqのCompoundはテキスト／ツール用で、画像キャプション経路には使えない。
+# 将来のモデル追加で一覧から漏れても、既知の非VLMだけは安全側で弾く。
+_KNOWN_NON_VISION_MODEL_IDS = {
+    "groq": frozenset({
+        "groq/compound",
+        "groq/compound-mini",
+        "compound",
+        "compound-mini",
+        "compound-beta",
+        "compound-beta-mini",
+        "groq/compound-beta",
+        "groq/compound-beta-mini",
+    }),
+}
+
+
+def is_known_non_vision_model(provider_id: str, model_id: str) -> bool:
+    """既知のテキスト専用モデルかを判定する。"""
+    provider = (provider_id or "").strip().lower()
+    model = (model_id or "").strip().lower()
+    return model in _KNOWN_NON_VISION_MODEL_IDS.get(provider, ())
+
+
+def is_vlm_model_id(profile: VlmModelProfile | None, provider_id: str,
+                    model_id: str) -> bool:
+    """選択中のVLMプロファイルで利用可能なモデルIDかを判定する。
+
+    内蔵経路は、選択プロファイルと同じモデルに対応するIDだけを許可する。
+    プロファイルがない場合も、既知のテキスト専用モデルは許可しない。
+    """
+    if not (model_id or "").strip() or is_known_non_vision_model(provider_id, model_id):
+        return False
+    return profile is None or looks_same_family(profile, model_id)
+
+
+def filter_vlm_model_ids(profile: VlmModelProfile | None, provider_id: str,
+                         candidates: list[str]) -> list[str]:
+    """モデル一覧から、選択中プロファイルで使えるIDだけを順序維持で返す。"""
+    out: list[str] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        model_id = str(candidate or "").strip()
+        if model_id and model_id not in seen and is_vlm_model_id(profile, provider_id, model_id):
+            seen.add(model_id)
+            out.append(model_id)
+    return out
+
+
 def default_registry() -> VlmModelRegistry:
     return VlmModelRegistry(_ALL_PROFILES)
 

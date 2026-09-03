@@ -334,12 +334,14 @@ class VlmSettingsDialog(QDialog):
         conns.sort(key=lambda c: order.index(c.provider_id) if c.provider_id in order else 99)
         for conn in conns:
             row = self._make_route_row(conn)
-            # このプロファイルに binding が無い経路は、有効化チェックだけ薄くしておく
-            # （モデル ID を入れれば診断はできる）。
+            # このプロファイルに binding が無い経路は、同一VLMとして扱えないので
+            # モデル選択・一覧取得・診断を無効化する。
             has_binding = profile is None or profile.binding_for(conn.provider_id) is not None
             if not has_binding:
                 row["name"].setStyleSheet("color: gray;")
                 row["name"].setToolTip(self._t("Vlm", "Settings_Route_No_Binding"))
+                for key in ("enabled", "model_edit", "list_btn", "diag_btn"):
+                    row[key].setEnabled(False)
             self._route_rows[conn.connection_id] = row
             self._route_order.append(conn.connection_id)
         self._relayout_routes()
@@ -436,16 +438,22 @@ class VlmSettingsDialog(QDialog):
         if r is None:
             return
         text = r["model_edit"].currentText().strip()
+        profile = vlm_config.resolve_model_profile(self._vlm)
+        if text and not vlm_models.is_vlm_model_id(profile, r["conn"].provider_id, text):
+            # 手入力でも非VLM／別プロファイルのモデルを採用しない。build_connection_map
+            # が使う現在の安全なIDへ表示を戻し、既存の有効なoverrideは保持する。
+            combo = r["model_edit"]
+            combo.blockSignals(True)
+            combo.setCurrentText(r["conn"].model_id)
+            combo.blockSignals(False)
+            r["status"].setText(self._t(
+                "Vlm", "Settings_Route_ModelId_NotVlm",
+                profile=(profile.display_name if profile else self._vlm.model_profile_id)))
+            return
         vlm_config.set_model_id_override(self._vlm, r["conn"].provider_id, text,
                                          profile_id=self._vlm.model_profile_id)
         if text:
             r["conn"].model_id = text   # 診断・キー登録がこの場で新IDを使えるように
-        # 「同一モデルを多プロバイダーで回す」前提なので、プロファイルと明らかに別物の
-        # ID を入れたら警告する（強制はしない）。
-        profile = vlm_config.resolve_model_profile(self._vlm)
-        if text and profile is not None and not vlm_models.looks_same_family(profile, text):
-            r["status"].setText(self._t("Vlm", "Settings_Route_ModelId_Mismatch",
-                                        profile=profile.display_name))
 
     # --- モデル一覧の取得 -------------------------------------------------------
     def _fetch_models(self, cid: str) -> None:
@@ -484,19 +492,21 @@ class VlmSettingsDialog(QDialog):
             r["status"].setText(self._t("Vlm", "Settings_Route_FetchModels_Fail", detail=detail))
             return
 
-        r["model_ids"] = result
+        profile = vlm_config.resolve_model_profile(self._vlm)
+        vlm_ids = vlm_models.filter_vlm_model_ids(
+            profile, r["conn"].provider_id, result)
+        r["model_ids"] = vlm_ids
         combo = r["model_edit"]
         combo.blockSignals(True)
         combo.clear()
-        combo.addItems(result)
+        combo.addItems(vlm_ids)
         combo.blockSignals(False)
 
         # フォールバックは「同一モデルを多プロバイダーで回す」設計。一覧の中から
         # 選択プロファイルのモデルに一番合うものを自動で当て、ユーザーに確認させる。
-        profile = vlm_config.resolve_model_profile(self._vlm)
-        best, score = vlm_models.match_model_id(profile, r["conn"].provider_id, result) \
+        best, score = vlm_models.match_model_id(profile, r["conn"].provider_id, vlm_ids) \
             if profile is not None else (None, 0.0)
-        okmsg = self._t("Vlm", "Settings_Route_FetchModels_Ok", n=len(result))
+        okmsg = self._t("Vlm", "Settings_Route_FetchModels_Ok", n=len(vlm_ids))
         if best is not None:
             combo.blockSignals(True)
             combo.setCurrentText(best)
@@ -586,6 +596,11 @@ class VlmSettingsDialog(QDialog):
         token = f"{self._vlm.model_profile_id}:{r['conn'].provider_id}"
         if token in self._vlm.verified_set():
             text += "  " + self._t("Vlm", "Settings_Route_Verified")
+        profile = vlm_config.resolve_model_profile(self._vlm)
+        override = self._vlm.model_id_override_map().get(token)
+        if override and not vlm_models.is_vlm_model_id(profile, r["conn"].provider_id, override):
+            text += "  " + self._t("Vlm", "Settings_Route_ModelId_NotVlm",
+                                     profile=(profile.display_name if profile else self._vlm.model_profile_id))
         r["status"].setText(text)
 
     def _sync_paid_rows(self) -> None:
