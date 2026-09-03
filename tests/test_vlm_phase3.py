@@ -265,6 +265,40 @@ def test_settings_dialog_rejects_non_vlm_model():
     print("  settings dialog rejects non-VLM model IDs and filters model list: OK")
 
 
+def test_settings_dialog_keeps_unbound_route_discoverable():
+    import app_settings as A
+    from vlm_settings_dialog import VlmSettingsDialog
+
+    s = A.load_settings(A.get_default_config())
+    s.vlm.model_profile_id = "gemma-4-26b-a4b-it"
+    old_resolver = vlm_config.resolve_model_profile
+    vlm_config.resolve_model_profile = lambda v: next(
+        (p for p in vlm_config.all_profiles() if p.profile_id == v.model_profile_id), None)
+    dlg = None
+    try:
+        dlg = VlmSettingsDialog(s, lambda sec, key, **kw: key)
+        row = dlg._route_rows["builtin-groq"]
+        assert not row["enabled"].isEnabled()
+        assert row["model_edit"].isEnabled()
+        assert row["list_btn"].isEnabled()
+        assert row["diag_btn"].isEnabled()
+
+        dlg._on_model_list("builtin-groq", [
+            "groq/compound-mini", "qwen/qwen3.8-27b", "llama-3.3-70b-versatile",
+        ])
+        assert row["model_ids"] == ["qwen/qwen3.8-27b"]
+        row["model_edit"].setCurrentText("qwen/qwen3.8-27b")
+        dlg._on_model_id_edited("builtin-groq")
+        assert vlm_config.build_connection_map(
+            s.vlm, vlm_config.resolve_model_profile(s.vlm)
+        )["builtin-groq"].model_id == "qwen/qwen3.8-27b"
+    finally:
+        if dlg is not None:
+            dlg.close()
+        vlm_config.resolve_model_profile = old_resolver
+    print("  unbound route remains available for VLM discovery and diagnosis: OK")
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     for t in tests:

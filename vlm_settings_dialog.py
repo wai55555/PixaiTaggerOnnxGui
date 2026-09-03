@@ -334,14 +334,14 @@ class VlmSettingsDialog(QDialog):
         conns.sort(key=lambda c: order.index(c.provider_id) if c.provider_id in order else 99)
         for conn in conns:
             row = self._make_route_row(conn)
-            # このプロファイルに binding が無い経路は、同一VLMとして扱えないので
-            # モデル選択・一覧取得・診断を無効化する。
+            # このプロファイルに binding が無い経路でも、APIキー登録後に公式のVLM一覧を
+            # 探索・診断できるようにする。bindingがない経路は同一モデルの自動フォール
+            # バックには入れないため、実行対象チェックだけ無効化する。
             has_binding = profile is None or profile.binding_for(conn.provider_id) is not None
             if not has_binding:
                 row["name"].setStyleSheet("color: gray;")
                 row["name"].setToolTip(self._t("Vlm", "Settings_Route_No_Binding"))
-                for key in ("enabled", "model_edit", "list_btn", "diag_btn"):
-                    row[key].setEnabled(False)
+                row["enabled"].setEnabled(False)
             self._route_rows[conn.connection_id] = row
             self._route_order.append(conn.connection_id)
         self._relayout_routes()

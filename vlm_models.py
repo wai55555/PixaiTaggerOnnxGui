@@ -390,6 +390,17 @@ _KNOWN_NON_VISION_MODEL_IDS = {
     }),
 }
 
+# 選択プロファイルに binding がない場合でも、モデル一覧からVLMを探せるようにするための
+# 既知の画像対応ID。通常のプロファイルでは binding のIDを優先して判定する。
+# Groqの現行Visionドキュメントに掲載されている画像対応モデルもここへ明示する。
+_KNOWN_VISION_MODEL_IDS = {
+    "groq": frozenset({
+        "meta-llama/llama-4-scout-17b-16e-instruct",
+        "qwen/qwen3.6-27b",
+        "qwen/qwen3.8-27b",
+    }),
+}
+
 
 def is_known_non_vision_model(provider_id: str, model_id: str) -> bool:
     """既知のテキスト専用モデルかを判定する。"""
@@ -398,21 +409,35 @@ def is_known_non_vision_model(provider_id: str, model_id: str) -> bool:
     return model in _KNOWN_NON_VISION_MODEL_IDS.get(provider, ())
 
 
+def _known_vision_model_ids(provider_id: str) -> set[str]:
+    """内蔵プロファイルとプロバイダー公式掲載IDから既知のVLM IDを集める。"""
+    provider = (provider_id or "").strip().lower()
+    ids = set(_KNOWN_VISION_MODEL_IDS.get(provider, ()))
+    for profile in _ALL_PROFILES:
+        binding = profile.binding_for(provider)
+        if binding is not None and binding.model_id:
+            ids.add(binding.model_id.strip().lower())
+    return ids
+
+
 def is_vlm_model_id(profile: VlmModelProfile | None, provider_id: str,
                     model_id: str) -> bool:
     """選択中のVLMプロファイルで利用可能なモデルIDかを判定する。
 
-    内蔵経路は、選択プロファイルと同じモデルに対応するIDだけを許可する。
-    プロファイルがない場合も、既知のテキスト専用モデルは許可しない。
+    選択プロファイルに binding がある経路は、同じモデルに対応するIDだけを許可する。
+    binding がない経路は、既知のVLM IDから選べるようにする。どちらの場合も、既知の
+    テキスト専用モデルは許可しない。
     """
     if not (model_id or "").strip() or is_known_non_vision_model(provider_id, model_id):
         return False
-    return profile is None or looks_same_family(profile, model_id)
+    if profile is not None and profile.binding_for(provider_id) is not None:
+        return looks_same_family(profile, model_id)
+    return (model_id or "").strip().lower() in _known_vision_model_ids(provider_id)
 
 
 def filter_vlm_model_ids(profile: VlmModelProfile | None, provider_id: str,
                          candidates: list[str]) -> list[str]:
-    """モデル一覧から、選択中プロファイルで使えるIDだけを順序維持で返す。"""
+    """モデル一覧から、選択中プロファイルで使えるVLM IDだけを返す。"""
     out: list[str] = []
     seen: set[str] = set()
     for candidate in candidates:

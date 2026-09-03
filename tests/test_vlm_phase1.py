@@ -580,10 +580,13 @@ def test_model_id_match_against_profile():
 
 def test_vlm_only_model_guard():
     qwen = M.default_registry().get("qwen3.8-27b")
+    gemma = M.default_registry().get("gemma-4-26b-a4b-it")
     assert qwen is not None
+    assert gemma is not None
     assert M.is_known_non_vision_model("groq", "groq/compound-mini") is True
     assert M.is_vlm_model_id(qwen, "groq", "groq/compound-mini") is False
     assert M.is_vlm_model_id(qwen, "groq", "qwen/qwen3.8-27b") is True
+    assert M.is_vlm_model_id(gemma, "groq", "qwen/qwen3.8-27b") is True
     assert M.filter_vlm_model_ids(
         qwen, "groq",
         ["groq/compound-mini", "qwen/qwen3.8-27b", "llama-3.3-70b-versatile"],
