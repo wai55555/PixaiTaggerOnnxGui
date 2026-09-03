@@ -160,6 +160,7 @@ def test_transport_applies_header_and_query_auth():
     def responder(req, **kw):
         seen["headers"] = dict(req.headers)
         seen["params"] = dict(req.params)
+        seen["body"] = dict(req.json_body)
         return RawHttpResponse(200, {}, _ok_body("ok"), "")
 
     # header_key auth -> key goes into the configured header, not Authorization
@@ -189,6 +190,15 @@ def test_transport_applies_header_and_query_auth():
         ex3.caption_one(_spec(), ["b"])
         assert seen["headers"].get("Authorization") == "Bearer SECRET"
         assert seen["headers"].get("anthropic-workspace-id") == "wrkspc_test"
+
+        # provider-specific JSON options (Cloudflare's reasoning switch) are carried
+        # through the normal executor as well as the diagnostic request.
+        c4 = VlmConnection("cf", "cf", ConnectionKind.BUILTIN, "openai_chat_completions",
+                           "http://x/v1", "m", provider_id="cloudflare",
+                           request_body={"chat_template_kwargs": {"enable_thinking": False}})
+        ex4 = VlmExecutor({"cf": c4}, lambda ref: None)
+        ex4.caption_one(_spec(), ["cf"])
+        assert seen["body"]["chat_template_kwargs"] == {"enable_thinking": False}
     finally:
         T.execute_http = old
     print("  transport auth routing (header_key / query_key / bearer): OK")
@@ -249,6 +259,14 @@ def test_diagnostics_static():
     assert [i.name for i in rep3.items] == ["URL format"]
     assert rep3.items[0].status is D.DiagStatus.FAIL and "region" in rep3.items[0].detail
 
+    missing_auth = VlmConnection("missing", "missing", ConnectionKind.CUSTOM_EXTERNAL,
+                                 "openai_chat_completions", "https://localhost/v1", "m",
+                                 auth=AuthSpec(type="bearer", secret_ref="x"))
+    rep_missing = D.diagnose(missing_auth, api_key=None, do_live_request=False)
+    assert rep_missing.item("Auth").status is D.DiagStatus.FAIL
+    assert rep_missing.item("HTTP response").status is D.DiagStatus.SKIP
+    assert rep_missing.item("HTTP response").detail == "credential missing"
+
     for protocol in ("openai_responses", "anthropic_messages"):
         direct = _conn(f"direct-{protocol}", protocol)
         rep4 = D.diagnose(direct, api_key=None, do_live_request=False)
@@ -283,7 +301,8 @@ def test_diagnostics_cloudflare_token_verify(monkeypatch):
                        "openai_chat_completions",
                        "https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/v1",
                        "@cf/x", auth=AuthSpec(type="bearer", secret_ref="x"),
-                       provider_id="cloudflare")
+                       provider_id="cloudflare",
+                       request_body={"chat_template_kwargs": {"enable_thinking": False}})
 
     # valid + active token -> Auth PASS, HTTP response PASS, account-id only a WARN
     monkeypatch.setattr(D, "execute_http", lambda *a, **k: RawHttpResponse(
@@ -307,13 +326,17 @@ def test_diagnostics_cloudflare_token_verify(monkeypatch):
 
     # Account ID が埋まっていれば token/verify で終わらず、実際の画像生成・抽出まで進む。
     cf.base_url = "https://api.cloudflare.com/client/v4/accounts/0123456789abcdef0123456789abcdef/ai/v1"
-    monkeypatch.setattr(D, "execute_http", lambda *a, **k: RawHttpResponse(
-        200, {}, {"choices": [{"message": {"content": "cloudflare caption"}}]}, ""))
+    seen = {}
+    def _cf_generation(req, **kwargs):
+        seen["body"] = req.json_body
+        return RawHttpResponse(200, {}, {"choices": [{"message": {"content": "cloudflare caption"}}]}, "")
+    monkeypatch.setattr(D, "execute_http", _cf_generation)
     rep3 = D.diagnose(cf, api_key="cfut_ok", do_live_request=True)
     n3 = {i.name: i for i in rep3.items}
     assert n3["Request build"].status is D.DiagStatus.PASS
     assert n3["HTTP response"].status is D.DiagStatus.PASS
     assert n3["Caption extraction"].status is D.DiagStatus.PASS
+    assert seen["body"]["chat_template_kwargs"] == {"enable_thinking": False}
     print("  cloudflare: missing Account ID verifies token only; configured route generates: OK")
 
 

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
+from typing import Any
 
 
 class ConnectionKind(str, Enum):
@@ -110,6 +111,8 @@ class VlmConnection:
     # APIキー以外のプロバイダー必須ヘッダー。現在は複数Workspace対象のAnthropic
     # personal/service-account keyで使う anthropic-workspace-id を保持する。
     request_headers: dict[str, str] = field(default_factory=dict)
+    # プロバイダー固有のJSONオプション。Cloudflare Gemma 4では推論を無効化する。
+    request_body: dict[str, Any] = field(default_factory=dict)
 
     @property
     def is_custom(self) -> bool:
@@ -157,6 +160,7 @@ class VlmConnection:
             paid_continuation_allowed=bool(data.get("paid_continuation_allowed", False)),
             text_path=str(data.get("response", {}).get("text_path", "") if isinstance(data.get("response"), dict) else data.get("text_path", "")),
             error_path=str(data.get("response", {}).get("error_path", "") if isinstance(data.get("response"), dict) else data.get("error_path", "")),
+            request_body=dict(data.get("request_body") or {}) if isinstance(data.get("request_body"), dict) else {},
         )
 
 
@@ -208,6 +212,9 @@ BUILTIN_CONNECTION_TEMPLATES: list[dict] = [
         "base_url": "https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/v1",
         "model_id": "@cf/google/gemma-4-26b-a4b-it",
         "auth": {"type": "bearer", "secret_ref": "vlm/cloudflare/api_token"},
+        # Gemma 4はReasoning対応。診断用の短いmax_tokensでも思考だけで上限に
+        # 達して本文が出ないため、キャプション用途では推論を無効化する。
+        "request_body": {"chat_template_kwargs": {"enable_thinking": False}},
         "is_known_free_route": False,
     },
     # --- implement_plan 2.2「後から追加する内蔵候補」。model_id は選択プロファイルの

@@ -19,7 +19,7 @@ from vlm_errors import VlmAttemptError, VlmErrorClass, VlmErrorReason
 from vlm_image import PreparedImage
 from vlm_profiles import GenerationProfile
 from vlm_protocols import (
-    VlmCallSpec, VlmParseResult, apply_connection_auth, apply_request_headers,
+    VlmCallSpec, VlmParseResult, apply_connection_auth, apply_request_body, apply_request_headers,
     default_auth_key, get_protocol,
 )
 from vlm_ratelimit import RateLimitState, update_from_429
@@ -211,6 +211,7 @@ class VlmExecutor:
             apply_connection_auth(req, conn.auth.type, api_key,
                                   conn.auth.header_name, conn.auth.query_param)
             apply_request_headers(req, conn.request_headers)
+            apply_request_body(req, conn.request_body)
             raw = execute_http(req, connect_timeout=conn.retry.connect_timeout_s,
                                read_timeout=conn.retry.read_timeout_s,
                                verify_tls=conn.verify_tls)

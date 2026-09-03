@@ -89,6 +89,13 @@ def apply_request_headers(req: "VlmHttpRequest", headers: dict[str, str] | None)
             req.headers[name] = value
 
 
+def apply_request_body(req: "VlmHttpRequest", body: dict[str, Any] | None) -> None:
+    """接続固有のJSONオプションを適用する（値はプロトコルが生成した本文へ上書き）。"""
+    for name, value in (body or {}).items():
+        if name:
+            req.json_body[name] = value
+
+
 @dataclass(frozen=True)
 class VlmParseResult:
     """レスポンス解析の結果。text があれば成功、error があれば失敗（両立しない）。"""

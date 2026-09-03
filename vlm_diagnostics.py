@@ -20,7 +20,8 @@ from vlm_errors import VlmErrorReason
 from vlm_image import ImagePreprocessConfig, prepare_image
 from vlm_profiles import GenerationProfile, build_system_prompt, build_user_prompt
 from vlm_protocols import (
-    VlmCallSpec, VlmHttpRequest, apply_connection_auth, default_auth_key, extract_by_path,
+    VlmCallSpec, VlmHttpRequest, apply_connection_auth, apply_request_body,
+    default_auth_key, extract_by_path,
     get_protocol, apply_request_headers,
 )
 from vlm_transport import RawHttpResponse, execute_http
@@ -227,6 +228,11 @@ def diagnose(conn: VlmConnection, api_key: str | None, *,
         rep.add("Auth", DiagStatus.PASS, f"{conn.auth.type} credential present")
     else:
         rep.add("Auth", DiagStatus.FAIL, f"{conn.auth.type} required but no credential found")
+        # 認証情報が無い状態で未認証リクエストを送ると、Vercel等の401本文だけが表示されて
+        # 「キーが不正」と誤解しやすい。ネットワーク到達性は上で確認済みなので、ここで終了。
+        rep.add("HTTP response", DiagStatus.SKIP, "credential missing")
+        rep.add("Caption extraction", DiagStatus.SKIP, "credential missing")
+        return rep
 
     # 4b. Account ID が未設定の Cloudflare だけは、専用エンドポイントでトークン単体を
     # 検証する。Account ID がある場合はこの先の chat/completions へ進み、アカウント・
@@ -253,6 +259,7 @@ def diagnose(conn: VlmConnection, api_key: str | None, *,
         req = protocol.build_request(conn.base_url, default_auth_key(conn.auth.type, api_key), call)
         apply_connection_auth(req, conn.auth.type, api_key, conn.auth.header_name, conn.auth.query_param)
         apply_request_headers(req, conn.request_headers)
+        apply_request_body(req, conn.request_body)
         rep.add("Request build", DiagStatus.PASS, f"{req.method} {req.url}")
     except Exception as e:  # noqa: BLE001 - 診断なので全部拾う
         rep.add("Request build", DiagStatus.FAIL, f"{type(e).__name__}: {e}")
