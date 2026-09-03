@@ -290,9 +290,12 @@ class ApiKeyDialog(QDialog):
         if service_warn:
             msg = self._t("Vlm", "ApiKey_Service_Warning",
                           success=success_msg, detail=service_warn)
-            # 接続はまだ実行不能なので閉じず、本文を選択／コピーできる状態で残す。
             self._set_busy(False)
             self.status.setText(msg)
+            # キー保存後の課金・利用枠警告は確認結果として完了している。長文の
+            # 本文を選択／コピーできる警告ダイアログを出してから自動的に閉じる。
+            self._show_service_warning(msg)
+            self.accept()
             return
         if model_warn:
             where = self._t("Vlm", "ApiKey_Stored_Keyring" if persisted else "ApiKey_Stored_Session")
@@ -304,6 +307,20 @@ class ApiKeyDialog(QDialog):
 
     def _copy_status(self) -> None:
         QGuiApplication.clipboard().setText(self.status.text())
+
+    def _show_service_warning(self, msg: str) -> None:
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setWindowTitle(self.windowTitle())
+        box.setText(msg)
+        box.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+            | Qt.TextInteractionFlag.TextSelectableByKeyboard)
+        copy_btn = box.addButton(self._t("Vlm", "ApiKey_Copy_Details"),
+                                 QMessageBox.ButtonRole.ActionRole)
+        copy_btn.clicked.connect(lambda: QGuiApplication.clipboard().setText(msg))
+        box.addButton(QMessageBox.StandardButton.Ok)
+        box.exec()
 
     def _set_busy(self, busy: bool) -> None:
         self.key_edit.setEnabled(not busy)

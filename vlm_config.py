@@ -73,7 +73,8 @@ def new_connection_id(prefix: str = "custom") -> str:
 
 # --- vlm_profiles.json（利用者が作る／編集するモデルプロファイル） -------------------
 # 出荷プロファイルは推定なので、モデル一覧で見つけた実 ID を束ねた「自分のプロファイル」を
-# ここに保存する。binding の identity は UNKNOWN（接続診断のフル PASS で verified 昇格）。
+# ここに保存する。binding の identity は UNKNOWN（接続診断のフル PASS または認証済み
+# 429／診断上限到達確認で verified 昇格）。
 
 def load_user_profiles() -> list[dict]:
     if not VLM_PROFILES_PATH.is_file():
@@ -262,9 +263,9 @@ def _binding_token(profile_id: str, provider_id: str) -> str:
 def _apply_verified_promotions(profile, vlm_settings):
     """`[Vlm] verified_bindings` に載っている binding を VERIFIED へ引き上げる。
 
-    出荷時 identity は控えめ（多くが DECLARED）なので、接続診断のフル PASS や 1枚テスト
-    成功で「実際に期待どおり動いた」と分かった binding をここで昇格させる。UNKNOWN の
-    ままにはしない（実証済みなので）。既に VERIFIED のものはそのまま。
+    出荷時 identity は控えめ（多くが DECLARED）なので、接続診断のフル PASS、認証済み
+    429による到達確認、または1枚テスト成功で確認できた binding をここで昇格させる。
+    UNKNOWN のままにはしない（確認済みなので）。既に VERIFIED のものはそのまま。
     """
     verified = vlm_settings.verified_set()
     if not verified:

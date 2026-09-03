@@ -67,6 +67,35 @@ class DiagReport:
             return DiagStatus.WARN
         return DiagStatus.PASS
 
+    @property
+    def can_mark_binding_verified(self) -> bool:
+        """接続設定を「確認済み」として記録できるか。
+
+        通常は HTTP 200 で本文抽出まで成功した場合だけ実証済みとする。ただし
+        429 は認証済みのリクエストがエンドポイントへ到達したことを示すため、
+        認証・リクエスト組み立て・画像入力が PASS なら到達確認済みとして扱う。
+        この場合も ``overall`` は WARN のままなので、本文取得成功と混同しない。
+        課金不足の 429 は HTTP を FAIL にしているため、この例外には入らない。
+        """
+        http = self.item("HTTP response")
+        if http is None:
+            return False
+        extraction = self.item("Caption extraction")
+        if http.status is DiagStatus.PASS and extraction is not None:
+            if extraction.status is DiagStatus.PASS:
+                return True
+            # 200応答が診断用トークン上限で切れた場合も、モデルまで到達したことは
+            # 確認できている。本文抽出成功とは区別するため、詳細に明示されたケースだけ
+            # を到達確認として扱う（content policy 等の一般WARNは含めない）。
+            if (extraction.status is DiagStatus.WARN
+                    and "endpoint reachable" in (extraction.detail or "").lower()):
+                return True
+        if self.http_status != 429 or http.status is not DiagStatus.WARN:
+            return False
+        required = ("Auth", "Request build", "Image input")
+        return all((item := self.item(name)) is not None
+                   and item.status is DiagStatus.PASS for name in required)
+
 
 def _tiny_test_image_bytes() -> bytes:
     buf = io.BytesIO()

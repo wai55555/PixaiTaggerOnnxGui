@@ -138,9 +138,10 @@ def test_api_key_dialog_verify_and_save():
     from api_key_dialog import ApiKeyDialog
     from vlm_connections import VlmConnection, ConnectionKind, AuthSpec
 
-    _orig = (AKD.QMessageBox.information, vlm_secrets.set_secret, vlm_secrets.get_secret,
+    _orig = (AKD.QMessageBox.information, AKD.QMessageBox.exec, vlm_secrets.set_secret, vlm_secrets.get_secret,
              vlm_secrets.keyring_available, D.diagnose, vlm_secrets.secret_status)
     AKD.QMessageBox.information = staticmethod(lambda *a, **k: None)  # don't block on confirm
+    AKD.QMessageBox.exec = lambda self, *a, **k: 0  # service warning is copyable, then closes
     vlm_secrets.secret_status = lambda ref: "missing"
 
     stored = {}
@@ -203,9 +204,7 @@ def test_api_key_dialog_verify_and_save():
     d2c = _run(billing, "KEYOK_CARD_REQUIRED")
     assert stored.get("vlm/gemini/api_key") == "KEYOK_CARD_REQUIRED" and d2c.saved() is True
     assert "credit card" in d2c._service_warning
-    assert d2c.result() != ApiKeyDialog.DialogCode.Accepted
-    assert d2c.status.text() == "ApiKey_Service_Warning"
-    d2c.close()
+    assert d2c.result() == ApiKeyDialog.DialogCode.Accepted
 
     stored.clear()
     offline = DiagReport("builtin-gemini")
@@ -398,7 +397,7 @@ def test_api_key_dialog_verify_and_save():
     assert da2.saved() is True and workspace_ids == ["wrkspc_Existing123"]
     assert stored == {}, "workspace-only update must not copy an existing key"
 
-    (AKD.QMessageBox.information, vlm_secrets.set_secret, vlm_secrets.get_secret,
+    (AKD.QMessageBox.information, AKD.QMessageBox.exec, vlm_secrets.set_secret, vlm_secrets.get_secret,
      vlm_secrets.keyring_available, D.diagnose, vlm_secrets.secret_status) = _orig
     print("  ApiKeyDialog: generic key checks + Cloudflare Account ID/full request: OK")
 

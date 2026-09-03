@@ -672,12 +672,11 @@ class VlmSettingsDialog(QDialog):
         conn = getattr(self, "_diag_pending_conn", None)
         if conn is None:
             return
-        # HTTP 200 かつテキスト抽出まで通ったら、その内蔵 binding は「実際に期待どおり
-        # 動いた」＝ VERIFIED として記録する（次回以降 UNKNOWN 出荷でも候補に残る）。
-        items = {i.name: i.status for i in report.items}
-        full_ok = (items.get("HTTP response") is DiagStatus.PASS
-                   and items.get("Caption extraction") is DiagStatus.PASS)
-        if full_ok and not getattr(conn, "is_custom", True) and getattr(conn, "provider_id", ""):
+        # 通常は本文抽出まで通ったら VERIFIED。429 は認証済みで到達したことだけを
+        # 確認済みとして記録し、診断レポート自体は WARN のまま本文成功と区別する。
+        if (getattr(report, "can_mark_binding_verified", False)
+                and not getattr(conn, "is_custom", True)
+                and getattr(conn, "provider_id", "")):
             if vlm_config.mark_binding_verified(self._vlm, conn.provider_id):
                 save_config(self._settings)
                 cid = next((c for c, r in self._route_rows.items()
@@ -767,6 +766,8 @@ class VlmSettingsDialog(QDialog):
 
     def _show_diag_report(self, conn, report) -> None:
         lines = [f"[{i.status.value}] {i.name}: {i.detail}" for i in report.items]
+        if getattr(report, "can_mark_binding_verified", False):
+            lines.append("[PASS] " + self._t("Vlm", "Settings_Diagnose_Reachability_Verified"))
         icon = {DiagStatus.PASS: QMessageBox.Icon.Information,
                 DiagStatus.WARN: QMessageBox.Icon.Warning,
                 DiagStatus.FAIL: QMessageBox.Icon.Critical}.get(report.overall, QMessageBox.Icon.Information)

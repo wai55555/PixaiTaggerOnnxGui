@@ -387,6 +387,43 @@ def test_diagnostics_live_extraction_branches():
     print("  diagnostics extraction: text->PASS, MAX_TOKENS->WARN, bad shape->FAIL+preview, 500->SKIP: OK")
 
 
+def test_diagnostics_rate_limit_can_mark_binding_verified():
+    import vlm_diagnostics as D
+
+    rep = D.DiagReport("builtin-openrouter")
+    rep.add("URL format", D.DiagStatus.PASS, "https://openrouter.ai/api/v1")
+    rep.add("Model ID", D.DiagStatus.PASS, "google/gemma-4-26b-a4b-it:free")
+    rep.add("Protocol", D.DiagStatus.PASS, "openai_chat_completions")
+    rep.add("Auth", D.DiagStatus.PASS, "accepted (server responded 429)")
+    rep.add("Request build", D.DiagStatus.PASS, "POST https://openrouter.ai/api/v1/chat/completions")
+    rep.add("Image input", D.DiagStatus.PASS, "image/jpeg, base64/data-url ready")
+    rep.add("HTTP response", D.DiagStatus.WARN, "429 rate limited (endpoint reachable)")
+    rep.add("Caption extraction", D.DiagStatus.SKIP, "no successful response to extract from")
+    rep.http_status = 429
+    assert rep.overall is D.DiagStatus.WARN
+    assert rep.can_mark_binding_verified is True
+
+    truncated = D.DiagReport("builtin-cloudflare")
+    truncated.add("Auth", D.DiagStatus.PASS, "accepted (server responded 200)")
+    truncated.add("Request build", D.DiagStatus.PASS, "POST https://api.cloudflare.com/client/v4/accounts/a/ai/v1/chat/completions")
+    truncated.add("Image input", D.DiagStatus.PASS, "image/jpeg, base64/data-url ready")
+    truncated.add("HTTP response", D.DiagStatus.PASS, "200 OK")
+    truncated.add("Caption extraction", D.DiagStatus.WARN,
+                  "response truncated at the diagnostic token cap (endpoint reachable)")
+    truncated.http_status = 200
+    assert truncated.can_mark_binding_verified is True
+
+    billing = D.DiagReport("builtin-openai")
+    billing.add("Auth", D.DiagStatus.PASS, "accepted; billing / credits unavailable")
+    billing.add("Request build", D.DiagStatus.PASS, "POST https://api.openai.com/v1/responses")
+    billing.add("Image input", D.DiagStatus.PASS, "image/jpeg, base64/data-url ready")
+    billing.add("HTTP response", D.DiagStatus.FAIL, "429 billing / credits unavailable")
+    billing.add("Caption extraction", D.DiagStatus.SKIP, "no successful response to extract from")
+    billing.http_status = 429
+    assert billing.can_mark_binding_verified is False
+    print("  diagnostics: authenticated 429 is reachable-confirmed; billing 429 is not: OK")
+
+
 def test_diagnostics_billing_block_is_not_auth_failure():
     import vlm_diagnostics as D
 

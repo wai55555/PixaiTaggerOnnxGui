@@ -144,8 +144,8 @@ class VlmModelRegistry:
 # --- 内蔵プロファイル（spec.md 3章 / implement_plan 2.1・2.2・18章） ------------------
 # identity_status は控えめに置く（多くは DECLARED、実在が未確認のものは UNKNOWN）。
 # 各プロバイダーでの正確なモデル ID は「接続診断／1枚テスト」を通すまで確定しない前提。
-# 診断のフル PASS または生成成功で `[Vlm] verified_bindings` に載り VERIFIED 扱いになる
-# （vlm_config._apply_verified_promotions）。
+# 診断のフル PASS、認証済み429／診断上限による到達確認、または生成成功で
+# `[Vlm] verified_bindings` に載り VERIFIED 扱いになる（vlm_config._apply_verified_promotions）。
 #
 # providers: gemini / openrouter / cloudflare / groq / nvidia / mistral /
 #            huggingface / vercel / openai / anthropic
