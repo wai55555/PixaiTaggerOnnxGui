@@ -12,9 +12,9 @@ from __future__ import annotations
 
 from typing import Callable
 
-from PySide6.QtCore import QThread, Slot
+from PySide6.QtCore import Qt, QThread, Slot
 from PySide6.QtWidgets import (
-    QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFormLayout, QGroupBox,
+    QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFormLayout, QGridLayout, QGroupBox,
     QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMessageBox,
     QPushButton, QRadioButton, QSpinBox, QVBoxLayout, QWidget,
 )
@@ -39,6 +39,11 @@ _DETAIL_KEYS = ["standard", "detailed", "maximum_detail"]
 _SENTENCE_KEYS = ["automatic_long_detailed", "1", "2", "3", "4", "5"]
 _CHARNAME_KEYS = ["do_not_identify", "explicit_only", "allow_guessing"]
 _MARKDOWN_KEYS = ["disabled", "allowed"]
+
+# フォールバック経路グリッドの列。up/down は1セルに横並びで入れる。
+(_ROUTE_COL_UPDOWN, _ROUTE_COL_ENABLED, _ROUTE_COL_NAME, _ROUTE_COL_MODEL,
+ _ROUTE_COL_LIST, _ROUTE_COL_REGISTER, _ROUTE_COL_STATUS, _ROUTE_COL_PAID,
+ _ROUTE_COL_DIAG) = range(9)
 
 _BUILTIN_SECRET_REF = {
     "builtin-gemini": "vlm/gemini/api_key",
@@ -146,8 +151,15 @@ class VlmSettingsDialog(QDialog):
         self._route_rows: dict[str, dict] = {}
         # 経路の優先順位はこのリストの順。▲▼ ボタンで並べ替える。
         self._route_order: list[str] = []
-        self._routes_box = QVBoxLayout()
-        rv.addLayout(self._routes_box)
+        # 経路行は QGridLayout で組む。行ごとに別レイアウトにすると、プロバイダー名や
+        # モデルID・状態ラベルの文字幅の違いで列がガタガタにずれるため（グリッドなら
+        # 各列が全行の最大幅にそろう）。モデルID列だけ伸縮させて余白を吸わせる。
+        self._routes_grid = QGridLayout()
+        self._routes_grid.setContentsMargins(0, 0, 0, 0)
+        self._routes_grid.setHorizontalSpacing(6)
+        self._routes_grid.setVerticalSpacing(4)
+        self._routes_grid.setColumnStretch(_ROUTE_COL_MODEL, 1)
+        rv.addLayout(self._routes_grid)
         self.profile_combo.currentIndexChanged.connect(self._on_profile_changed)
         cf_row = QHBoxLayout()
         cf_row.addWidget(QLabel(self._t("Vlm", "Settings_Cf_Account")))
@@ -216,17 +228,23 @@ class VlmSettingsDialog(QDialog):
         self.fee_paid.toggled.connect(self._sync_paid_rows)
 
     def _make_route_row(self, conn) -> dict:
-        widget = QWidget()
-        row = QHBoxLayout(widget)
-        row.setContentsMargins(0, 0, 0, 0)
+        # up/down は1つのグリッドセルに収めるため小さなコンテナにまとめる。
+        updown = QWidget()
+        ud = QHBoxLayout(updown)
+        ud.setContentsMargins(0, 0, 0, 0)
+        ud.setSpacing(2)
         up = QPushButton("▲")
         down = QPushButton("▼")
         up.setFixedWidth(28)
         down.setFixedWidth(28)
+        ud.addWidget(up)
+        ud.addWidget(down)
         up.clicked.connect(lambda _=False, cid=conn.connection_id: self._move_route(cid, -1))
         down.clicked.connect(lambda _=False, cid=conn.connection_id: self._move_route(cid, +1))
         enabled = QCheckBox()
         name = QLabel(conn.display_name)
+        # 名前はコンボの左端にそろえたいので右寄せ。
+        name.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         model_combo = QComboBox()
         model_combo.setEditable(True)
         model_combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
@@ -251,10 +269,8 @@ class VlmSettingsDialog(QDialog):
         paid_ok = QCheckBox(self._t("Vlm", "Settings_Route_PaidOk"))
         diag_btn = QPushButton(self._t("Vlm", "Settings_Diagnose"))
         diag_btn.clicked.connect(lambda _=False, cid=conn.connection_id: self._diagnose_one(cid))
-        for w in (up, down, enabled, name, model_combo, list_btn, register_btn, status, paid_ok, diag_btn):
-            row.addWidget(w)
         return {
-            "widget": widget, "up": up, "down": down, "name": name,
+            "updown": updown, "up": up, "down": down, "name": name,
             "enabled": enabled, "model_edit": model_combo, "list_btn": list_btn,
             "register": register_btn,
             "status": status, "paid_ok": paid_ok, "diag_btn": diag_btn,
@@ -262,12 +278,23 @@ class VlmSettingsDialog(QDialog):
             "conn": conn,
         }
 
+    _ROUTE_CELLS = (
+        ("updown", _ROUTE_COL_UPDOWN), ("enabled", _ROUTE_COL_ENABLED),
+        ("name", _ROUTE_COL_NAME), ("model_edit", _ROUTE_COL_MODEL),
+        ("list_btn", _ROUTE_COL_LIST), ("register", _ROUTE_COL_REGISTER),
+        ("status", _ROUTE_COL_STATUS), ("paid_ok", _ROUTE_COL_PAID),
+        ("diag_btn", _ROUTE_COL_DIAG),
+    )
+
     def _rebuild_routes(self) -> None:
         """内蔵経路の行を作り直す。全プロバイダーを出し、選択プロファイルに binding が
         あるものはその model_id を、無いものは空欄（＝ここに実 ID を入れて接続を試す）。"""
         for r in self._route_rows.values():
-            r["widget"].setParent(None)
-            r["widget"].deleteLater()
+            for key in ("updown", "enabled", "name", "model_edit", "list_btn",
+                        "register", "status", "paid_ok", "diag_btn"):
+                w = r[key]
+                w.setParent(None)
+                w.deleteLater()
         self._route_rows.clear()
         self._route_order.clear()
         profile = vlm_config.resolve_model_profile(self._vlm)
@@ -481,11 +508,14 @@ class VlmSettingsDialog(QDialog):
             th.wait(30000)
 
     def _relayout_routes(self) -> None:
-        while self._routes_box.count():
-            self._routes_box.takeAt(0)
+        # グリッドから全セルを外す（ウィジェットは消さない）。順序を _route_order の
+        # とおりに並べ直す。
+        while self._routes_grid.count():
+            self._routes_grid.takeAt(0)
         for pos, cid in enumerate(self._route_order):
             r = self._route_rows[cid]
-            self._routes_box.addWidget(r["widget"])
+            for key, col in self._ROUTE_CELLS:
+                self._routes_grid.addWidget(r[key], pos, col)
             r["up"].setEnabled(pos > 0)
             r["down"].setEnabled(pos < len(self._route_order) - 1)
 
