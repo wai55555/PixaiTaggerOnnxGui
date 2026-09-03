@@ -307,7 +307,11 @@ def mark_binding_verified(vlm_settings, provider_id: str, *, profile_id: str | N
     return True
 
 
-KNOWN_BUILTIN_PROVIDERS = ("gemini", "openrouter", "cloudflare", "groq", "nvidia", "mistral")
+KNOWN_BUILTIN_PROVIDERS = (
+    "gemini", "openrouter", "cloudflare", "groq", "nvidia", "mistral",
+    "huggingface",
+    # "ovhcloud",  # 日本居住者環境で実機検証できるまで無効
+)
 
 
 def ordered_builtin_provider_ids(vlm_settings, model_profile=None) -> list[str]:
@@ -315,9 +319,9 @@ def ordered_builtin_provider_ids(vlm_settings, model_profile=None) -> list[str]:
 
     設定ダイアログのフォールバック経路リストでチェックを外した provider は
     connection_order から除かれるので足し戻さない（「無効化」を尊重）。ただし
-    `model_profile` が渡され、そのプロファイルの binding にあって connection_order が
-    一度も触れていない provider は「まだ設定されていない＝既定で有効」として末尾へ足す。
-    全滅時だけ既定の3つに戻す。
+    `model_profile` は引数互換のため受け取るが、binding にあるだけの provider は
+    足し戻さない。UI で明示的にチェックした経路だけを実行対象にする。
+    設定が空のときだけ既定の3つに戻す。
     """
     known = set(KNOWN_BUILTIN_PROVIDERS)
     seen: set[str] = set()
@@ -326,9 +330,4 @@ def ordered_builtin_provider_ids(vlm_settings, model_profile=None) -> list[str]:
         if p in known and p not in seen:
             seen.add(p)
             out.append(p)
-    if model_profile is not None:
-        for pid in model_profile.bindings:
-            if pid in known and pid not in seen:
-                seen.add(pid)
-                out.append(pid)
     return out or ["gemini", "openrouter", "cloudflare"]

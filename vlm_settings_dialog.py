@@ -52,6 +52,8 @@ _BUILTIN_SECRET_REF = {
     "builtin-groq": "vlm/groq/api_key",
     "builtin-nvidia": "vlm/nvidia/api_key",
     "builtin-mistral": "vlm/mistral/api_key",
+    "builtin-huggingface": "vlm/huggingface/api_token",
+    # "builtin-ovhcloud": "vlm/ovhcloud/api_key",
 }
 
 # 各サービスの「APIキー取得ページ」。key_url が直接キー作成ページ、login_url は
@@ -87,6 +89,17 @@ _PROVIDER_KEY_INFO = {
         "login_url": "https://console.mistral.ai/",
         "instructions_key": "ApiKey_Steps_Mistral",
     },
+    "huggingface": {
+        "key_url": "https://huggingface.co/settings/tokens",
+        "login_url": "https://huggingface.co/login",
+        "instructions_key": "ApiKey_Steps_HuggingFace",
+    },
+    # OVHcloud は日本居住者環境で実機検証できるまで無効。
+    # "ovhcloud": {
+    #     "key_url": "https://www.ovh.com/manager/#/public-cloud/",
+    #     "login_url": "https://www.ovh.com/auth/",
+    #     "instructions_key": "ApiKey_Steps_OVHcloud",
+    # },
 }
 
 
@@ -161,12 +174,6 @@ class VlmSettingsDialog(QDialog):
         self._routes_grid.setColumnStretch(_ROUTE_COL_MODEL, 1)
         rv.addLayout(self._routes_grid)
         self.profile_combo.currentIndexChanged.connect(self._on_profile_changed)
-        cf_row = QHBoxLayout()
-        cf_row.addWidget(QLabel(self._t("Vlm", "Settings_Cf_Account")))
-        self.cf_account_edit = QLineEdit()
-        cf_row.addWidget(self.cf_account_edit, 1)
-        rv.addLayout(cf_row)
-
         self.strict_check = QCheckBox(self._t("Vlm", "Settings_Strict_Identity"))
         self.strict_check.setToolTip(self._t("Vlm", "Settings_Strict_Identity_Tooltip"))
         rv.addWidget(self.strict_check)
@@ -320,11 +327,11 @@ class VlmSettingsDialog(QDialog):
         self._apply_route_states()
 
     def _apply_route_states(self) -> None:
-        order = set(self._vlm.order_list())
+        order = set(self._vlm.order_list() or ["gemini", "openrouter", "cloudflare"])
         paid = {p.strip() for p in str(self._vlm.paid_connections).split(",") if p.strip()}
         for cid, r in self._route_rows.items():
             provider = r["conn"].provider_id
-            r["enabled"].setChecked(provider in order or not order)
+            r["enabled"].setChecked(provider in order)
             r["paid_ok"].setChecked(provider in paid)
             self._refresh_route_status(cid)
         self._sync_paid_rows()
@@ -551,7 +558,6 @@ class VlmSettingsDialog(QDialog):
         _select(self.markdown_combo, self._vlm.markdown)
         _select(self.language_combo, self._vlm.language or "en")
         self.max_tokens.setValue(int(self._vlm.max_output_tokens))
-        self.cf_account_edit.setText(getattr(self._vlm, "cloudflare_account_id", "") or "")
         # 経路行の有効/有料/状態は _rebuild_routes -> _apply_route_states で反映済み。
 
     def _refresh_route_status(self, cid: str) -> None:
@@ -620,9 +626,6 @@ class VlmSettingsDialog(QDialog):
         # 通信は UI スレッドで行わない（NFR-002）。ボタンを無効化してワーカーへ。
         if getattr(self, "_diag_thread", None) is not None:
             return
-        # 未保存の Cloudflare account id をこの診断だけ反映する（保存は Save 時）。
-        if self.cf_account_edit.text().strip() != (self._vlm.cloudflare_account_id or ""):
-            self._vlm.cloudflare_account_id = self.cf_account_edit.text().strip()
         conn_map = vlm_config.build_connection_map(
             self._vlm, vlm_config.resolve_model_profile(self._vlm))
         conn = conn_map.get(cid)
@@ -672,9 +675,6 @@ class VlmSettingsDialog(QDialog):
         r = self._route_rows.get(cid)
         if conn is None or r is None:
             return
-        # 未保存の Cloudflare account id をこのチェックだけ反映する。
-        if conn.provider_id == "cloudflare" and self.cf_account_edit.text().strip():
-            conn.base_url = conn.base_url.replace("{account_id}", self.cf_account_edit.text().strip())
         info = _PROVIDER_KEY_INFO.get(conn.provider_id, {})
         dlg = ApiKeyDialog(
             self._t,
@@ -684,10 +684,20 @@ class VlmSettingsDialog(QDialog):
             key_url=info.get("key_url", ""),
             login_url=info.get("login_url", ""),
             instructions=self._t("Vlm", info.get("instructions_key", "ApiKey_Steps_Generic")),
+            cloudflare_account_id=(self._vlm.cloudflare_account_id
+                                   if conn.provider_id == "cloudflare" else ""),
+            on_cloudflare_verified=(self._on_cloudflare_verified
+                                    if conn.provider_id == "cloudflare" else None),
             parent=self,
         )
         dlg.exec()
         self._refresh_route_status(cid)
+
+    def _on_cloudflare_verified(self, account_id: str) -> None:
+        """実生成まで通った Account ID を保存し、現在の binding を VERIFIED にする。"""
+        self._vlm.cloudflare_account_id = account_id
+        vlm_config.mark_binding_verified(self._vlm, "cloudflare")
+        save_config(self._settings)
 
     def _set_diag_buttons_enabled(self, enabled: bool) -> None:
         for r in self._route_rows.values():
@@ -753,8 +763,6 @@ class VlmSettingsDialog(QDialog):
         v.markdown = self.markdown_combo.currentData()
         v.language = self.language_combo.currentData() or "en"
         v.max_output_tokens = int(self.max_tokens.value())
-        v.cloudflare_account_id = self.cf_account_edit.text().strip()
-
         # 経路の順序＝有効集合。▲▼ で決めた self._route_order のうち、有効チェックが
         # 入っている provider だけを、その順で connection_order に書く。
         enabled_providers = [self._route_rows[cid]["conn"].provider_id

@@ -143,7 +143,8 @@ def diagnose(conn: VlmConnection, api_key: str | None, *,
     if cf_missing_account:
         rep.add("URL format", DiagStatus.WARN,
                 "Cloudflare account ID is not set - the key can still be verified, "
-                "but this route will not run until the account ID field is filled")
+                "but this route will not run until Register API key is opened and the "
+                "Account ID is entered there")
     elif parsed.scheme == "http" and not _looks_localish(parsed.hostname or ""):
         rep.add("URL format", DiagStatus.WARN, "plain http to a non-local host")
     else:
@@ -198,11 +199,10 @@ def diagnose(conn: VlmConnection, api_key: str | None, *,
     else:
         rep.add("Auth", DiagStatus.FAIL, f"{conn.auth.type} required but no credential found")
 
-    # 4b. Cloudflare はアカウント ID / モデルに依存しない専用のトークン検証
-    # エンドポイント（`GET /client/v4/user/tokens/verify`）でキーの有効性を確認する。
-    # chat/completions は account_id とモデルが揃わないと 404 になり「キーが通ったのか」を
-    # 判定できないため、キー登録・接続診断ともこちらを使う。
-    if is_cloudflare and conn.auth.type == "bearer" and api_key:
+    # 4b. Account ID が未設定の Cloudflare だけは、専用エンドポイントでトークン単体を
+    # 検証する。Account ID がある場合はこの先の chat/completions へ進み、アカウント・
+    # Workers AI 権限・モデル・画像入力・応答抽出まで含めて接続を確認する。
+    if cf_missing_account and conn.auth.type == "bearer" and api_key:
         if do_live_request:
             _cloudflare_token_probe(rep, api_key, verify_tls=conn.verify_tls)
         else:

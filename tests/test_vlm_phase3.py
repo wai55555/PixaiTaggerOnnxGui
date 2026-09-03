@@ -190,7 +190,10 @@ def test_settings_dialog_roundtrip():
     for r in dlg._route_rows.values():
         if r["conn"].provider_id == "cloudflare":
             r["paid_ok"].setChecked(True)
-    dlg.cf_account_edit.setText("acc-xyz")
+    assert not hasattr(dlg, "cf_account_edit")
+    assert dlg._route_rows["builtin-huggingface"]["enabled"].isChecked() is False
+    assert "builtin-ovhcloud" not in dlg._route_rows
+    dlg._on_cloudflare_verified("fedcba9876543210fedcba9876543210")
     assert dlg.strict_check.isChecked() is False       # default off
     dlg.strict_check.setChecked(True)
     dlg._on_save()
@@ -198,7 +201,8 @@ def test_settings_dialog_roundtrip():
     assert s.vlm.paid_continuation is True
     assert s.vlm.max_output_tokens == 1500
     assert "cloudflare" in s.vlm.paid_connections
-    assert s.vlm.cloudflare_account_id == "acc-xyz"
+    assert s.vlm.cloudflare_account_id == "fedcba9876543210fedcba9876543210"
+    assert "gemma-4-26b-a4b-it:cloudflare" in s.vlm.verified_set()
     assert s.vlm.language == "en"
     assert s.vlm.strict_identity is True
 

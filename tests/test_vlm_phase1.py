@@ -465,16 +465,27 @@ def test_multi_provider_profiles():
     on = {cid for cid, c in cm.items() if c.enabled and c.kind is C.ConnectionKind.BUILTIN}
     assert on == {"builtin-openrouter", "builtin-nvidia", "builtin-groq"}, on
     assert cm["builtin-openrouter"].model_id == "qwen/qwen3.8-27b"
+    assert "builtin-ovhcloud" not in cm
     assert cm["builtin-gemini"].enabled is False
-    # nvidia/groq are appended to the fallback order even though connection_order omits them
+    # A profile binding alone must not re-enable a route unchecked in the UI.
     assert CFG.ordered_builtin_provider_ids(s, prof) == \
-        ["gemini", "openrouter", "cloudflare", "nvidia", "groq"]
+        ["gemini", "openrouter", "cloudflare"]
+
+    gemma = CFG.resolve_model_profile(_s("gemma-4-26b-a4b-it"))
+    gemma_cm = CFG.build_connection_map(_s("gemma-4-26b-a4b-it"), gemma)
+    assert gemma_cm["builtin-huggingface"].model_id == "google/gemma-4-26B-A4B-it"
+    assert gemma_cm["builtin-huggingface"].free_for_automation is False
+    assert gemma.bindings["huggingface"].identity_status is M.ModelIdentityStatus.UNKNOWN
+    assert "huggingface" not in CFG.ordered_builtin_provider_ids(_s("gemma-4-26b-a4b-it"), gemma)
+    enabled_hf = _s("gemma-4-26b-a4b-it")
+    enabled_hf.order_list = lambda: ["gemini", "openrouter", "cloudflare", "huggingface"]
+    assert CFG.ordered_builtin_provider_ids(enabled_hf, gemma)[-1] == "huggingface"
 
     CFG.set_model_id_override(s, "nvidia", "qwen/qwen3-vl-32b-instruct", profile_id="qwen3.8-27b")
     assert CFG.build_connection_map(s, prof)["builtin-nvidia"].model_id == "qwen/qwen3-vl-32b-instruct"
     CFG.set_model_id_override(s, "nvidia", "", profile_id="qwen3.8-27b")
     assert "qwen3.8-27b:nvidia" not in s.model_id_override_map()
-    print("  multi-provider profiles: registry, profile-scoped connection map, model-id override: OK")
+    print("  multi-provider profiles: HF opt-in, OVH disabled, model-id override: OK")
 
 
 def test_model_id_match_against_profile():

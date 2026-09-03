@@ -61,6 +61,13 @@ Double-clicking, wheel, and dragging are also effective when displaying 3x3. Ctr
 -   **Tag Generation Adjustment**: Intuitively adjust **thresholds** and **maximum tag counts** for `general` and `character` categories using sliders.
 -   **Multi-language Support**: Supports Multi-language. The UI automatically switches according to the OS language settings.
 
+### 5. VLM Captioning (Optional)
+-   **Natural-language captions via a networked VLM**: Next to the model selector, a "Use VLM connection" checkbox switches generation from the local model to a Vision-Language Model that writes a detailed English caption for each image - handy as training-dataset descriptions. Off by default; local tagging is unchanged.
+-   **Built-in services with same-model fallback**: Gemini API, OpenRouter and Cloudflare Workers AI are built in (plus Groq, NVIDIA NIM and Mistral). If one service refuses or is rate limited, the next service offering the *same* model is tried automatically - it never silently switches to a different model.
+-   **Custom connections**: Add any OpenAI-compatible endpoint, including local servers such as Ollama, LM Studio, llama.cpp or vLLM.
+-   **Keys stay out of `config.ini`**: Register an API key from the VLM settings dialog; it is checked with one real request and stored in the OS keyring (or read from a `.env` file / environment variable).
+-   **Free routes only, by default**: Only routes the app can confirm as free are used unless you explicitly allow paid continuation. Detail level, sentence count, character-name policy and Markdown are adjustable, and captions combine with an existing `.txt` (prepend / append / overwrite) just like tagging output.
+
 ## License
 
 This project is released under the **LGPLv3** and **Apache License 2.0** licenses.

@@ -22,7 +22,7 @@ _SERVICE = "PixaiTaggerOnnxGui.VLM"
 def _load_dotenv() -> None:
     """exe/スクリプトの隣、または作業ディレクトリの `.env` を環境変数へ読み込む。
 
-    6プロバイダーぶんのキーをダイアログで登録する代わりに `.env` 一枚で済ませられる。
+    内蔵プロバイダーぶんのキーをダイアログで登録する代わりに `.env` 一枚で済ませられる。
     既に設定済みの環境変数は上書きしない。値の `"..."` / `'...'` は外す。
     """
     try:
@@ -66,6 +66,8 @@ _ENV_ALIASES = {
     "vlm/groq/api_key": ("GROQ_API_KEY",),
     "vlm/nvidia/api_key": ("NVIDIA_API_KEY", "NVIDIA_NIM_API_KEY"),
     "vlm/mistral/api_key": ("MISTRAL_API_KEY",),
+    "vlm/huggingface/api_token": ("HF_TOKEN", "HUGGINGFACEHUB_API_TOKEN"),
+    # "vlm/ovhcloud/api_key": ("OVH_AI_ENDPOINTS_ACCESS_TOKEN", "OVHCLOUD_API_KEY"),
 }
 
 _lock = threading.Lock()

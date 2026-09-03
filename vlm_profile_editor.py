@@ -22,11 +22,17 @@ from vlm_connections import default_builtin_connections
 from vlm_worker import VlmModelListWorker
 
 GetString = Callable[..., str]
-_PROVIDERS = ("gemini", "openrouter", "cloudflare", "groq", "nvidia", "mistral")
+_PROVIDERS = (
+    "gemini", "openrouter", "cloudflare", "groq", "nvidia", "mistral",
+    "huggingface",
+    # "ovhcloud",  # 日本居住者環境で実機検証できるまで無効
+)
 _SECRET_REF = {
     "gemini": "vlm/gemini/api_key", "openrouter": "vlm/openrouter/api_key",
     "cloudflare": "vlm/cloudflare/api_token", "groq": "vlm/groq/api_key",
     "nvidia": "vlm/nvidia/api_key", "mistral": "vlm/mistral/api_key",
+    "huggingface": "vlm/huggingface/api_token",
+    # "ovhcloud": "vlm/ovhcloud/api_key",
 }
 
 

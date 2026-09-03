@@ -138,8 +138,8 @@ def test_api_key_dialog_verify_and_save():
     from api_key_dialog import ApiKeyDialog
     from vlm_connections import VlmConnection, ConnectionKind, AuthSpec
 
-    _orig = (AKD.QMessageBox.information, vlm_secrets.set_secret, vlm_secrets.keyring_available,
-             D.diagnose, vlm_secrets.secret_status)
+    _orig = (AKD.QMessageBox.information, vlm_secrets.set_secret, vlm_secrets.get_secret,
+             vlm_secrets.keyring_available, D.diagnose, vlm_secrets.secret_status)
     AKD.QMessageBox.information = staticmethod(lambda *a, **k: None)  # don't block on confirm
     vlm_secrets.secret_status = lambda ref: "missing"
 
@@ -213,13 +213,90 @@ def test_api_key_dialog_verify_and_save():
     assert d5.key_edit.placeholderText() == "ApiKey_Paste_Placeholder"
     d5.close()
 
-    (AKD.QMessageBox.information, vlm_secrets.set_secret, vlm_secrets.keyring_available,
-     D.diagnose, vlm_secrets.secret_status) = _orig
-    print("  ApiKeyDialog: 200->save+close, 401->keep open, offline->not saved, registered->shown: OK")
+    # Cloudflare keeps Account ID in this dialog only and requires a full image response.
+    cf = VlmConnection(
+        "builtin-cloudflare", "Cloudflare Workers AI", ConnectionKind.BUILTIN,
+        "openai_chat_completions",
+        "https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/v1",
+        "@cf/google/gemma-4-26b-a4b-it", provider_id="cloudflare",
+        auth=AuthSpec(type="bearer", secret_ref="vlm/cloudflare/api_token"),
+    )
+    vlm_secrets.secret_status = lambda ref: "missing"
+    cf_ids = []
+    d6 = ApiKeyDialog(
+        tr, display_name="Cloudflare Workers AI", secret_ref="vlm/cloudflare/api_token",
+        conn=cf, key_url="http://k", login_url="http://l", instructions="x",
+        on_cloudflare_verified=cf_ids.append,
+    )
+    assert d6.account_id_edit is not None
+    d6.key_edit.setText("CFKEY")
+    d6._check_and_save()
+    assert d6._check_thread is None and d6.status.text() == "ApiKey_Cf_Account_Empty"
+    d6.account_id_edit.setText("not-an-account-id")
+    d6._check_and_save()
+    assert d6._check_thread is None and d6.status.text() == "ApiKey_Cf_Account_Invalid"
+
+    token_only = DiagReport("builtin-cloudflare")
+    token_only.add("Auth", DiagStatus.PASS, "token valid")
+    token_only.add("HTTP response", DiagStatus.PASS, "token valid and active")
+    token_only.add("Caption extraction", DiagStatus.SKIP, "token verify only")
+    token_only.http_status = 200
+    D.diagnose = lambda c, k, do_live_request=True: token_only
+    account_id = "0123456789abcdef0123456789abcdef"
+    d6.account_id_edit.setText(account_id)
+    d6._check_and_save()
+    for _ in range(300):
+        _APP.processEvents()
+        time.sleep(0.01)
+        if d6._check_thread is None:
+            break
+    assert d6.saved() is False and "vlm/cloudflare/api_token" not in stored
+    assert cf_ids == [], "token verification alone must not save the Account ID"
+
+    cf_good = DiagReport("builtin-cloudflare")
+    cf_good.add("Auth", DiagStatus.PASS, "ok")
+    cf_good.add("HTTP response", DiagStatus.PASS, "200 OK")
+    cf_good.add("Caption extraction", DiagStatus.PASS, "got text")
+    cf_good.http_status = 200
+    checked_urls = []
+    D.diagnose = lambda c, k, do_live_request=True: (checked_urls.append(c.base_url) or cf_good)
+    d6.account_id_edit.setText(account_id)
+    d6._check_and_save()
+    for _ in range(300):
+        _APP.processEvents()
+        time.sleep(0.01)
+        if d6._check_thread is None:
+            break
+    assert stored["vlm/cloudflare/api_token"] == "CFKEY"
+    assert cf_ids == [account_id] and d6.saved() is True
+    assert checked_urls == [f"https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/v1"]
+
+    # A registered token can validate a newly entered Account ID without being pasted again.
+    stored.clear()
+    cf_ids.clear()
+    vlm_secrets.secret_status = lambda ref: "keyring"
+    vlm_secrets.get_secret = lambda ref: "EXISTING_CF_KEY"
+    d7 = ApiKeyDialog(
+        tr, display_name="Cloudflare Workers AI", secret_ref="vlm/cloudflare/api_token",
+        conn=cf, key_url="http://k", login_url="http://l", instructions="x",
+        cloudflare_account_id=account_id, on_cloudflare_verified=cf_ids.append,
+    )
+    d7._check_and_save()
+    for _ in range(300):
+        _APP.processEvents()
+        time.sleep(0.01)
+        if d7._check_thread is None:
+            break
+    assert d7.saved() is True and cf_ids == [account_id]
+    assert stored == {}, "an existing token should not be copied into another secret tier"
+
+    (AKD.QMessageBox.information, vlm_secrets.set_secret, vlm_secrets.get_secret,
+     vlm_secrets.keyring_available, D.diagnose, vlm_secrets.secret_status) = _orig
+    print("  ApiKeyDialog: generic key checks + Cloudflare Account ID/full request: OK")
 
 
 def test_dotenv_loading():
-    """A .env next to the app feeds the 6 provider keys via the env-var tier,
+    """A .env next to the app feeds the enabled provider keys via the env-var tier,
     without overwriting anything already set."""
     import importlib
     import os
@@ -228,7 +305,9 @@ def test_dotenv_loading():
     from constants import BASE_DIR
     d = Path(tempfile.mkdtemp())
     (d / ".env").write_text(
-        'GEMINI_API_KEY=g_key\n# note\nexport MISTRAL_API_KEY="m_key"\nCLOUDFLARE_ACCOUNT_ID=acct-x\n',
+        'GEMINI_API_KEY=g_key\n# note\nexport MISTRAL_API_KEY="m_key"\n'
+        'HF_TOKEN=hf_key\n'
+        'CLOUDFLARE_ACCOUNT_ID=acct-x\n',
         encoding="utf-8")
     cwd = os.getcwd()
     # (d) every env name get_secret() can consult: all _ENV_ALIASES values, the
@@ -271,6 +350,7 @@ def test_dotenv_loading():
             vlm_secrets._load_dotenv()
             assert vlm_secrets.get_secret("vlm/gemini/api_key") == "g_key"
             assert vlm_secrets.get_secret("vlm/mistral/api_key") == "m_key"      # quotes stripped
+            assert vlm_secrets.get_secret("vlm/huggingface/api_token") == "hf_key"
             assert os.environ["CLOUDFLARE_ACCOUNT_ID"] == "acct-x"
             assert os.environ["GROQ_API_KEY"] == "preset"                        # not overwritten
         finally:
@@ -288,7 +368,7 @@ def test_dotenv_loading():
         os.chdir(cwd)
         for _p, _bak in _moved:
             shutil.move(_bak, _p)
-    print("  .env loading: 6-key file feeds get_secret, quotes/export handled, preset wins: OK")
+    print("  .env loading: enabled provider aliases, quotes/export handled, preset wins: OK")
 
 
 def test_lang_files_parse_and_expose_vlm_keys():
@@ -297,6 +377,7 @@ def test_lang_files_parse_and_expose_vlm_keys():
     import configparser
     root = Path(__file__).resolve().parent.parent
     want = ["Settings_Mode_Builtin", "ApiKey_Steps_Gemini", "ApiKey_Steps_Cloudflare",
+            "ApiKey_Steps_HuggingFace", "ApiKey_Cf_Account_Invalid",
             "Opt_Detail_maximum_detail", "Opt_Sentence_5", "Opt_CharName_explicit_only",
             "Opt_Markdown_disabled", "Settings_Language_Fixed_Tooltip"]
     for name in ("lang/en.ini", "lang/ja.ini"):

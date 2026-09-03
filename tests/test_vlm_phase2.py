@@ -278,7 +278,17 @@ def test_diagnostics_cloudflare_token_verify(monkeypatch):
     assert n2["Auth"].status is D.DiagStatus.FAIL
     assert n2["HTTP response"].status is D.DiagStatus.FAIL
     assert rep2.http_status == 401
-    print("  cloudflare token verify: valid->PASS, bad->FAIL: OK")
+
+    # Account ID が埋まっていれば token/verify で終わらず、実際の画像生成・抽出まで進む。
+    cf.base_url = "https://api.cloudflare.com/client/v4/accounts/0123456789abcdef0123456789abcdef/ai/v1"
+    monkeypatch.setattr(D, "execute_http", lambda *a, **k: RawHttpResponse(
+        200, {}, {"choices": [{"message": {"content": "cloudflare caption"}}]}, ""))
+    rep3 = D.diagnose(cf, api_key="cfut_ok", do_live_request=True)
+    n3 = {i.name: i for i in rep3.items}
+    assert n3["Request build"].status is D.DiagStatus.PASS
+    assert n3["HTTP response"].status is D.DiagStatus.PASS
+    assert n3["Caption extraction"].status is D.DiagStatus.PASS
+    print("  cloudflare: missing Account ID verifies token only; configured route generates: OK")
 
 
 def test_diagnostics_live_extraction_branches():

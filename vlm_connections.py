@@ -1,6 +1,7 @@
 """内蔵接続とカスタム接続の定義（260901_VLM_spec.md 2.2・14章 / design.md 4.2・5.2節）。
 
-- 内蔵接続: アプリが URL・プロトコル・既知の無料経路情報を持つ（Gemini / OpenRouter / Cloudflare）
+- 内蔵接続: アプリが URL・プロトコル・既知の無料経路情報を持つ
+  （Gemini / OpenRouter / Cloudflare / Groq / NVIDIA / Mistral / Hugging Face）
 - カスタム接続: 利用者が登録する外部 API / ローカル VLM。同一モデル判定は行わない。
   外部・ローカルの判定は安全側（不明なら外部扱い）。
 """
@@ -240,6 +241,31 @@ BUILTIN_CONNECTION_TEMPLATES: list[dict] = [
         "auth": {"type": "bearer", "secret_ref": "vlm/mistral/api_key"},
         "is_known_free_route": True,
     },
+    {
+        "connection_id": "builtin-huggingface",
+        "display_name": "Hugging Face",
+        "kind": "builtin",
+        "provider_id": "huggingface",
+        "protocol": "openai_chat_completions",
+        "base_url": "https://router.huggingface.co/v1",
+        "model_id": "",
+        "auth": {"type": "bearer", "secret_ref": "vlm/huggingface/api_token"},
+        # Monthly credits exist, but routed inference is metered and can consume paid credits.
+        "is_known_free_route": False,
+    },
+    # OVHcloud は日本居住者によるアカウント作成・実機検証ができなかったため無効化。
+    # 対応地域の利用者が接続確認できるまで、内蔵経路として UI へ公開しない。
+    # {
+    #     "connection_id": "builtin-ovhcloud",
+    #     "display_name": "OVHcloud AI Endpoints",
+    #     "kind": "builtin",
+    #     "provider_id": "ovhcloud",
+    #     "protocol": "openai_chat_completions",
+    #     "base_url": "https://oai.endpoints.kepler.ai.cloud.ovh.net/v1",
+    #     "model_id": "",
+    #     "auth": {"type": "bearer", "secret_ref": "vlm/ovhcloud/api_key"},
+    #     "is_known_free_route": False,
+    # },
 ]
 
 

@@ -147,13 +147,16 @@ class VlmModelRegistry:
 # 診断のフル PASS または生成成功で `[Vlm] verified_bindings` に載り VERIFIED 扱いになる
 # （vlm_config._apply_verified_promotions）。
 #
-# providers: gemini / openrouter / cloudflare / groq / nvidia / mistral
+# providers: gemini / openrouter / cloudflare / groq / nvidia / mistral /
+#            huggingface（ovhcloud は実機検証できるまで無効）
 #   - gemini      : Google Generative Language API（gemini_generate_content）
 #   - openrouter  : OpenRouter（openai_chat_completions、`:free` サフィックスで無料経路）
 #   - cloudflare  : Cloudflare Workers AI（openai_chat_completions、要 account_id）
 #   - groq        : Groq（openai_chat_completions、無料枠あり）
 #   - nvidia      : NVIDIA NIM / build.nvidia.com（openai_chat_completions、無料クレジット）
 #   - mistral     : Mistral La Plateforme（openai_chat_completions、無料枠あり）
+#   - huggingface : Hugging Face Inference Providers（openai_chat_completions、従量課金）
+#   - ovhcloud    : OVHcloud AI Endpoints（日本居住者環境で実機検証できるまで無効）
 
 GEMMA_4_26B_A4B_IT = VlmModelProfile(
     profile_id="gemma-4-26b-a4b-it",
@@ -177,6 +180,8 @@ GEMMA_4_26B_A4B_IT = VlmModelProfile(
                                    free_route=True),
         "cloudflare": ModelBinding("cloudflare", "@cf/google/gemma-4-26b-a4b-it",
                                    ModelIdentityStatus.DECLARED),
+        "huggingface": ModelBinding("huggingface", "google/gemma-4-26B-A4B-it",
+                                     ModelIdentityStatus.UNKNOWN),
     },
 )
 
@@ -198,6 +203,8 @@ GEMMA_4_31B_IT = VlmModelProfile(
         "nvidia": ModelBinding("nvidia", "google/gemma-4-31b-it", ModelIdentityStatus.UNKNOWN,
                                free_route=True),
         "groq": ModelBinding("groq", "gemma-4-31b-it", ModelIdentityStatus.UNKNOWN, free_route=True),
+        "huggingface": ModelBinding("huggingface", "google/gemma-4-31B-it",
+                                     ModelIdentityStatus.UNKNOWN),
     },
 )
 
@@ -215,6 +222,8 @@ QWEN3_8_27B = VlmModelProfile(
         "nvidia": ModelBinding("nvidia", "qwen/qwen3.8-27b-instruct", ModelIdentityStatus.UNKNOWN,
                                free_route=True),
         "groq": ModelBinding("groq", "qwen3.8-27b", ModelIdentityStatus.UNKNOWN, free_route=True),
+        # "ovhcloud": ModelBinding("ovhcloud", "Qwen3.8-27B",
+        #                            ModelIdentityStatus.UNKNOWN, free_route=True),
     },
 )
 
@@ -232,6 +241,8 @@ QWEN3_6_27B = VlmModelProfile(
         "nvidia": ModelBinding("nvidia", "qwen/qwen3.6-27b-instruct", ModelIdentityStatus.UNKNOWN,
                                free_route=True),
         "groq": ModelBinding("groq", "qwen3.6-27b", ModelIdentityStatus.UNKNOWN, free_route=True),
+        # "ovhcloud": ModelBinding("ovhcloud", "Qwen3.6-27B",
+        #                            ModelIdentityStatus.UNKNOWN),
     },
 )
 
