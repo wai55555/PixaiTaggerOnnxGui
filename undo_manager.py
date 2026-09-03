@@ -26,9 +26,13 @@ def _long_path_str(path: Path) -> str:
       リンク先の実体を消してしまう（PR#16 レビュー指摘）。
     - UNC パス（`\\\\server\\share\\...`）は `\\\\?\\UNC\\server\\share\\...` の形にする必要が
       あり、単純に `\\\\?\\` を前置すると不正なパスになる（PR#16 レビュー指摘）。
+    - 既に `\\\\?\\` 付き（拡張長パス）が渡された場合はそのまま返す。二重に前置すると
+      `\\\\?\\UNC\\?\\...` のような不正パスになる（PR#16 レビュー第2ラウンド指摘）。
     """
     p = os.path.abspath(path)
     if sys.platform != "win32":
+        return p
+    if p.startswith("\\\\?\\"):
         return p
     if p.startswith("\\\\"):
         return "\\\\?\\UNC" + p[1:]

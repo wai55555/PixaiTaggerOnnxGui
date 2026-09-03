@@ -781,10 +781,12 @@ def process_image_loop(
     戻り値: 実際に書き換えたファイルの FileChange リスト。呼び出し側はこれを1つの
     Undo エントリ（CompositeUndoAction）にまとめる（design.md 4.4節）。
 
-    `progress_cb(done, total)` は毎画像呼ばれる。issue #10: 1画像=1〜2回の GUI ログ発行だと
-    高速ループ（SKIP など）で Qt イベントキューが飽和して固まるため、ルーチンの
-    「処理中／出力成功」ログは GUI へ出さず progress_cb へ回す。スキップ・エラー・警告・
-    追記件数など有界・低頻度のログは従来どおり GUI へ出す。
+    `progress_cb(done, total)` は全体で最大 ~200 回＋最後の N/N（完了）だけ呼ぶ。
+    issue #10: 1画像=1〜2回の GUI ログ発行だと高速ループ（SKIP など）で Qt イベント
+    キューが飽和して固まるため、ルーチンの「処理中／出力成功」ログは GUI へ出さず、
+    間引いた progress_cb へ回す（progress_cb 自体もクロススレッドの queued signal なので
+    毎画像発行はしない）。スキップ・エラー・警告・追記件数など有界・低頻度のログは
+    従来どおり GUI へ出す。
     """
 
     def core_log_gui(message: str, color: str = "black") -> None:
