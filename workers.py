@@ -3,7 +3,7 @@ import json
 import os
 import requests
 import threading
-from typing import Callable
+from typing import Callable, Sequence
 from collections import Counter
 
 from PySide6.QtCore import QObject, Signal, Slot
@@ -16,7 +16,7 @@ from app_settings import AppSettings, update_model_verification_status
 from get_pointer_huggingface import get_model_info_from_pointer
 from tagging_core import (
     setup_tagger_from_settings, process_image_loop, get_image_paths_recursive,
-    FileChange, OverwriteDecision,
+    FileChange, OverwriteDecision, parse_target_mode, filter_target_images,
 )
 import model_registry
 import caption_core
@@ -398,16 +398,20 @@ class TaggerThreadWorker(QObject):
     reload_image_list_signal = Signal()
     # バッチ1回で書き換えたファイル群。MainWindow 側で CompositeUndoAction にまとめる。
     batch_completed = Signal(list)
+    # バッチ1回で失敗した画像パス群。FAILED モードの次回実行がそのまま failed_paths
+    # として渡せるよう、入力画像パス（.txt ではない）で集める。成功時は空。
+    batch_failed = Signal(list)
     # 進捗（done, total）。ルーチンの「処理中／成功」ログを GUI へ垂れ流す代わりに
     # これを毎画像発行し、GUI 側で throttle する（issue #10: Qt キュー飽和対策）。
     progress_update = Signal(int, int)
-    def __init__(self, settings: AppSettings, decision_requester: Callable[[Path], OverwriteDecision] | None, get_string: GetString | None = None, selected_file_path: Path | None = None):
+    def __init__(self, settings: AppSettings, decision_requester: Callable[[Path], OverwriteDecision] | None, get_string: GetString | None = None, selected_file_path: Path | None = None, failed_paths: Sequence[Path] = ()):
         super().__init__()
         self._settings: AppSettings = settings
         # ASK モードのときだけ呼ばれる GUI 応答ブリッジ（design.md 3.1節）。
         # ASK 以外ではワーカーからこれを呼ぶことはない。
         self._decision_requester = decision_requester
         self._selected_file_path = selected_file_path
+        self._failed_paths = tuple(failed_paths)
         self._stop_event = threading.Event()
         self.get_string: GetString = get_string if get_string else default_get_string_fallback
 
@@ -434,7 +438,7 @@ class TaggerThreadWorker(QObject):
         write_debug_log(str(self.get_string("Workers", "TaggerThreadWorker_Start")), self.get_string)
         self.running_state_changed.emit(True)
         write_debug_log(str(self.get_string("Workers", "TaggerThreadWorker_Tagging_Process_Start")), self.get_string)
-        
+        failed: list[Path] = []
         try:
             tagger, settings_dict = setup_tagger_from_settings(self._settings, self.get_string)
             if not tagger or not settings_dict:
@@ -454,9 +458,10 @@ class TaggerThreadWorker(QObject):
             input_dir = Path(settings_dict['INPUT_DIR'])
             image_paths = get_image_paths_recursive(input_dir)
 
-            if self._selected_file_path and self._selected_file_path in image_paths:
-                image_paths.remove(self._selected_file_path)
-                image_paths.insert(0, self._selected_file_path)
+            # 対象フィルタは列挙直後に適用する。SELECTED モードでは従来の
+            # selected-to-front 並べ替えを置き換える（filter が [selected] を返す）。
+            target_mode = parse_target_mode(getattr(self._settings.behavior, "target_mode", "ALL"), self.get_string)
+            image_paths = filter_target_images(image_paths, target_mode, failed_paths=self._failed_paths, selected=self._selected_file_path)
 
             if not image_paths:
                 self.log_message.emit(self.get_string("Workers", "TaggerThreadWorker_Warning_No_Image_Files", input_dir=input_dir), "orange")
@@ -468,6 +473,11 @@ class TaggerThreadWorker(QObject):
                 write_debug_log(str(self.get_string("Workers", "TaggerThreadWorker_Core_Log", message=message)), self.get_string)
                 self.log_message.emit(message, color)
 
+            # 失敗収集: process_image_loop の失敗分岐は tagging_core 側にあり
+            # （当ファイルからは変更不可）、いずれも「出力 .txt を書かずに continue」
+            # する。処理前に存在した .txt を除外すれば、残りの未書き込み＝失敗
+            # （または停止による未処理＝FAILED 再実行の対象）として集められる。
+            pre_existing = {p.with_suffix(".txt") for p in image_paths if p.with_suffix(".txt").is_file()}
             changed_files = process_image_loop(
                 tagger=tagger,
                 image_paths=image_paths,
@@ -478,13 +488,17 @@ class TaggerThreadWorker(QObject):
                 get_string=self.get_string,
                 progress_cb=self.progress_update.emit,
             )
+            changed_paths = {c.path for c in changed_files}
+            failed = [p for p in image_paths if p.with_suffix(".txt") not in changed_paths and p.with_suffix(".txt") not in pre_existing]
             self.batch_completed.emit(changed_files)
+            self.batch_failed.emit(failed)
             
         except Exception as e:
             import traceback
             error_message = self.get_string("Workers", "TaggerThreadWorker_Fatal_Exception", type_e_name=type(e).__name__, e=e, traceback_exc=traceback.format_exc())
             self.log_message.emit(error_message, "red")
             write_debug_log(str(self.get_string("Workers", "TaggerThreadWorker_Runtime_Exception", e=e, traceback_exc=traceback.format_exc())), self.get_string)
+            self.batch_failed.emit(failed)
         
         finally:
             self.running_state_changed.emit(False)
@@ -505,16 +519,18 @@ class CaptionerThreadWorker(QObject):
     reload_image_list_signal = Signal()
     # バッチ1回で書き換えたファイル群。MainWindow 側で CompositeUndoAction にまとめる。
     batch_completed = Signal(list)
+    batch_failed = Signal(list)
     # 進捗（done, total）。GUI 側で throttle する（issue #10: Qt キュー飽和対策）。
     progress_update = Signal(int, int)
 
-    def __init__(self, settings: AppSettings, decision_requester: Callable[[Path], OverwriteDecision] | None, get_string: GetString | None = None, selected_file_path: Path | None = None):
+    def __init__(self, settings: AppSettings, decision_requester: Callable[[Path], OverwriteDecision] | None, get_string: GetString | None = None, selected_file_path: Path | None = None, failed_paths: Sequence[Path] = ()):
         super().__init__()
         self._settings: AppSettings = settings
         # ASK モードのときだけ呼ばれる GUI 応答ブリッジ（design.md 3.1節）。
         # ASK 以外ではワーカーからこれを呼ぶことはない。
         self._decision_requester = decision_requester
         self._selected_file_path = selected_file_path
+        self._failed_paths = tuple(failed_paths)
         self._stop_event = threading.Event()
         self.get_string: GetString = get_string if get_string else default_get_string_fallback
 
@@ -537,7 +553,7 @@ class CaptionerThreadWorker(QObject):
     def run_captioning(self):
         write_debug_log(str(self.get_string("Workers", "TaggerThreadWorker_Start")), self.get_string)
         self.running_state_changed.emit(True)
-
+        failed: list[Path] = []
         try:
             captioner, settings_dict = caption_core.setup_captioner_from_settings(self._settings, self.get_string)
             if not captioner or not settings_dict:
@@ -563,9 +579,8 @@ class CaptionerThreadWorker(QObject):
             input_dir = Path(settings_dict['INPUT_DIR'])
             image_paths = get_image_paths_recursive(input_dir)
 
-            if self._selected_file_path and self._selected_file_path in image_paths:
-                image_paths.remove(self._selected_file_path)
-                image_paths.insert(0, self._selected_file_path)
+            target_mode = parse_target_mode(getattr(self._settings.behavior, "target_mode", "ALL"), self.get_string)
+            image_paths = filter_target_images(image_paths, target_mode, failed_paths=self._failed_paths, selected=self._selected_file_path)
 
             if not image_paths:
                 self.log_message.emit(self.get_string("Workers", "TaggerThreadWorker_Warning_No_Image_Files", input_dir=input_dir), "orange")
@@ -576,6 +591,7 @@ class CaptionerThreadWorker(QObject):
             def log_to_gui(message: str, color: str):
                 self.log_message.emit(message, color)
 
+            pre_existing = {p.with_suffix(".txt") for p in image_paths if p.with_suffix(".txt").is_file()}
             changed_files = caption_core.process_caption_loop(
                 captioner=captioner,
                 settings=settings_dict,
@@ -586,13 +602,17 @@ class CaptionerThreadWorker(QObject):
                 get_string=self.get_string,
                 progress_cb=self.progress_update.emit,
             )
+            changed_paths = {c.path for c in changed_files}
+            failed = [p for p in image_paths if p.with_suffix(".txt") not in changed_paths and p.with_suffix(".txt") not in pre_existing]
             self.batch_completed.emit(changed_files)
+            self.batch_failed.emit(failed)
 
         except Exception as e:
             import traceback
             error_message = self.get_string("Workers", "TaggerThreadWorker_Fatal_Exception", type_e_name=type(e).__name__, e=e, traceback_exc=traceback.format_exc())
             self.log_message.emit(error_message, "red")
             write_debug_log(str(self.get_string("Workers", "TaggerThreadWorker_Runtime_Exception", e=e, traceback_exc=traceback.format_exc())), self.get_string)
+            self.batch_failed.emit(failed)
 
         finally:
             self.running_state_changed.emit(False)

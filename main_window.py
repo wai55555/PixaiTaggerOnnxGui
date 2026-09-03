@@ -106,6 +106,7 @@ class MainWindow(QMainWindow):
     language_combo: QComboBox
     model_combo: QComboBox
     existing_mode_combo: QComboBox
+    target_mode_combo: QComboBox
     caption_placement_widget: QWidget
     caption_placement_group: QButtonGroup
     caption_placement_buttons: dict[str, QPushButton]
@@ -193,6 +194,10 @@ class MainWindow(QMainWindow):
         self._session_mode_override: ExistingFileMode | None = None
         # ワーカーからの進捗通知を GUI へ反映した最後の時刻（issue #10: 毎画像反映すると固まる）。
         self._progress_last_shown_at: float = 0.0
+        # 直近の一括バッチで失敗した入力画像パス。次回「失敗のみ」実行の対象。
+        # セッション内のみ保持し、フォルダ変更で破棄、再起動は跨がない
+        # （260903_vlm-gap-fix.md todo 5）。1枚テストは batch_failed を出さないので上書きされない。
+        self._batch_failed_paths: list[Path] = []
 
         # Timers and Dialogs
         self._resize_timer = QTimer(self)
@@ -515,6 +520,18 @@ class MainWindow(QMainWindow):
         self.save_current_config()
         write_debug_log(f"existing_file_mode -> {mode}")
 
+    @Slot(int)
+    def _on_target_mode_changed(self, index: int):
+        """一括処理の対象選択（すべて / 未生成のみ / 失敗のみ / 選択画像のみ）を
+        設定へ即時反映し、既存の保存フローで永続化する（260903_vlm-gap-fix.md todo 5）。
+        実行中の判定は開始時スナップショットなので、走行中は combo をロックする。"""
+        mode = self.target_mode_combo.itemData(index)
+        if not mode or mode == self.settings.behavior.target_mode:
+            return
+        self.settings.behavior.target_mode = mode
+        self.save_current_config()
+        write_debug_log(f"target_mode -> {mode}")
+
     @Slot()
     def _on_caption_placement_changed(self, button=None):
         """生成キャプションの挿入位置（前に追加 / 後に追加 / 上書き）を保存する。
@@ -598,7 +615,7 @@ class MainWindow(QMainWindow):
 
     @Slot(str, str, str)
     def _on_vlm_single_test_result(self, caption: str, connection_display: str, model_id: str):
-        """1枚テストの結果をキャプション編集欄へ表示する（自動保存しない）。"""
+        """1枚テストの結果をキャプション編集欄へ表示する（結果は一括処理と同じ経路で.txtへ保存される）。"""
         self.update_log(self.locale_manager.get_string(
             "Vlm", "Test_Result_Header", conn=connection_display, model=model_id), "green")
         if hasattr(self, "caption_text_edit"):
@@ -820,6 +837,8 @@ class MainWindow(QMainWindow):
         # persisted to config.ini, silently changing the default for the next run
         # (PR#16 review). Lock them the same way model_combo/task_combo are locked.
         self.existing_mode_combo.setEnabled(enabled)
+        # 対象選択も開始時スナップショットなので走行中はロックする。
+        self.target_mode_combo.setEnabled(enabled)
         self.caption_placement_widget.setEnabled(enabled)
         if hasattr(self, "use_vlm_check"):
             self.use_vlm_check.setEnabled(enabled)
@@ -961,8 +980,11 @@ class MainWindow(QMainWindow):
     def _handle_folder_drop(self, folder_path: str, file_to_select: str | None = None):
         write_debug_log(f"DEBUG: _handle_folder_drop - folder_path: {folder_path}, file_to_select: {file_to_select}")
         """Handles the logic for when a folder is dropped or selected."""
+        # フォルダが変わったら「失敗のみ」用のセッション失敗集合は無効。破棄する
+        # （前フォルダの失敗パスを別フォルダの実行対象にしないため。todo 5）。
+        self._batch_failed_paths = []
         self.input_line.setText(folder_path)
-        self.reload_image_list(file_to_select) 
+        self.reload_image_list(file_to_select)
         self.reload_tags_only()
     
     @Slot()
@@ -1228,6 +1250,12 @@ class MainWindow(QMainWindow):
 
         self._cleanup_tagger_thread()
 
+        # 「選択画像のみ」で画像が未選択なら空実行。専用の1行ログを出して即戻る
+        # （既存の「画像がありません」を流用しない。260903_vlm-gap-fix.md todo 5）。
+        if str(self.settings.behavior.target_mode).upper() == "SELECTED" and self.image_list.currentItem() is None:
+            self.update_log(self.locale_manager.get_string("MainWindow", "Target_No_Selected"), "orange")
+            return
+
         self._session_mode_override = None
         self._progress_last_shown_at = 0.0
 
@@ -1248,24 +1276,28 @@ class MainWindow(QMainWindow):
         use_vlm = bool(self.settings.vlm.enabled)
         is_captioner = (not use_vlm) and self._current_model_entry().model_type == "captioner"
 
+        # 「失敗のみ」モード用のセッション失敗集合を渡す（他モードでは無視される）。
+        failed_paths = list(self._batch_failed_paths)
+
         self._tagger_thread = QThread()
         if use_vlm:
             self._tagger_worker = VlmCaptionWorker(
                 self.settings, self._make_decision_requester(), self.locale_manager.get_string,
-                selected_file_path=selected_path)
+                selected_file_path=selected_path, failed_paths=failed_paths)
             self._tagger_worker.single_test_result.connect(self._on_vlm_single_test_result)
             self._tagger_worker.binding_verified.connect(self._on_vlm_binding_verified)
             self._tagger_thread.started.connect(self._tagger_worker.run_captioning)
         elif is_captioner:
-            self._tagger_worker = CaptionerThreadWorker(self.settings, self._make_decision_requester(), self.locale_manager.get_string, selected_file_path=selected_path)
+            self._tagger_worker = CaptionerThreadWorker(self.settings, self._make_decision_requester(), self.locale_manager.get_string, selected_file_path=selected_path, failed_paths=failed_paths)
             self._tagger_thread.started.connect(self._tagger_worker.run_captioning)
         else:
-            self._tagger_worker = TaggerThreadWorker(self.settings, self._make_decision_requester(), self.locale_manager.get_string, selected_file_path=selected_path)
+            self._tagger_worker = TaggerThreadWorker(self.settings, self._make_decision_requester(), self.locale_manager.get_string, selected_file_path=selected_path, failed_paths=failed_paths)
             self._tagger_thread.started.connect(self._tagger_worker.run_tagging)
         self._tagger_worker.moveToThread(self._tagger_thread)
 
         self._tagger_worker.log_message.connect(self.update_log)
         self._tagger_worker.batch_completed.connect(self._on_batch_completed)
+        self._tagger_worker.batch_failed.connect(self._on_batch_failed)
         self._tagger_worker.progress_update.connect(self._on_tagging_progress)
         self._tagger_worker.model_status_changed.connect(self._check_model_status_and_update_ui)
         self._tagger_worker.finished.connect(self._on_tagger_finished)
@@ -1287,6 +1319,15 @@ class MainWindow(QMainWindow):
             return
         base = self.locale_manager.get_string("Constants", "Stop_Tagging_Process")
         self.run_button.setText(f"{base} ({done} / {total})")
+
+    @Slot(list)
+    def _on_batch_failed(self, failed_paths: list):
+        """直近の一括バッチで失敗（または停止で未処理）だった入力画像パスを
+        セッション記憶する。次回「失敗のみ」モードの対象になる。成功時は空リストで
+        置換される。1枚テストは batch_failed を出さないので上書きされない
+        （260903_vlm-gap-fix.md todo 5）。"""
+        self._batch_failed_paths = [Path(p) for p in failed_paths]
+        write_debug_log(f"batch_failed: {len(self._batch_failed_paths)} 件を記憶（次回の失敗のみ実行対象）")
 
     @Slot(list)
     def _on_batch_completed(self, changed_files: list):

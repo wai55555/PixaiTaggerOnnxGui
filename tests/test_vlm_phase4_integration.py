@@ -221,29 +221,73 @@ def test_api_key_dialog_verify_and_save():
 def test_dotenv_loading():
     """A .env next to the app feeds the 6 provider keys via the env-var tier,
     without overwriting anything already set."""
+    import importlib
     import os
+    import shutil
     import vlm_secrets
+    from constants import BASE_DIR
     d = Path(tempfile.mkdtemp())
     (d / ".env").write_text(
         'GEMINI_API_KEY=g_key\n# note\nexport MISTRAL_API_KEY="m_key"\nCLOUDFLARE_ACCOUNT_ID=acct-x\n',
         encoding="utf-8")
     cwd = os.getcwd()
-    saved = {k: os.environ.pop(k, None) for k in
-             ("GEMINI_API_KEY", "MISTRAL_API_KEY", "CLOUDFLARE_ACCOUNT_ID", "GROQ_API_KEY")}
+    # (d) every env name get_secret() can consult: all _ENV_ALIASES values, the
+    # generic PIXAI_* fallbacks for the refs asserted below, plus the
+    # CLOUDFLARE_ACCOUNT_ID asserted via os.environ directly.
+    env_keys = sorted(
+        {n for names in vlm_secrets._ENV_ALIASES.values() for n in names}
+        | set(vlm_secrets._env_candidates("vlm/gemini/api_key"))
+        | set(vlm_secrets._env_candidates("vlm/mistral/api_key"))
+        | {"CLOUDFLARE_ACCOUNT_ID"})
+    saved = {k: os.environ.pop(k, None) for k in env_keys}
     os.environ["GROQ_API_KEY"] = "preset"
+    # (b)+(c) snapshot module state clobbered below / by the reload.
+    saved_session = dict(vlm_secrets._session_store)
+    vlm_secrets._session_store.clear()
+    saved_probe = vlm_secrets._keyring_probe
+    # (e) pin both .env candidates (vlm_secrets.py:30: BASE_DIR/.env + cwd/.env):
+    # a real file at either spot would feed real keys and shadow the temp-.env.
+    # Move each aside, restore in finally.
+    _moved = []
+    for _p in (Path(BASE_DIR) / ".env", Path(cwd) / ".env"):
+        if _p.is_file() and all(str(_p) != m[0] for m in _moved):
+            _bak = str(_p) + ".wave3t6bak"
+            shutil.move(str(_p), _bak)
+            _moved.append((str(_p), _bak))
+    # phase2/phase3 leave a module-global `get_secret = lambda ref: "FAKEKEY"`
+    # with no restore; reload recovers the genuine three-tier implementation.
+    saved_get_secret = vlm_secrets.get_secret
+    os.chdir(d)
     try:
-        os.chdir(d)
-        vlm_secrets._load_dotenv()
-        assert vlm_secrets.get_secret("vlm/gemini/api_key") == "g_key"
-        assert vlm_secrets.get_secret("vlm/mistral/api_key") == "m_key"      # quotes stripped
-        assert os.environ["CLOUDFLARE_ACCOUNT_ID"] == "acct-x"
-        assert os.environ["GROQ_API_KEY"] == "preset"                        # not overwritten
+        importlib.reload(vlm_secrets)
+        # (a) keyring tier wins over env: force a FALSY answer so the temp-.env
+        # values show through even with a REAL key in Credential Manager.
+        # A truthy dummy stub is FORBIDDEN (it would shadow env the same way).
+        _kr = vlm_secrets.keyring
+        _orig_get = _kr.get_password if _kr is not None else None
+        if _kr is not None:
+            _kr.get_password = lambda *a, **k: None  # type: ignore[method-assign]
+        try:
+            vlm_secrets._load_dotenv()
+            assert vlm_secrets.get_secret("vlm/gemini/api_key") == "g_key"
+            assert vlm_secrets.get_secret("vlm/mistral/api_key") == "m_key"      # quotes stripped
+            assert os.environ["CLOUDFLARE_ACCOUNT_ID"] == "acct-x"
+            assert os.environ["GROQ_API_KEY"] == "preset"                        # not overwritten
+        finally:
+            if _kr is not None:
+                _kr.get_password = _orig_get  # type: ignore[method-assign]
+            vlm_secrets.get_secret = saved_get_secret
+            vlm_secrets._session_store.clear()
+            vlm_secrets._session_store.update(saved_session)
+            vlm_secrets._keyring_probe = saved_probe
+            for k in env_keys:
+                os.environ.pop(k, None)
+                if saved.get(k) is not None:
+                    os.environ[k] = saved[k]
     finally:
         os.chdir(cwd)
-        for k in ("GEMINI_API_KEY", "MISTRAL_API_KEY", "CLOUDFLARE_ACCOUNT_ID", "GROQ_API_KEY"):
-            os.environ.pop(k, None)
-            if saved.get(k) is not None:
-                os.environ[k] = saved[k]
+        for _p, _bak in _moved:
+            shutil.move(_bak, _p)
     print("  .env loading: 6-key file feeds get_secret, quotes/export handled, preset wins: OK")
 
 

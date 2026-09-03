@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import dataclasses
 import threading
+from collections.abc import Sequence
 from pathlib import Path
 
 from PySide6.QtCore import QObject, Signal, Slot
@@ -16,6 +17,7 @@ from utils import GetString, default_get_string_fallback, write_debug_log
 from tagging_core import (
     ExistingFileMode, FileChange, OverwriteDecision,
     get_image_paths_recursive, parse_existing_file_mode,
+    parse_target_mode, filter_target_images,
 )
 import vlm_config
 import vlm_persistence
@@ -82,17 +84,20 @@ class VlmCaptionWorker(QObject):
     running_state_changed = Signal(bool)
     reload_image_list_signal = Signal()
     batch_completed = Signal(list)          # list[FileChange] -> MainWindow が Undo にまとめる
+    batch_failed = Signal(list)             # list[Path] 入力画像パス。FAILED 再実行の failed_paths に対応
     progress_update = Signal(int, int)      # (done, total)
     single_test_result = Signal(str, str, str)  # (caption, connection_display, model_id) 保存はしない
     binding_verified = Signal(str, str)     # (provider_id, profile_id) 実出力を確認できた -> MainWindow が永続化
 
     def __init__(self, settings, decision_requester=None, get_string: GetString | None = None,
-                 selected_file_path: Path | None = None, single_test: bool = False):
+                 selected_file_path: Path | None = None, single_test: bool = False,
+                 failed_paths: Sequence[Path] = ()):
         super().__init__()
         self._settings = settings
         self._decision_requester = decision_requester
         self._selected_file_path = selected_file_path
         self._single_test = single_test
+        self._failed_paths = tuple(failed_paths)
         self._stop_event = threading.Event()
         self.get_string: GetString = get_string or default_get_string_fallback
 
@@ -234,6 +239,7 @@ class VlmCaptionWorker(QObject):
     def _run_batch(self) -> None:
         self.running_state_changed.emit(True)
         changed: list[FileChange] = []
+        failed: list[Path] = []
         try:
             rt = self._build_runtime()
             if rt is None:
@@ -248,9 +254,8 @@ class VlmCaptionWorker(QObject):
 
             input_dir = Path(self._settings.paths.input_dir)
             image_paths = get_image_paths_recursive(input_dir)
-            if self._selected_file_path and self._selected_file_path in image_paths:
-                image_paths.remove(self._selected_file_path)
-                image_paths.insert(0, self._selected_file_path)
+            target_mode = parse_target_mode(getattr(self._settings.behavior, "target_mode", "ALL"), self.get_string)
+            image_paths = filter_target_images(image_paths, target_mode, failed_paths=self._failed_paths, selected=self._selected_file_path)
             if not image_paths:
                 self.log_message.emit(self.get_string("Vlm", "Warn_No_Images", dir=str(input_dir)), "orange")
                 return
@@ -292,6 +297,7 @@ class VlmCaptionWorker(QObject):
                 spec_base = self._spec_base_for(image_path, rt)
                 if spec_base is None:
                     n_errors += 1
+                    failed.append(image_path)
                     self.log_message.emit(self.get_string("Vlm", "Image_Error",
                                                           name=image_path.name), "red")
                     continue
@@ -306,6 +312,7 @@ class VlmCaptionWorker(QObject):
                     break
                 if not result.ok:
                     n_errors += 1
+                    failed.append(image_path)
                     reason = result.error.reason.value if result.error else "unknown"
                     self.log_message.emit(self.get_string("Vlm", "Image_Failed",
                                                           name=image_path.name, reason=reason), "red")
@@ -323,6 +330,7 @@ class VlmCaptionWorker(QObject):
                     outcome = vlm_persistence.save_caption(output_path, result.text or "", eff_placement)
                 except Exception as e:  # noqa: BLE001 - 読めない既存等
                     n_errors += 1
+                    failed.append(image_path)
                     write_debug_log(f"vlm: save failed for {output_path.name}: {type(e).__name__}: {e}")
                     self.log_message.emit(self.get_string("Vlm", "Save_Failed", name=output_path.name), "red")
                     continue
@@ -347,7 +355,9 @@ class VlmCaptionWorker(QObject):
             write_debug_log(f"vlm batch fatal: {traceback.format_exc()}")
         finally:
             # 例外で途中終了しても、それまでに実書き込みしたファイルは Undo 対象にする。
+            # 失敗画像パスも同様に部分結果で出す（成功時は空）。単体テスト側では出さない。
             self.batch_completed.emit(changed)
+            self.batch_failed.emit(failed)
             self.running_state_changed.emit(False)
             self.reload_image_list_signal.emit()
             self.finished.emit()

@@ -78,6 +78,9 @@ class Behavior:
     # 正の N を指定すると N に制限し、大量枚数のタグ付けでマシンが張り付くのを避けられる。
     # GUI には出さない隠し設定（config.ini を手で編集する人向け）。
     onnx_threads: int = 0
+    # 一括処理の対象選択。既定 ALL によりこのキーを持たない旧 config.ini でも
+    # 従来どおり全画像を処理する（260903_vlm-gap-fix.md todo 5）。
+    target_mode: str = "ALL"
 
 @dataclass
 class Window:
@@ -100,6 +103,19 @@ def parse_caption_placement(raw: str) -> str:
     """config.ini の文字列を検証する。不正値は OVERWRITE（従来動作）へフォールバック。"""
     value = str(raw).strip().upper()
     return value if value in CAPTION_PLACEMENTS else "OVERWRITE"
+
+
+# 一括処理の対象選択（すべて / 未生成のみ / 失敗のみ / 選択画像のみ）。
+# tagging_core.TargetMode と同じ4値。ワーカーは tagging_core.parse_target_mode()
+# で enum へ変換するため、ここでは文字列のまま保持・検証する。
+TARGET_MODES: tuple[str, ...] = ("ALL", "UNPROCESSED", "FAILED", "SELECTED")
+
+
+def parse_target_mode_setting(raw: str) -> str:
+    """[Behavior] target_mode を検証する。空文字・不正値は ALL（全画像＝この項目を
+    持たない旧 config.ini と同じ挙動）へフォールバックする。"""
+    value = str(raw).strip().upper()
+    return value if value in TARGET_MODES else "ALL"
 
 
 def _parse_onnx_threads(raw: str) -> int:
@@ -212,7 +228,7 @@ def get_default_config() -> configparser.ConfigParser:
         'Paths': {'input_dir': str(BASE_DIR / "inputs"), 'model_dir': MODEL_DIR_NAME, 'model_filename': 'model.onnx'},
         'Thresholds': {'general': '0.40', 'character': '0.65', 'rating': '0.50', 'copyright': '0.50', 'artist': '0.50', 'meta': '0.50', 'model': '0.50', 'quality': '0.50', 'year': '0.50', 'touched': ''},
         'Limits': {'general': '55', 'character': '1', 'rating': '0', 'copyright': '0', 'artist': '0', 'meta': '0', 'model': '0', 'quality': '0', 'year': '0', 'touched': ''},
-        'Behavior': {'enable_solo_character_limit': 'True', 'convert_underscore_to_space': 'True', 'existing_file_mode': 'ASK', 'onnx_threads': '0'},
+        'Behavior': {'enable_solo_character_limit': 'True', 'convert_underscore_to_space': 'True', 'existing_file_mode': 'ASK', 'onnx_threads': '0', 'target_mode': 'ALL'},
         'Window': {'geometry': '986x976+50+50', 'tag_display_rows': '6', 'tag_display_cols': '5'},
         'Model': {'model_id': 'pixai-tagger-v0.9', 'verified_models': ''},
         'Caption': {'task': 'MORE_DETAILED_CAPTION', 'placement': 'OVERWRITE'},
@@ -318,7 +334,8 @@ def load_settings(config: configparser.ConfigParser) -> AppSettings:
             enable_solo_character_limit=config.getboolean('Behavior', 'enable_solo_character_limit', fallback=True),
             convert_underscore_to_space=config.getboolean('Behavior', 'convert_underscore_to_space', fallback=True),
             existing_file_mode=config.get('Behavior', 'existing_file_mode', fallback='ASK'),
-            onnx_threads=_parse_onnx_threads(config.get('Behavior', 'onnx_threads', fallback='0'))
+            onnx_threads=_parse_onnx_threads(config.get('Behavior', 'onnx_threads', fallback='0')),
+            target_mode=parse_target_mode_setting(config.get('Behavior', 'target_mode', fallback='ALL'))
         ),
         window=Window(
             geometry=config.get('Window', 'geometry', fallback='986x976+50+50'),

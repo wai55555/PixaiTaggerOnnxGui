@@ -1040,3 +1040,54 @@ def main(decision_resolver: Callable[[Path], OverwriteDecision] | None = None, l
 
 if __name__ == "__main__":
     main()
+
+
+class TargetMode(Enum):
+    """タグ付け対象の選択方針。"""
+    ALL = auto()          # 全画像
+    UNPROCESSED = auto()  # .txt が存在しない画像のみ
+    FAILED = auto()       # 失敗リストとの積集合
+    SELECTED = auto()     # 選択中の1件のみ
+
+
+TARGET_MODE_MAP: dict[str, TargetMode] = {
+    "ALL": TargetMode.ALL,
+    "UNPROCESSED": TargetMode.UNPROCESSED,
+    "FAILED": TargetMode.FAILED,
+    "SELECTED": TargetMode.SELECTED,
+}
+
+
+def parse_target_mode(raw: str, get_string: GetString | None = None) -> TargetMode:
+    """文字列を TargetMode に変換する。不正値は ALL にフォールバックする。"""
+    mode = TARGET_MODE_MAP.get(str(raw).strip().upper())
+    if mode is None:
+        _get_string_internal = get_string if get_string else _get_string
+        log_dbg(_get_string_internal("TaggerCore", "Invalid_Target_Mode_Debug", raw=raw))
+        return TargetMode.ALL
+    return mode
+
+
+def filter_target_images(
+    paths: Sequence[Path],
+    mode: TargetMode,
+    failed_paths: Sequence[Path] = (),
+    selected: Path | None = None,
+) -> list[Path]:
+    """TargetMode に従って対象画像を絞り込む純粋関数。
+
+    - ALL: そのまま返す。
+    - UNPROCESSED: `.txt` が存在しないものだけ返す（空ファイルも処理済み扱い）。
+    - FAILED: failed_paths との積集合を入力順で返す。
+    - SELECTED: selected が入力内にあれば `[selected]`、なければ `[]`。
+    """
+    if mode is TargetMode.UNPROCESSED:
+        return [p for p in paths if not p.with_suffix(".txt").is_file()]
+    if mode is TargetMode.FAILED:
+        failed_set = set(failed_paths)
+        return [p for p in paths if p in failed_set]
+    if mode is TargetMode.SELECTED:
+        if selected is not None and selected in paths:
+            return [selected]
+        return []
+    return list(paths)

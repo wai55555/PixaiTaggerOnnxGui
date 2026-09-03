@@ -470,6 +470,22 @@ class Ui_MainWindow(object):
         main_window.existing_mode_combo.setCurrentIndex(idx if idx >= 0 else 0)
         main_window.existing_mode_combo.currentIndexChanged.connect(main_window._on_existing_mode_changed)  # type: ignore
         mode_row.addWidget(main_window.existing_mode_combo)
+
+        # 一括処理の対象選択（すべて / 未生成のみ / 失敗のみ / 選択画像のみ）。
+        # 実行ボタンのすぐ上、既存ファイル設定と同じ行に置く（260903_vlm-gap-fix.md todo 5）。
+        mode_row.addSpacing(12)
+        mode_row.addWidget(QLabel(main_window.locale_manager.get_string("MainWindow", "Target_Mode_Label")))
+        main_window.target_mode_combo = QComboBox()
+        for key, label_key in (("ALL", "Target_Mode_All"), ("UNPROCESSED", "Target_Mode_Unprocessed"),
+                               ("FAILED", "Target_Mode_Failed"), ("SELECTED", "Target_Mode_Selected")):
+            main_window.target_mode_combo.addItem(
+                main_window.locale_manager.get_string("MainWindow", label_key), key)
+        _tm_current = str(main_window.settings.behavior.target_mode).upper()
+        _tm_idx = main_window.target_mode_combo.findData(_tm_current)
+        main_window.target_mode_combo.setCurrentIndex(_tm_idx if _tm_idx >= 0 else 0)
+        main_window.target_mode_combo.currentIndexChanged.connect(main_window._on_target_mode_changed)  # type: ignore
+        mode_row.addWidget(main_window.target_mode_combo)
+
         mode_row.addStretch(1)
         outer.addLayout(mode_row)
 
