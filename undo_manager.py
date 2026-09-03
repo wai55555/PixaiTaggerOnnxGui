@@ -232,6 +232,12 @@ class EditCaptionAction(UndoAction):
     new_text: str
     file_existed_before: bool = True
 
+    def __post_init__(self) -> None:
+        # 作成時に絶対パスへ固定する（理由は _FileSnapshotAction.__post_init__ と同じ。
+        # このクラスは _long_path_str を通さず直接 write_text / unlink するので、相対の
+        # まま持つと undo 時点の CWD 基準で別ファイルに当たりうる）。
+        self.file_path = Path(os.path.abspath(self.file_path))
+
     def _write(self, text: str) -> bool:
         try:
             self.file_path.write_text(text, encoding='utf-8')
@@ -271,6 +277,14 @@ class _FileSnapshotAction(UndoAction):
     file_path: Path
     previous_content: str | None
     new_content: str
+
+    def __post_init__(self) -> None:
+        # 作成時に絶対パスへ固定する。undo/redo はずっと後に走りうるので、
+        # 相対パス（利用者が相対の入力フォルダを指定した場合など）のまま持つと
+        # `_long_path_str()` の `os.path.abspath()` が「undo した時点の CWD」基準で
+        # 解決してしまい、別ファイルを書き換え／削除しかねない（PR#16 レビュー: coderabbit）。
+        # `resolve()` ではなく `os.path.abspath()`: symlink を解決しない点を _long_path_str と揃える。
+        self.file_path = Path(os.path.abspath(self.file_path))
 
     def _write(self, text: str) -> bool:
         try:
