@@ -8,6 +8,11 @@ from utils import write_debug_log, GetString, default_get_string_fallback
 
 _get_string: GetString = default_get_string_fallback
 
+# VLM の既定値。新規設定だけでなく、欠落した [Vlm] キーのフォールバックにも
+# 同じ値を使う。既存ユーザーが明示的に選んだモデル／順序は上書きしない。
+DEFAULT_VLM_MODEL_PROFILE_ID = "gemma-4-31b-it"
+DEFAULT_VLM_CONNECTION_ORDER = "gemini,nvidia,openrouter,cloudflare,groq"
+
 def set_get_string_func(func: GetString):
     global _get_string
     _get_string = func
@@ -156,14 +161,14 @@ class Vlm:
     # True のとき、選択中のローカルモデルの代わりにネットワーク VLM で生成する。
     # 出力の形式（タグ列 / 自然文 など）は VLM プロンプト次第（既定は詳細キャプション）。
     enabled: bool = False
-    model_profile_id: str = "gemma-4-26b-a4b-it"
+    model_profile_id: str = DEFAULT_VLM_MODEL_PROFILE_ID
     generation_profile_id: str = "default-caption-en"
     free_only: bool = True
     paid_continuation: bool = False
     # builtin_fallback / custom_single
     execution_mode: str = "builtin_fallback"
     selected_connection_id: str = ""
-    connection_order: str = "gemini,openrouter,cloudflare"
+    connection_order: str = DEFAULT_VLM_CONNECTION_ORDER
     # 有料継続を個別許可した内蔵プロバイダー（カンマ区切り）。free_only かつ
     # paid_continuation のときだけ意味を持つ。
     paid_connections: str = ""
@@ -179,9 +184,9 @@ class Vlm:
     markdown: str = "disabled"
     max_output_tokens: int = 1024
     image_max_long_edge: int = 1536
-    # 実際に期待どおりの出力を返したと確認できた binding。`<profile_id>:<provider_id>` を
-    # カンマ区切り。接続診断のフル PASS または 1枚テスト成功で追記される。UNKNOWN 出荷でも
-    # ここに載れば VERIFIED 扱いになり、「厳格」モードでも候補に残る。
+    # 接続確認済みの binding。`<profile_id>:<provider_id>` をカンマ区切りで保持する。
+    # キー登録時の軽量モデル一覧GET、接続診断のフルPASS、または1枚テスト成功で追記される。
+    # UNKNOWN 出荷でもここに載れば VERIFIED 扱いになり、「厳格」モードでも候補に残る。
     verified_bindings: str = ""
     # True のとき、内蔵フォールバックは VERIFIED（実証済み or verified_bindings 収録）
     # の接続だけを候補にする。既定 False（同一と宣言されていれば未実証でも使う）。
@@ -236,10 +241,10 @@ def get_default_config() -> configparser.ConfigParser:
         'Caption': {'task': 'MORE_DETAILED_CAPTION', 'placement': 'OVERWRITE'},
         'Vlm': {
             'enabled': 'False',
-            'model_profile_id': 'gemma-4-26b-a4b-it', 'generation_profile_id': 'default-caption-en',
+            'model_profile_id': DEFAULT_VLM_MODEL_PROFILE_ID, 'generation_profile_id': 'default-caption-en',
             'free_only': 'True', 'paid_continuation': 'False',
             'execution_mode': 'builtin_fallback', 'selected_connection_id': '',
-            'connection_order': 'gemini,openrouter,cloudflare', 'paid_connections': '',
+            'connection_order': DEFAULT_VLM_CONNECTION_ORDER, 'paid_connections': '',
             'cloudflare_account_id': '',
             'anthropic_workspace_id': '',
             'language': 'en', 'detail_level': 'maximum_detail',

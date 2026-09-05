@@ -16,7 +16,7 @@ from PySide6.QtCore import Qt, QThread, Slot
 from PySide6.QtWidgets import (
     QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFormLayout, QGridLayout, QGroupBox,
     QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMessageBox,
-    QPushButton, QRadioButton, QSpinBox, QVBoxLayout, QWidget,
+    QPushButton, QRadioButton, QSizePolicy, QSpinBox, QVBoxLayout, QWidget,
 )
 
 import vlm_config
@@ -272,8 +272,8 @@ class VlmSettingsDialog(QDialog):
         down.clicked.connect(lambda _=False, cid=conn.connection_id: self._move_route(cid, +1))
         enabled = QCheckBox()
         name = QLabel(conn.display_name)
-        # 名前はコンボの左端にそろえたいので右寄せ。
-        name.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        # プロバイダー名は全行の左端をそろえる。Cloudflareの表示名は短い固定名にする。
+        name.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         model_combo = QComboBox()
         model_combo.setEditable(True)
         model_combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
@@ -295,6 +295,11 @@ class VlmSettingsDialog(QDialog):
         register_btn = QPushButton(self._t("Vlm", "Settings_Register_ApiKey"))
         register_btn.clicked.connect(lambda _=False, cid=conn.connection_id: self._open_api_key_dialog(cid))
         status = QLabel()
+        # 状態文は言語・保存場所・確認済み表示の組み合わせで長さが変わるため、
+        # 列幅を文字列に追従させない。全文はツールチップへ残し、表示は必要なら省略する。
+        status.setFixedWidth(180)
+        status.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Preferred)
+        status.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         paid_ok = QCheckBox(self._t("Vlm", "Settings_Route_PaidOk"))
         diag_btn = QPushButton(self._t("Vlm", "Settings_Diagnose"))
         diag_btn.clicked.connect(lambda _=False, cid=conn.connection_id: self._diagnose_one(cid))
@@ -351,7 +356,8 @@ class VlmSettingsDialog(QDialog):
         self._apply_route_states()
 
     def _apply_route_states(self) -> None:
-        order = set(self._vlm.order_list() or ["gemini", "openrouter", "cloudflare"])
+        order = set(self._vlm.order_list() or ["gemini", "nvidia", "openrouter",
+                                               "cloudflare", "groq"])
         paid = {p.strip() for p in str(self._vlm.paid_connections).split(",") if p.strip()}
         for cid, r in self._route_rows.items():
             provider = r["conn"].provider_id
@@ -449,7 +455,7 @@ class VlmSettingsDialog(QDialog):
             combo.blockSignals(True)
             combo.setCurrentText(r["conn"].model_id)
             combo.blockSignals(False)
-            r["status"].setText(self._t(
+            self._set_route_status(r, self._t(
                 "Vlm", "Settings_Route_ModelId_NotVlm",
                 profile=(profile.display_name if profile else self._vlm.model_profile_id)))
             return
@@ -471,7 +477,7 @@ class VlmSettingsDialog(QDialog):
         if conn is None:
             return
         api_key = vlm_secrets.get_secret(conn.auth.secret_ref) if conn.auth.type != "none" else None
-        r["status"].setText(self._t("Vlm", "Settings_Route_FetchModels_Busy"))
+        self._set_route_status(r, self._t("Vlm", "Settings_Route_FetchModels_Busy"))
         self._ml_pending_cid = cid
         self._ml_thread = QThread(self)
         self._ml_worker = VlmModelListWorker(conn, api_key)
@@ -492,7 +498,7 @@ class VlmSettingsDialog(QDialog):
             return
         if not isinstance(result, list):
             detail = getattr(result, "message", "") or str(result)
-            r["status"].setText(self._t("Vlm", "Settings_Route_FetchModels_Fail", detail=detail))
+            self._set_route_status(r, self._t("Vlm", "Settings_Route_FetchModels_Fail", detail=detail))
             return
 
         provider_id = r["conn"].provider_id
@@ -523,12 +529,12 @@ class VlmSettingsDialog(QDialog):
             self._on_model_id_edited(cid)
             key = "Settings_Route_FetchModels_Exact" if score >= 0.999 \
                 else "Settings_Route_FetchModels_Matched"
-            r["status"].setText(f"{okmsg} — " + self._t("Vlm", key, id=best))
+            self._set_route_status(r, f"{okmsg} — " + self._t("Vlm", key, id=best))
         else:
             combo.blockSignals(True)
             combo.setCurrentText("")
             combo.blockSignals(False)
-            r["status"].setText(f"{okmsg} — " + self._t(
+            self._set_route_status(r, f"{okmsg} — " + self._t(
                 "Vlm", "Settings_Route_FetchModels_NoMatch",
                 profile=(profile.display_name if profile else self._vlm.model_profile_id)))
 
@@ -610,7 +616,16 @@ class VlmSettingsDialog(QDialog):
         if override and not vlm_models.is_vlm_model_id(profile, r["conn"].provider_id, override):
             text += "  " + self._t("Vlm", "Settings_Route_ModelId_NotVlm",
                                      profile=(profile.display_name if profile else self._vlm.model_profile_id))
-        r["status"].setText(text)
+        self._set_route_status(r, text)
+
+    @staticmethod
+    def _set_route_status(row: dict, text: str) -> None:
+        """固定幅の状態欄へ表示し、全文はツールチップで確認できるようにする。"""
+        label = row["status"]
+        full_text = str(text or "")
+        label.setToolTip(full_text)
+        label.setText(label.fontMetrics().elidedText(
+            full_text, Qt.TextElideMode.ElideRight, label.width()))
 
     def _sync_paid_rows(self) -> None:
         paid = self.fee_paid.isChecked()
@@ -659,6 +674,8 @@ class VlmSettingsDialog(QDialog):
                                 self._t("Vlm", "Settings_Custom_Delete_Confirm")) != QMessageBox.StandardButton.Yes:
             return
         self._custom_connections = [c for c in self._custom_connections if c["connection_id"] != cid]
+        if self._vlm.selected_connection_id == cid:
+            self._vlm.selected_connection_id = ""
         self._refresh_custom_list()
 
     def _selected_custom_id(self) -> str | None:
@@ -734,13 +751,14 @@ class VlmSettingsDialog(QDialog):
                                     if conn.provider_id == "anthropic" else ""),
             on_anthropic_workspace_saved=(self._on_anthropic_workspace_saved
                                            if conn.provider_id == "anthropic" else None),
+            on_binding_confirmed=self._on_api_key_binding_confirmed,
             parent=self,
         )
         dlg.exec()
         self._refresh_route_status(cid)
 
     def _on_cloudflare_verified(self, account_id: str) -> None:
-        """実生成まで通った Account ID を保存し、現在の binding を VERIFIED にする。"""
+        """接続確認に使えた Account ID を保存する（binding確認は共通callbackで行う）。"""
         self._vlm.cloudflare_account_id = account_id
         vlm_config.mark_binding_verified(self._vlm, "cloudflare")
         save_config(self._settings)
@@ -749,6 +767,11 @@ class VlmSettingsDialog(QDialog):
         """検証に使えた任意のWorkspace IDを保存する。空は単一Workspaceキーを表す。"""
         self._vlm.anthropic_workspace_id = workspace_id
         save_config(self._settings)
+
+    def _on_api_key_binding_confirmed(self, provider_id: str) -> None:
+        """キー登録時の軽量疎通確認を次回も表示できるよう保存する。"""
+        if provider_id and vlm_config.mark_binding_verified(self._vlm, provider_id):
+            save_config(self._settings)
 
     def _set_diag_buttons_enabled(self, enabled: bool) -> None:
         for r in self._route_rows.values():
@@ -806,7 +829,9 @@ class VlmSettingsDialog(QDialog):
         v = self._vlm
         v.model_profile_id = self.profile_combo.currentData() or v.model_profile_id
         v.execution_mode = "custom_single" if self.mode_custom.isChecked() else "builtin_fallback"
-        v.selected_connection_id = self.custom_select.currentData() or "" if self.mode_custom.isChecked() else v.selected_connection_id
+        v.selected_connection_id = (
+            (self.custom_select.currentData() or "")
+            if self.mode_custom.isChecked() else v.selected_connection_id)
         v.free_only = self.fee_free_only.isChecked()
         v.paid_continuation = self.fee_paid.isChecked()
         v.strict_identity = self.strict_check.isChecked()

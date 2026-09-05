@@ -112,7 +112,7 @@ def test_single_test_saves_to_txt():
     assert len(changes) == 1 and changes[0].previous_content == "old caption"
     # gemini's builtin protocol is gemini_generate_content; the mock returns OpenAI-shaped
     # JSON, so gemini fails to parse and the run succeeds via openrouter.
-    assert verified == [("openrouter", "gemma-4-26b-a4b-it")], verified
+    assert verified == [("openrouter", "gemma-4-31b-it")], verified
     # the other image is untouched - single test only touches the selected one
     assert not (d / "i1.txt").exists()
     print("  single test writes the selected .txt + one undo FileChange: OK")
@@ -182,7 +182,15 @@ def test_settings_dialog_roundtrip():
     s = A.load_settings(A.get_default_config())
     T2 = lambda sec, key, **kw: key
     from vlm_settings_dialog import VlmSettingsDialog
+    from PySide6.QtCore import Qt
     dlg = VlmSettingsDialog(s, T2)
+    assert dlg.profile_combo.currentData() == "gemma-4-31b-it"
+    assert [dlg._route_rows[cid]["conn"].provider_id for cid in dlg._route_order[:5]] == [
+        "gemini", "nvidia", "openrouter", "cloudflare", "groq"]
+    assert dlg._route_rows["builtin-cloudflare"]["name"].text() == "Cloudflare"
+    for row in dlg._route_rows.values():
+        assert row["status"].width() == 180
+        assert row["name"].alignment() & Qt.AlignmentFlag.AlignLeft
     dlg.mode_custom.setChecked(True)
     dlg.fee_paid.setChecked(True)
     dlg.max_tokens.setValue(1500)
@@ -205,7 +213,7 @@ def test_settings_dialog_roundtrip():
     assert s.vlm.max_output_tokens == 1500
     assert "cloudflare" in s.vlm.paid_connections
     assert s.vlm.cloudflare_account_id == "fedcba9876543210fedcba9876543210"
-    assert "gemma-4-26b-a4b-it:cloudflare" in s.vlm.verified_set()
+    assert "gemma-4-31b-it:cloudflare" in s.vlm.verified_set()
     assert s.vlm.language == "en"
     assert s.vlm.strict_identity is True
     dlg._on_anthropic_workspace_saved("wrkspc_test123")
@@ -287,6 +295,98 @@ def test_settings_dialog_rejects_non_vlm_model():
             dlg.close()
         vlm_config.resolve_model_profile = old_resolver
     print("  settings dialog rejects non-VLM model IDs and filters model list: OK")
+
+
+def test_custom_connection_persists_routes_and_executes(monkeypatch):
+    """The custom dialog result must survive JSON reload and reach the executor."""
+    import app_settings as A
+    from custom_connection_dialog import CustomConnectionDialog
+    from vlm_connections import ConnectionKind
+    from vlm_router import select_candidates
+    from vlm_transport import VlmExecutor
+    from vlm_image import PreparedImage
+    from vlm_profiles import GenerationProfile
+    import vlm_secrets
+
+    stored_secret = {}
+    monkeypatch.setattr(
+        vlm_secrets, "set_secret",
+        lambda ref, value, **kwargs: (stored_secret.__setitem__(ref, value) or True))
+    dialog = CustomConnectionDialog(lambda sec, key, **kw: key)
+    dialog.name_edit.setText("Local OpenAI-compatible VLM")
+    dialog.locality_combo.setCurrentIndex(dialog.locality_combo.findData("local"))
+    dialog.protocol_combo.setCurrentIndex(
+        dialog.protocol_combo.findData("openai_chat_completions"))
+    dialog.base_url_edit.setText("http://127.0.0.1:1234/v1")
+    dialog.model_edit.setText("local-gemma-vision")
+    dialog.auth_type_combo.setCurrentIndex(dialog.auth_type_combo.findData("bearer"))
+    dialog.api_key_edit.setText("LOCALKEY")
+    dialog._on_save()
+    raw = dialog.result_connection()
+    assert raw is not None
+    assert raw["kind"] == "custom_local"
+    assert raw["auth"]["type"] == "bearer"
+    assert "api_key" not in raw
+    assert stored_secret[raw["auth"]["secret_ref"]] == "LOCALKEY"
+    assert _VC.save_custom_connections([raw]) is True
+
+    loaded = _VC.load_custom_connections()
+    assert loaded == [raw]
+    settings = A.load_settings(A.get_default_config())
+    settings.vlm.execution_mode = "custom_single"
+    settings.vlm.selected_connection_id = raw["connection_id"]
+    settings.vlm.free_only = True
+    connections = _VC.build_connection_map(settings.vlm, M.GEMMA_4_31B_IT)
+    conn = connections[raw["connection_id"]]
+    assert conn.kind is ConnectionKind.CUSTOM_LOCAL
+    assert conn.model_id == "local-gemma-vision"
+
+    policy = _VC.build_router_policy(settings.vlm)
+    candidates = select_candidates(
+        M.GEMMA_4_31B_IT, connections, policy,
+        has_auth={raw["connection_id"]: True})
+    assert candidates.connection_ids == [raw["connection_id"]]
+
+    seen = {}
+    old_execute = T.execute_http
+
+    def _execute(req, **kwargs):
+        seen["request"] = req
+        return RawHttpResponse(200, {}, _ok_body("local caption"), "")
+
+    T.execute_http = _execute
+    try:
+        result = VlmExecutor(
+            connections, lambda ref: stored_secret.get(ref)).caption_one({
+            "image": PreparedImage(b"\xff\xd8\xff", "image/jpeg"),
+            "profile": GenerationProfile(),
+            "system_prompt": "system",
+            "user_prompt": "user",
+        }, candidates.connection_ids)
+    finally:
+        T.execute_http = old_execute
+    assert result.ok and result.text == "local caption"
+    assert seen["request"].method == "POST"
+    assert seen["request"].url == "http://127.0.0.1:1234/v1/chat/completions"
+    assert seen["request"].headers["Authorization"] == "Bearer LOCALKEY"
+    assert seen["request"].json_body["model"] == "local-gemma-vision"
+    assert isinstance(seen["request"].json_body["messages"][1]["content"], list)
+    print("  custom connection: dialog -> JSON reload -> local route -> executor: OK")
+
+
+def test_lightweight_confirmation_is_persisted_for_next_dialog():
+    import app_settings as A
+    from vlm_settings_dialog import VlmSettingsDialog
+
+    settings = A.load_settings(A.get_default_config())
+    dialog = VlmSettingsDialog(settings, lambda sec, key, **kw: key)
+    try:
+        dialog._on_api_key_binding_confirmed("gemini")
+        reloaded = A.load_settings(A.load_config())
+        assert "gemma-4-31b-it:gemini" in reloaded.vlm.verified_set()
+    finally:
+        dialog.close()
+    print("  lightweight route confirmation is written to config and restored on reload: OK")
 
 
 def test_settings_dialog_keeps_unbound_route_discoverable():

@@ -568,7 +568,6 @@ def test_multi_provider_profiles():
         mapped = CFG.build_connection_map(_s(profile_id), selected)
         assert mapped[f"builtin-{provider}"].model_id == model_id
         assert mapped[f"builtin-{provider}"].enabled is True
-
     CFG.set_model_id_override(s, "nvidia", "qwen/qwen3-vl-32b-instruct", profile_id="qwen3.8-27b")
     assert CFG.build_connection_map(s, prof)["builtin-nvidia"].model_id == "qwen/qwen3-vl-32b-instruct"
     CFG.set_model_id_override(s, "nvidia", "", profile_id="qwen3.8-27b")
@@ -577,6 +576,18 @@ def test_multi_provider_profiles():
     assert CFG.build_connection_map(s, prof)["builtin-groq"].model_id == "qwen3.8-27b"
     CFG.set_model_id_override(s, "groq", "", profile_id="qwen3.8-27b")
     print("  multi-provider profiles: HF opt-in, OVH disabled, model-id override: OK")
+
+
+def test_default_vlm_profile_and_fallback_order():
+    import app_settings as A
+    import vlm_config as CFG
+
+    settings = A.load_settings(A.get_default_config())
+    assert settings.vlm.model_profile_id == "gemma-4-31b-it"
+    assert settings.vlm.order_list() == [
+        "gemini", "nvidia", "openrouter", "cloudflare", "groq"]
+    assert CFG.ordered_builtin_provider_ids(settings.vlm) == settings.vlm.order_list()
+    print("  default VLM profile Gemma 4 31B IT; fallback order Gemini -> NVIDIA -> OpenRouter -> Cloudflare -> Groq: OK")
 
 
 def test_model_id_match_against_profile():

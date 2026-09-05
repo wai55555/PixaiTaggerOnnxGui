@@ -30,6 +30,7 @@ class ApiKeyDialog(QDialog):
                  on_cloudflare_verified: Callable[[str], None] | None = None,
                  anthropic_workspace_id: str = "",
                  on_anthropic_workspace_saved: Callable[[str], None] | None = None,
+                 on_binding_confirmed: Callable[[str], None] | None = None,
                  parent: QWidget | None = None):
         super().__init__(parent)
         self._t = get_string
@@ -43,6 +44,7 @@ class ApiKeyDialog(QDialog):
         self._on_cloudflare_verified = on_cloudflare_verified
         self._anthropic_workspace_id = anthropic_workspace_id
         self._on_anthropic_workspace_saved = on_anthropic_workspace_saved
+        self._on_binding_confirmed = on_binding_confirmed
         self._saved = False
         self._check_thread: QThread | None = None
         self._check_worker: VlmDiagnosticsWorker | None = None
@@ -185,7 +187,9 @@ class ApiKeyDialog(QDialog):
         self._pending_key = key
         self._pending_key_is_new = bool(entered_key)
         self._check_thread = QThread(self)
-        self._check_worker = VlmDiagnosticsWorker(check_conn, key)
+        # キー登録時は画像生成POSTを避け、モデル一覧GETだけで認証・到達性を確認する。
+        # 料金／推論レート制限に影響する実生成の確認は、設定画面の「接続診断」で行う。
+        self._check_worker = VlmDiagnosticsWorker(check_conn, key, lightweight=True)
         self._check_worker.moveToThread(self._check_thread)
         self._check_thread.started.connect(self._check_worker.run)
         self._check_worker.report_ready.connect(self._on_report)
@@ -196,10 +200,12 @@ class ApiKeyDialog(QDialog):
     def _on_report(self, report) -> None:
         """キーが使えるかの判定。サーバーが 401/403 で弾いた＝キー不正。到達不能／
         DNS・TLS 失敗＝未成立で保存しない。それ以外はサーバーが応答している＝キーは
-        認証を通っているので保存する（モデル ID 違い等は警告どまりで別途直す）。"""
+        認証を通っているので保存する（モデル ID 違い等は警告どまりで別途直す）。
+        登録フローの実リクエストはモデル一覧GETだけで、画像生成は行わない。"""
         self._verify_failed = ""
         self._model_warning = ""
         self._service_warning = ""
+        self._binding_confirmed = bool(getattr(report, "can_mark_binding_verified", False))
         items = {i.name: i for i in report.items}
         auth = items.get("Auth")
         http = items.get("HTTP response")
@@ -219,8 +225,11 @@ class ApiKeyDialog(QDialog):
                 return
 
         if self._is_cloudflare:
-            # Account ID・トークン・Workers AI 権限・モデル・画像入力・応答抽出の全部が
-            # 通ったときだけ保存する。キー単体の token/verify 成功では閉じない。
+            # Account ID付きの軽量モデル一覧確認、またはフル診断の応答抽出まで通った
+            # ときに保存する。キー単体の token/verify 成功では閉じない。
+            if (getattr(report, "lightweight", False)
+                    and getattr(report, "can_mark_binding_verified", False)):
+                return
             if (http is not None and http.status is DiagStatus.PASS
                     and extraction is not None and extraction.status is DiagStatus.PASS):
                 return
@@ -284,6 +293,10 @@ class ApiKeyDialog(QDialog):
             self._on_cloudflare_verified(self._pending_account_id)
         if self._is_anthropic and self._on_anthropic_workspace_saved is not None:
             self._on_anthropic_workspace_saved(getattr(self, "_pending_workspace_id", ""))
+        if self._binding_confirmed and self._on_binding_confirmed is not None:
+            provider_id = getattr(self._conn, "provider_id", "")
+            if provider_id:
+                self._on_binding_confirmed(provider_id)
         self._saved = True
         service_warn = getattr(self, "_service_warning", "")
         model_warn = getattr(self, "_model_warning", "")

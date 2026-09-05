@@ -1,6 +1,7 @@
 """接続診断（260901_VLM_spec.md 12章 / design.md 4.6節）。
 
 「その接続設定が実際に動くか」を一括で確認する。選択画像の品質を見る機能ではない。
+APIキー登録時はモデル一覧GETだけの軽量確認も使い、推論レート制限を消費しない。
 結果は接続定義に書き戻さず、状態キャッシュとして扱う。設定変更で無効化する。
 """
 from __future__ import annotations
@@ -50,6 +51,7 @@ class DiagReport:
     items: list[DiagItem] = field(default_factory=list)
     http_status: int | None = None   # live リクエストが返した HTTP ステータス（あれば）
     billing_blocked: bool = False    # 到達・認証後に課金／残高で生成を拒否された
+    lightweight: bool = False        # 推論を行わず、モデル一覧GETだけで疎通確認した
 
     def add(self, name: str, status: DiagStatus, detail: str = "") -> None:
         self.items.append(DiagItem(name, status, detail))
@@ -84,6 +86,16 @@ class DiagReport:
             return False
         if self.billing_blocked or is_billing_or_credit_block(http.detail):
             return False
+        if self.lightweight:
+            # APIキー登録時の軽量確認は、認証付きのモデル一覧GETが通れば十分。
+            # 429も認証済み到達として記録するが、請求／残高不足は上で除外する。
+            auth = self.item("Auth")
+            request = self.item("Request build")
+            if (auth is None or auth.status is not DiagStatus.PASS
+                    or request is None or request.status is not DiagStatus.PASS):
+                return False
+            return (http.status is DiagStatus.PASS
+                    or (self.http_status == 429 and http.status is DiagStatus.WARN))
         extraction = self.item("Caption extraction")
         if http.status is DiagStatus.PASS and extraction is not None:
             if extraction.status is DiagStatus.PASS:
@@ -180,10 +192,103 @@ def _cloudflare_token_probe(rep: DiagReport, api_key: str, *, verify_tls: bool =
     rep.add("Caption extraction", DiagStatus.SKIP, "Cloudflare token-verify check only")
 
 
+def _model_list_request(conn: VlmConnection, api_key: str | None) -> VlmHttpRequest:
+    """推論を発生させない認証付きモデル一覧GETを組み立てる。"""
+    base = (conn.base_url or "").rstrip("/")
+    is_cloudflare = (conn.provider_id == "cloudflare"
+                     or "api.cloudflare.com" in (urlparse(base).hostname or ""))
+    if is_cloudflare and base.endswith("/ai/v1"):
+        url = base[:-len("/v1")] + "/models/search"
+        params = {"per_page": "100"}
+    else:
+        url = f"{base}/models"
+        params = {}
+    req = VlmHttpRequest(method="GET", url=url, headers={}, params=params, json_body={})
+    if conn.protocol == "anthropic_messages":
+        req.headers["anthropic-version"] = "2023-06-01"
+    default_key = default_auth_key(conn.auth.type, api_key)
+    if default_key:
+        req.headers["Authorization"] = f"Bearer {default_key}"
+    apply_connection_auth(req, conn.auth.type, api_key,
+                          conn.auth.header_name, conn.auth.query_param)
+    apply_request_headers(req, conn.request_headers)
+    return req
+
+
+def _run_lightweight_probe(rep: DiagReport, conn: VlmConnection,
+                           api_key: str | None) -> None:
+    """GET /models（Cloudflareは /models/search）だけで認証・到達性を確認する。"""
+    try:
+        req = _model_list_request(conn, api_key)
+        rep.add("Request build", DiagStatus.PASS, f"{req.method} {req.url}")
+    except Exception as e:  # noqa: BLE001 - 診断なので原因をレポートへ残す
+        rep.add("Request build", DiagStatus.FAIL, f"{type(e).__name__}: {e}")
+        return
+    rep.add("Image input", DiagStatus.SKIP,
+            "lightweight connectivity check; no inference request")
+    raw = execute_http(req, connect_timeout=min(conn.retry.connect_timeout_s, 10.0),
+                       read_timeout=min(conn.retry.read_timeout_s, 15.0),
+                       verify_tls=conn.verify_tls)
+    if not isinstance(raw, RawHttpResponse):
+        rep.add("HTTP response", DiagStatus.FAIL, f"{raw.reason.value}: {raw.message}")
+        rep.add("Caption extraction", DiagStatus.SKIP, "no response to extract from")
+        return
+
+    rep.http_status = raw.status
+    provider_detail = _response_error_detail(raw)
+    rep.billing_blocked = is_billing_or_credit_block(provider_detail)
+    if raw.status == 200 and isinstance(raw.json_body, (dict, list)):
+        rep.add("HTTP response", DiagStatus.PASS, "200 OK (lightweight model-list check)")
+    elif rep.billing_blocked:
+        detail = f"{raw.status} billing / credits unavailable (endpoint reached; inference not verified)"
+        if provider_detail:
+            detail += f": {provider_detail}"
+        rep.add("HTTP response", DiagStatus.WARN, detail)
+    elif raw.status in (401, 403):
+        detail = f"{raw.status} auth rejected"
+        if provider_detail:
+            detail += f": {provider_detail}"
+        rep.add("HTTP response", DiagStatus.FAIL, detail)
+    elif raw.status == 429:
+        detail = "429 rate limited (lightweight endpoint reachable)"
+        if provider_detail:
+            detail += f": {provider_detail}"
+        rep.add("HTTP response", DiagStatus.WARN, detail)
+    elif raw.status == 200:
+        rep.add("HTTP response", DiagStatus.WARN,
+                "200 OK but model-list response was not JSON")
+    else:
+        detail = f"HTTP {raw.status}"
+        if provider_detail:
+            detail += f": {provider_detail}"
+        rep.add("HTTP response", DiagStatus.WARN, detail)
+
+    auth_item = rep.item("Auth")
+    if auth_item is not None and conn.auth.type != "none":
+        if rep.billing_blocked:
+            auth_item.status = DiagStatus.PASS
+            auth_item.detail = f"accepted; billing / credits unavailable (server responded {raw.status})"
+        elif raw.status in (401, 403):
+            auth_item.status = DiagStatus.FAIL
+            auth_item.detail = f"rejected by the server ({raw.status})"
+        else:
+            auth_item.status = DiagStatus.PASS
+            auth_item.detail = f"accepted (server responded {raw.status})"
+    rep.add("Caption extraction", DiagStatus.SKIP,
+            "lightweight connectivity check; inference skipped")
+    rl_names = [k for k in raw.headers if k.lower().startswith(("x-ratelimit", "ratelimit", "retry-after"))]
+    rep.add("Rate-limit info", DiagStatus.PASS,
+            ", ".join(rl_names) if rl_names else "none exposed (falls back to 429 Retry-After)")
+
+
 def diagnose(conn: VlmConnection, api_key: str | None, *,
-             do_live_request: bool = True) -> DiagReport:
-    """接続を一括診断する。do_live_request=False なら実 HTTP を打たず静的検査だけ。"""
-    rep = DiagReport(connection_id=conn.connection_id)
+             do_live_request: bool = True, lightweight: bool = False) -> DiagReport:
+    """接続を一括診断する。
+
+    ``lightweight=True`` はAPIキー登録向けで、画像生成POSTを行わずモデル一覧GETのみを
+    送る。``do_live_request=False`` なら、どちらの方式でもネットワークへ触れない。
+    """
+    rep = DiagReport(connection_id=conn.connection_id, lightweight=lightweight)
 
     # 1. URL / 設定値の形式
     parsed = urlparse(conn.base_url)
@@ -274,6 +379,16 @@ def diagnose(conn: VlmConnection, api_key: str | None, *,
         if do_live_request:
             _cloudflare_token_probe(rep, api_key, verify_tls=conn.verify_tls)
         else:
+            rep.add("HTTP response", DiagStatus.SKIP, "live request disabled")
+            rep.add("Caption extraction", DiagStatus.SKIP, "live request disabled")
+        return rep
+
+    if lightweight:
+        if do_live_request:
+            _run_lightweight_probe(rep, conn, api_key)
+        else:
+            rep.add("Request build", DiagStatus.SKIP, "live request disabled")
+            rep.add("Image input", DiagStatus.SKIP, "lightweight connectivity check")
             rep.add("HTTP response", DiagStatus.SKIP, "live request disabled")
             rep.add("Caption extraction", DiagStatus.SKIP, "live request disabled")
         return rep

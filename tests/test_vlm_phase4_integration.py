@@ -153,10 +153,11 @@ def test_api_key_dialog_verify_and_save():
                                        header_name="x-goog-api-key"))
     T2 = lambda sec, key, **kw: key
 
-    def _run(diag_report, key):
-        D.diagnose = lambda c, k, do_live_request=True: diag_report
+    def _run(diag_report, key, on_confirmed=None):
+        D.diagnose = lambda c, k, do_live_request=True, **kwargs: diag_report
         d = ApiKeyDialog(T2, display_name="Gemini API", secret_ref="vlm/gemini/api_key",
-                         conn=conn, key_url="http://k", login_url="http://l", instructions="a\\nb")
+                         conn=conn, key_url="http://k", login_url="http://l", instructions="a\\nb",
+                         on_binding_confirmed=on_confirmed)
         d.key_edit.setText(key)
         d._check_and_save()
         for _ in range(300):
@@ -172,6 +173,16 @@ def test_api_key_dialog_verify_and_save():
     good.http_status = 200
     d = _run(good, "GOODKEY")
     assert stored.get("vlm/gemini/api_key") == "GOODKEY" and d.saved() is True
+
+    confirmed = []
+    lightweight_good = DiagReport("builtin-gemini", lightweight=True)
+    lightweight_good.add("Auth", DiagStatus.PASS, "accepted (server responded 200)")
+    lightweight_good.add("Request build", DiagStatus.PASS, "GET https://x/v1/models")
+    lightweight_good.add("HTTP response", DiagStatus.PASS, "200 OK (lightweight model-list check)")
+    lightweight_good.http_status = 200
+    stored.clear()
+    d_light = _run(lightweight_good, "LIGHTKEY", confirmed.append)
+    assert d_light.saved() is True and confirmed == ["gemini"]
 
     stored.clear()
     bad = DiagReport("builtin-gemini")
@@ -260,7 +271,7 @@ def test_api_key_dialog_verify_and_save():
     token_only.add("HTTP response", DiagStatus.PASS, "token valid and active")
     token_only.add("Caption extraction", DiagStatus.SKIP, "token verify only")
     token_only.http_status = 200
-    D.diagnose = lambda c, k, do_live_request=True: token_only
+    D.diagnose = lambda c, k, do_live_request=True, **kwargs: token_only
     account_id = "0123456789abcdef0123456789abcdef"
     d6.account_id_edit.setText(account_id)
     d6._check_and_save()
@@ -276,7 +287,7 @@ def test_api_key_dialog_verify_and_save():
     # remain visible instead of collapsing to the generic Cloudflare failure message.
     cf_offline = DiagReport("builtin-cloudflare")
     cf_offline.add("DNS / TCP", DiagStatus.FAIL, "cannot resolve api.cloudflare.com")
-    D.diagnose = lambda c, k, do_live_request=True: cf_offline
+    D.diagnose = lambda c, k, do_live_request=True, **kwargs: cf_offline
     d6._check_and_save()
     for _ in range(300):
         _APP.processEvents()
@@ -291,7 +302,7 @@ def test_api_key_dialog_verify_and_save():
     cf_good.add("Caption extraction", DiagStatus.PASS, "got text")
     cf_good.http_status = 200
     checked_urls = []
-    D.diagnose = lambda c, k, do_live_request=True: (checked_urls.append(c.base_url) or cf_good)
+    D.diagnose = lambda c, k, do_live_request=True, **kwargs: (checked_urls.append(c.base_url) or cf_good)
     d6.account_id_edit.setText(account_id)
     d6._check_and_save()
     for _ in range(300):
@@ -350,7 +361,7 @@ def test_api_key_dialog_verify_and_save():
         "HTTP response", DiagStatus.FAIL,
         "400 model / request rejected: anthropic-workspace-id is required")
     workspace_required.http_status = 400
-    D.diagnose = lambda c, k, do_live_request=True: workspace_required
+    D.diagnose = lambda c, k, do_live_request=True, **kwargs: workspace_required
     da.workspace_id_edit.setText("")
     da._check_and_save()
     for _ in range(300):
@@ -366,7 +377,7 @@ def test_api_key_dialog_verify_and_save():
     anthropic_good.add("Caption extraction", DiagStatus.PASS, "got text")
     anthropic_good.http_status = 200
     checked_headers = []
-    D.diagnose = lambda c, k, do_live_request=True: (
+    D.diagnose = lambda c, k, do_live_request=True, **kwargs: (
         checked_headers.append(dict(c.request_headers)) or anthropic_good)
     da.workspace_id_edit.setText("wrkspc_01Test123")
     da._check_and_save()
@@ -387,7 +398,7 @@ def test_api_key_dialog_verify_and_save():
         conn=anthropic, key_url="http://k", login_url="http://l", instructions="x",
         on_anthropic_workspace_saved=workspace_ids.append,
     )
-    D.diagnose = lambda c, k, do_live_request=True: anthropic_good
+    D.diagnose = lambda c, k, do_live_request=True, **kwargs: anthropic_good
     da2.workspace_id_edit.setText("wrkspc_Existing123")
     da2._check_and_save()
     for _ in range(300):

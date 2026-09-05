@@ -206,7 +206,7 @@ BUILTIN_CONNECTION_TEMPLATES: list[dict] = [
     },
     {
         "connection_id": "builtin-cloudflare",
-        "display_name": "Cloudflare Workers AI",
+        "display_name": "Cloudflare",
         "kind": "builtin",
         "provider_id": "cloudflare",
         "protocol": "openai_chat_completions",

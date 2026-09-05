@@ -272,8 +272,9 @@ def _binding_token(profile_id: str, provider_id: str) -> str:
 def _apply_verified_promotions(profile, vlm_settings):
     """`[Vlm] verified_bindings` に載っている binding を VERIFIED へ引き上げる。
 
-    出荷時 identity は控えめ（多くが DECLARED）なので、接続診断のフル PASS、認証済み
-    429による到達確認、または1枚テスト成功で確認できた binding をここで昇格させる。
+    出荷時 identity は控えめ（多くが DECLARED）なので、キー登録の軽量確認、接続診断の
+    フル PASS、認証済み429による到達確認、または1枚テスト成功で確認できた binding を
+    ここで昇格させる。
     UNKNOWN のままにはしない（確認済みなので）。既に VERIFIED のものはそのまま。
     """
     verified = vlm_settings.verified_set()
@@ -307,7 +308,7 @@ def set_model_id_override(vlm_settings, provider_id: str, model_id: str,
 
 
 def mark_binding_verified(vlm_settings, provider_id: str, *, profile_id: str | None = None) -> bool:
-    """接続診断／1枚テストが成功したときに呼ぶ。既に載っていれば False。
+    """軽量確認／接続診断／1枚テストが成功したときに呼ぶ。既に載っていれば False。
 
     呼び出し側で `save_config(settings)` を実行して永続化すること。
     """
@@ -323,7 +324,7 @@ def mark_binding_verified(vlm_settings, provider_id: str, *, profile_id: str | N
 
 
 KNOWN_BUILTIN_PROVIDERS = (
-    "gemini", "openrouter", "cloudflare", "groq", "nvidia", "mistral",
+    "gemini", "nvidia", "openrouter", "cloudflare", "groq",
     "huggingface", "vercel", "openai", "anthropic",
     # "ovhcloud",  # 日本居住者環境で実機検証できるまで無効
 )
@@ -336,7 +337,7 @@ def ordered_builtin_provider_ids(vlm_settings, model_profile=None) -> list[str]:
     connection_order から除かれるので足し戻さない（「無効化」を尊重）。ただし
     `model_profile` は引数互換のため受け取るが、binding にあるだけの provider は
     足し戻さない。UI で明示的にチェックした経路だけを実行対象にする。
-    設定が空のときだけ既定の3つに戻す。
+    設定が空のときだけ既定のGemini → NVIDIA → OpenRouter → Cloudflare → Groqへ戻す。
     """
     known = set(KNOWN_BUILTIN_PROVIDERS)
     seen: set[str] = set()
@@ -345,4 +346,4 @@ def ordered_builtin_provider_ids(vlm_settings, model_profile=None) -> list[str]:
         if p in known and p not in seen:
             seen.add(p)
             out.append(p)
-    return out or ["gemini", "openrouter", "cloudflare"]
+    return out or ["gemini", "nvidia", "openrouter", "cloudflare", "groq"]

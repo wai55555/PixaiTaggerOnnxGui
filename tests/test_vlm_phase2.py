@@ -424,6 +424,67 @@ def test_diagnostics_rate_limit_can_mark_binding_verified():
     print("  diagnostics: authenticated 429 is reachable-confirmed; billing 429 is not: OK")
 
 
+def test_diagnostics_lightweight_model_list_probe():
+    import vlm_diagnostics as D
+
+    conn = VlmConnection(
+        "builtin-openrouter", "OpenRouter", ConnectionKind.BUILTIN,
+        "openai_chat_completions", "http://localhost/v1", "google/gemma-4-31b-it:free",
+        provider_id="openrouter", auth=AuthSpec(type="bearer", secret_ref="openrouter"))
+    seen = []
+
+    def _models(req, **kwargs):
+        seen.append((req.method, req.url, dict(req.headers), dict(req.params), req.json_body))
+        return RawHttpResponse(200, {}, {"data": [{"id": conn.model_id}]}, "")
+
+    old_execute = D.execute_http
+    D.execute_http = _models
+    try:
+        rep = D.diagnose(conn, api_key="router-key", do_live_request=True, lightweight=True)
+    finally:
+        D.execute_http = old_execute
+
+    assert seen == [(
+        "GET", "http://localhost/v1/models", {"Authorization": "Bearer router-key"}, {}, {})]
+    assert rep.lightweight is True
+    assert rep.item("Image input").status is D.DiagStatus.SKIP
+    assert rep.item("HTTP response").status is D.DiagStatus.PASS
+    assert rep.item("Caption extraction").status is D.DiagStatus.SKIP
+    assert rep.can_mark_binding_verified is True
+
+    # Rate limiting still proves authenticated endpoint reachability, while a billing
+    # response is deliberately not promoted to confirmed.
+    D.execute_http = lambda *a, **k: RawHttpResponse(
+        429, {}, {"error": {"message": "rate limit exceeded"}}, "")
+    try:
+        limited = D.diagnose(conn, api_key="router-key", do_live_request=True, lightweight=True)
+    finally:
+        D.execute_http = old_execute
+    assert limited.item("HTTP response").status is D.DiagStatus.WARN
+    assert limited.can_mark_binding_verified is True
+
+    D.execute_http = lambda *a, **k: RawHttpResponse(
+        429, {}, {"error": {"message": "You have no credits remaining"}}, "")
+    try:
+        billing = D.diagnose(conn, api_key="router-key", do_live_request=True, lightweight=True)
+    finally:
+        D.execute_http = old_execute
+    assert billing.item("Auth").status is D.DiagStatus.PASS
+    assert billing.item("HTTP response").status is D.DiagStatus.WARN
+    assert billing.can_mark_binding_verified is False
+
+    cf = VlmConnection(
+        "builtin-cloudflare", "Cloudflare", ConnectionKind.BUILTIN,
+        "openai_chat_completions",
+        "https://api.cloudflare.com/client/v4/accounts/acct/ai/v1", "@cf/google/gemma-4-31b-it",
+        provider_id="cloudflare", auth=AuthSpec(type="bearer", secret_ref="cloudflare"))
+    cf_req = D._model_list_request(cf, "cf-key")
+    assert cf_req.method == "GET"
+    assert cf_req.url.endswith("/ai/models/search")
+    assert cf_req.params == {"per_page": "100"}
+    print("  lightweight diagnostics: model-list GET only; 429 WARN/reachability; billing not confirmed: OK")
+
+
 def test_diagnostics_billing_block_is_not_auth_failure():
     import vlm_diagnostics as D
 

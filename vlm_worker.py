@@ -34,16 +34,18 @@ class VlmDiagnosticsWorker(QObject):
     report_ready = Signal(object)   # DiagReport
     finished = Signal()
 
-    def __init__(self, conn, api_key: str | None):
+    def __init__(self, conn, api_key: str | None, *, lightweight: bool = False):
         super().__init__()
         self._conn = conn
         self._api_key = api_key
+        self._lightweight = lightweight
 
     @Slot()
     def run(self) -> None:
         try:
             from vlm_diagnostics import diagnose
-            report = diagnose(self._conn, self._api_key, do_live_request=True)
+            report = diagnose(self._conn, self._api_key, do_live_request=True,
+                              lightweight=self._lightweight)
             self.report_ready.emit(report)
         except Exception as e:  # noqa: BLE001
             from vlm_diagnostics import DiagReport, DiagStatus

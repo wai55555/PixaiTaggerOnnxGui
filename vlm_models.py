@@ -935,4 +935,4 @@ def default_registry() -> VlmModelRegistry:
     return VlmModelRegistry(_ALL_PROFILES)
 
 
-DEFAULT_MODEL_PROFILE_ID = GEMMA_4_26B_A4B_IT.profile_id
+DEFAULT_MODEL_PROFILE_ID = GEMMA_4_31B_IT.profile_id
