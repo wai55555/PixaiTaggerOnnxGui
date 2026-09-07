@@ -63,10 +63,6 @@ class ModelBinding:
     model_id: str
     identity_status: ModelIdentityStatus = ModelIdentityStatus.UNKNOWN
     provider_constraint: ProviderConstraint | None = None
-    # この経路が「既知の無料経路」か（プロバイダーではなく binding 単位。OpenRouter の
-    # `:free` サフィックスや、無料枠のあるサービスなど）。connection map 構築時に反映。
-    free_route: bool = False
-
     def effective_identity_status(self) -> ModelIdentityStatus:
         """provider_constraint を固定できていない場合、VERIFIED を格下げする。"""
         status = self.identity_status
@@ -151,7 +147,7 @@ class VlmModelRegistry:
 #            huggingface / vercel / openai / anthropic
 #            （ovhcloud は実機検証できるまで無効）
 #   - gemini      : Google Generative Language API（gemini_generate_content）
-#   - openrouter  : OpenRouter（openai_chat_completions、`:free` サフィックスで無料経路）
+#   - openrouter  : OpenRouter（openai_chat_completions、`:free` はプロバイダー側のモデルID表記）
 #   - cloudflare  : Cloudflare Workers AI（openai_chat_completions、要 account_id）
 #   - groq        : Groq（openai_chat_completions、無料枠あり）
 #   - nvidia      : NVIDIA NIM / build.nvidia.com（openai_chat_completions、無料クレジット）
@@ -177,11 +173,10 @@ GEMMA_4_26B_A4B_IT = VlmModelProfile(
     ),
     bindings={
         "gemini": ModelBinding("gemini", "gemma-4-26b-a4b-it",
-                               ModelIdentityStatus.DECLARED, free_route=True),
+                               ModelIdentityStatus.DECLARED),
         "openrouter": ModelBinding("openrouter", "google/gemma-4-26b-a4b-it:free",
                                    ModelIdentityStatus.DECLARED,
-                                   ProviderConstraint(allowed_providers=(), allow_fallbacks=True),
-                                   free_route=True),
+                                   ProviderConstraint(allowed_providers=(), allow_fallbacks=True)),
         "cloudflare": ModelBinding("cloudflare", "@cf/google/gemma-4-26b-a4b-it",
                                    ModelIdentityStatus.DECLARED),
         "huggingface": ModelBinding("huggingface", "google/gemma-4-26B-A4B-it",
@@ -201,17 +196,13 @@ GEMMA_4_31B_IT = VlmModelProfile(
     quantization="unknown",
     aliases=("google/gemma-4-31b-it", "google/gemma-4-31b-it:free", "@cf/google/gemma-4-31b-it"),
     bindings={
-        # Gemini API の Gemma 4 31B IT は無料枠で利用できるため、
-        # free_only の候補選定から除外しない。
-        "gemini": ModelBinding("gemini", "gemma-4-31b-it", ModelIdentityStatus.UNKNOWN,
-                               free_route=True),
+        "gemini": ModelBinding("gemini", "gemma-4-31b-it", ModelIdentityStatus.UNKNOWN),
         "openrouter": ModelBinding("openrouter", "google/gemma-4-31b-it:free",
-                                   ModelIdentityStatus.UNKNOWN, free_route=True),
+                                   ModelIdentityStatus.UNKNOWN),
         "cloudflare": ModelBinding("cloudflare", "@cf/google/gemma-4-31b-it",
                                    ModelIdentityStatus.UNKNOWN),
-        "nvidia": ModelBinding("nvidia", "google/gemma-4-31b-it", ModelIdentityStatus.UNKNOWN,
-                               free_route=True),
-        "groq": ModelBinding("groq", "gemma-4-31b-it", ModelIdentityStatus.UNKNOWN, free_route=True),
+        "nvidia": ModelBinding("nvidia", "google/gemma-4-31b-it", ModelIdentityStatus.UNKNOWN),
+        "groq": ModelBinding("groq", "gemma-4-31b-it", ModelIdentityStatus.UNKNOWN),
         "huggingface": ModelBinding("huggingface", "google/gemma-4-31B-it",
                                      ModelIdentityStatus.UNKNOWN),
         "vercel": ModelBinding("vercel", "google/gemma-4-31b-it",
@@ -228,13 +219,11 @@ QWEN3_8_27B = VlmModelProfile(
     quantization="unknown",
     aliases=("qwen/qwen3.8-27b", "qwen/qwen3.8-27b-instruct", "qwen3.8-27b-instruct"),
     bindings={
-        "openrouter": ModelBinding("openrouter", "qwen/qwen3.8-27b", ModelIdentityStatus.UNKNOWN,
-                                   free_route=True),
-        "nvidia": ModelBinding("nvidia", "qwen/qwen3.8-27b-instruct", ModelIdentityStatus.UNKNOWN,
-                               free_route=True),
-        "groq": ModelBinding("groq", "qwen3.8-27b", ModelIdentityStatus.UNKNOWN, free_route=True),
+        "openrouter": ModelBinding("openrouter", "qwen/qwen3.8-27b", ModelIdentityStatus.UNKNOWN),
+        "nvidia": ModelBinding("nvidia", "qwen/qwen3.8-27b-instruct", ModelIdentityStatus.UNKNOWN),
+        "groq": ModelBinding("groq", "qwen3.8-27b", ModelIdentityStatus.UNKNOWN),
         # "ovhcloud": ModelBinding("ovhcloud", "Qwen3.8-27B",
-        #                            ModelIdentityStatus.UNKNOWN, free_route=True),
+        #                            ModelIdentityStatus.UNKNOWN),
     },
 )
 
@@ -247,11 +236,9 @@ QWEN3_6_27B = VlmModelProfile(
     quantization="unknown",
     aliases=("qwen/qwen3.6-27b", "qwen/qwen3.6-27b-instruct", "qwen3.6-27b-instruct"),
     bindings={
-        "openrouter": ModelBinding("openrouter", "qwen/qwen3.6-27b", ModelIdentityStatus.UNKNOWN,
-                                   free_route=True),
-        "nvidia": ModelBinding("nvidia", "qwen/qwen3.6-27b-instruct", ModelIdentityStatus.UNKNOWN,
-                               free_route=True),
-        "groq": ModelBinding("groq", "qwen3.6-27b", ModelIdentityStatus.UNKNOWN, free_route=True),
+        "openrouter": ModelBinding("openrouter", "qwen/qwen3.6-27b", ModelIdentityStatus.UNKNOWN),
+        "nvidia": ModelBinding("nvidia", "qwen/qwen3.6-27b-instruct", ModelIdentityStatus.UNKNOWN),
+        "groq": ModelBinding("groq", "qwen3.6-27b", ModelIdentityStatus.UNKNOWN),
         # "ovhcloud": ModelBinding("ovhcloud", "Qwen3.6-27B",
         #                            ModelIdentityStatus.UNKNOWN),
     },
@@ -270,9 +257,9 @@ QWEN3_6_27B = VlmModelProfile(
 #     aliases=("mistralai/pixtral-12b", "pixtral-12b-2409"),
 #     bindings={
 #         "mistral": ModelBinding("mistral", "pixtral-12b-2409", ModelIdentityStatus.UNKNOWN,
-#                                 free_route=True),
+#                                 ),
 #         "openrouter": ModelBinding("openrouter", "mistralai/pixtral-12b", ModelIdentityStatus.UNKNOWN,
-#                                    free_route=True),
+#                                    ),
 #     },
 # )
 

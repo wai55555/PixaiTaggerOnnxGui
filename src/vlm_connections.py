@@ -1,6 +1,6 @@
 """内蔵接続とカスタム接続の定義（260901_VLM_spec.md 2.2・14章 / design.md 4.2・5.2節）。
 
-- 内蔵接続: アプリが URL・プロトコル・既知の無料経路情報を持つ
+- 内蔵接続: アプリが URL・プロトコル・プロバイダー固有の接続情報を持つ
   （Gemini / OpenRouter / Cloudflare / Groq / NVIDIA / Hugging Face /
    Vercel AI Gateway / OpenAI / Anthropic）
   ※ Mistral/Pixtral はキャプション用途として弱いため、内蔵経路をコメントアウト中。
@@ -102,10 +102,6 @@ class VlmConnection:
     retry: RetryPolicy = field(default_factory=RetryPolicy)
     verify_tls: bool = True
     concurrency: int = 1
-    # 内蔵接続が「既知の無料経路」か。カスタムには料金項目を持たせない（常に False 扱い）。
-    is_known_free_route: bool = False
-    # 有料継続をこの接続で許可したか（内蔵のみ意味を持つ）。
-    paid_continuation_allowed: bool = False
     # レスポンス抽出パスの上書き（空ならプロトコル既定）。
     text_path: str = ""
     error_path: str = ""
@@ -122,20 +118,6 @@ class VlmConnection:
     @property
     def is_local(self) -> bool:
         return self.kind is ConnectionKind.CUSTOM_LOCAL
-
-    @property
-    def free_for_automation(self) -> bool:
-        """`free_only` の自動処理へ入れてよいか。
-
-        - 内蔵: 既知の無料経路のみ True
-        - カスタムローカル: 料金が発生しないので True（ただし単独選択時のみ使用）
-        - カスタム外部: 料金を判定できないため常に False
-        """
-        if self.kind is ConnectionKind.BUILTIN:
-            return self.is_known_free_route
-        if self.kind is ConnectionKind.CUSTOM_LOCAL:
-            return True
-        return False
 
     @classmethod
     def from_mapping(cls, data: dict) -> "VlmConnection":
@@ -157,8 +139,6 @@ class VlmConnection:
             retry=RetryPolicy.from_mapping(data.get("retry")),
             verify_tls=bool(data.get("verify_tls", True)),
             concurrency=max(1, _i(data.get("concurrency"), 1)),
-            is_known_free_route=bool(data.get("is_known_free_route", False)),
-            paid_continuation_allowed=bool(data.get("paid_continuation_allowed", False)),
             text_path=str(data.get("response", {}).get("text_path", "") if isinstance(data.get("response"), dict) else data.get("text_path", "")),
             error_path=str(data.get("response", {}).get("error_path", "") if isinstance(data.get("response"), dict) else data.get("error_path", "")),
             request_body=dict(data.get("request_body") or {}) if isinstance(data.get("request_body"), dict) else {},
@@ -191,7 +171,6 @@ BUILTIN_CONNECTION_TEMPLATES: list[dict] = [
         "base_url": "https://generativelanguage.googleapis.com/v1beta",
         "model_id": "gemma-4-26b-a4b-it",
         "auth": {"type": "header_key", "header_name": "x-goog-api-key", "secret_ref": "vlm/gemini/api_key"},
-        "is_known_free_route": True,
     },
     {
         "connection_id": "builtin-openrouter",
@@ -202,7 +181,6 @@ BUILTIN_CONNECTION_TEMPLATES: list[dict] = [
         "base_url": "https://openrouter.ai/api/v1",
         "model_id": "google/gemma-4-26b-a4b-it:free",
         "auth": {"type": "bearer", "secret_ref": "vlm/openrouter/api_key"},
-        "is_known_free_route": True,
     },
     {
         "connection_id": "builtin-cloudflare",
@@ -216,7 +194,6 @@ BUILTIN_CONNECTION_TEMPLATES: list[dict] = [
         # Gemma 4はReasoning対応。診断用の短いmax_tokensでも思考だけで上限に
         # 達して本文が出ないため、キャプション用途では推論を無効化する。
         "request_body": {"chat_template_kwargs": {"enable_thinking": False}},
-        "is_known_free_route": False,
     },
     # --- implement_plan 2.2「後から追加する内蔵候補」。model_id は選択プロファイルの
     # binding から埋める（binding が無ければ build_connection_map が無効化する）。
@@ -229,7 +206,6 @@ BUILTIN_CONNECTION_TEMPLATES: list[dict] = [
         "base_url": "https://api.groq.com/openai/v1",
         "model_id": "",
         "auth": {"type": "bearer", "secret_ref": "vlm/groq/api_key"},
-        "is_known_free_route": True,
     },
     {
         "connection_id": "builtin-nvidia",
@@ -240,7 +216,6 @@ BUILTIN_CONNECTION_TEMPLATES: list[dict] = [
         "base_url": "https://integrate.api.nvidia.com/v1",
         "model_id": "",
         "auth": {"type": "bearer", "secret_ref": "vlm/nvidia/api_key"},
-        "is_known_free_route": True,
     },
     # Mistral/Pixtral VLM は対応しているが、キャプション経路としては弱いため
     # 内蔵プロバイダーから一時的にコメントアウト。必要になればこのブロックを戻す。
@@ -253,7 +228,6 @@ BUILTIN_CONNECTION_TEMPLATES: list[dict] = [
     #     "base_url": "https://api.mistral.ai/v1",
     #     "model_id": "",
     #     "auth": {"type": "bearer", "secret_ref": "vlm/mistral/api_key"},
-    #     "is_known_free_route": True,
     # },
     {
         "connection_id": "builtin-huggingface",
@@ -265,7 +239,6 @@ BUILTIN_CONNECTION_TEMPLATES: list[dict] = [
         "model_id": "",
         "auth": {"type": "bearer", "secret_ref": "vlm/huggingface/api_token"},
         # Monthly credits exist, but routed inference is metered and can consume paid credits.
-        "is_known_free_route": False,
     },
     {
         "connection_id": "builtin-vercel",
@@ -277,7 +250,6 @@ BUILTIN_CONNECTION_TEMPLATES: list[dict] = [
         "model_id": "",
         "auth": {"type": "bearer", "secret_ref": "vlm/vercel/api_key"},
         # 無料クレジットが付く場合もあるが、経路自体は従量課金。
-        "is_known_free_route": False,
     },
     {
         "connection_id": "builtin-openai",
@@ -288,7 +260,6 @@ BUILTIN_CONNECTION_TEMPLATES: list[dict] = [
         "base_url": "https://api.openai.com/v1",
         "model_id": "",
         "auth": {"type": "bearer", "secret_ref": "vlm/openai/api_key"},
-        "is_known_free_route": False,
     },
     {
         "connection_id": "builtin-anthropic",
@@ -300,7 +271,6 @@ BUILTIN_CONNECTION_TEMPLATES: list[dict] = [
         "model_id": "",
         "auth": {"type": "header_key", "header_name": "x-api-key",
                  "secret_ref": "vlm/anthropic/api_key"},
-        "is_known_free_route": False,
     },
     # OVHcloud は日本居住者によるアカウント作成・実機検証ができなかったため無効化。
     # 対応地域の利用者が接続確認できるまで、内蔵経路として UI へ公開しない。
@@ -313,7 +283,6 @@ BUILTIN_CONNECTION_TEMPLATES: list[dict] = [
     #     "base_url": "https://oai.endpoints.kepler.ai.cloud.ovh.net/v1",
     #     "model_id": "",
     #     "auth": {"type": "bearer", "secret_ref": "vlm/ovhcloud/api_key"},
-    #     "is_known_free_route": False,
     # },
 ]
 

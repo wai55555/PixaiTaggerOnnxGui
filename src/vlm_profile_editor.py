@@ -86,14 +86,12 @@ class ProfileEditorDialog(QDialog):
                 mid.setCurrentText(str(b["model_id"]))
             fetch = QPushButton(self._t("Vlm", "Settings_Route_FetchModels"))
             fetch.clicked.connect(lambda _=False, p=prov: self._fetch(p))
-            free = QCheckBox(self._t("Vlm", "ProfileEdit_Free"))
-            free.setChecked(bool(b.get("free_route", False)))
             status = QLabel()
-            for w in (inc, mid, fetch, free):
+            for w in (inc, mid, fetch):
                 row.addWidget(w)
             row.addWidget(status, 1)
             root.addLayout(row)
-            self._rows[prov] = {"inc": inc, "mid": mid, "fetch": fetch, "free": free, "status": status}
+            self._rows[prov] = {"inc": inc, "mid": mid, "fetch": fetch, "status": status}
 
         box = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
         box.accepted.connect(self._on_save)
@@ -101,7 +99,7 @@ class ProfileEditorDialog(QDialog):
         root.addWidget(box)
         if self._read_only:
             for r in self._rows.values():
-                for k in ("inc", "mid", "fetch", "free"):
+                for k in ("inc", "mid", "fetch"):
                     r[k].setEnabled(False)
             self.name_edit.setReadOnly(True)
             self.canon_edit.setReadOnly(True)
@@ -209,7 +207,7 @@ class ProfileEditorDialog(QDialog):
             mid = r["mid"].currentText().strip()
             if not mid:
                 continue
-            bindings[prov] = {"model_id": mid, "free_route": r["free"].isChecked()}
+            bindings[prov] = {"model_id": mid}
         if not bindings:
             QMessageBox.warning(self, self.windowTitle(), self._t("Vlm", "ProfileEdit_Need_Route"))
             return

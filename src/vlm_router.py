@@ -29,9 +29,7 @@ _REJECTION_HINTS = {
     "custom_connection_not_found": "selected custom connection was not found; check the saved connection and selected ID",
     "selected_connection_is_not_custom": "selected route is not a custom connection; choose a custom route",
     "custom_connection_disabled": "custom connection is disabled; enable it in custom connection settings",
-    "free_only_blocks_external_custom": "free-only mode blocks external custom APIs; use a local route or allow paid/external use",
     "custom_connection_no_auth": "custom connection requires a credential; enter an API key or change auth type to None",
-    "no_verified_free_candidate": "no verified free VLM route is available; check model identity, API keys, and free-only policy",
     "no_verified_candidate": "no eligible VLM route is available; check model IDs, API keys, identity, and enabled routes",
 }
 
@@ -47,10 +45,6 @@ def explain_candidate_failure(reason: str, excluded: dict[str, str] | None = Non
     message = explain_rejected_reason(reason)
     if not excluded:
         return message
-    if (reason == "no_verified_free_candidate"
-            and excluded and all(why == "fee_policy" for why in excluded.values())):
-        message = ("selected model has no free route; switch the fee policy to paid or "
-                   "choose a model with a free route")
     details = ", ".join(f"{connection_id}={why}" for connection_id, why in excluded.items())
     return f"{message}; excluded candidates: {details}"
 
@@ -58,8 +52,6 @@ def explain_candidate_failure(reason: str, excluded: dict[str, str] | None = Non
 @dataclass
 class RouterPolicy:
     execution_mode: ExecutionMode = ExecutionMode.BUILTIN_FALLBACK
-    free_only: bool = True
-    paid_continuation: bool = False
     selected_connection_id: str | None = None
     # 「サポート済みのVLMサービスを使う」経路で、identity が DECLARED（同一と宣言済みだが
     # 実測未確認）の binding も候補に含めるか。どのサービスをどの順で試すかは利用者が
@@ -133,14 +125,11 @@ def select_candidates(
         if cooldown_until.get(cid, 0.0) > now:
             result.excluded[cid] = "cooldown"
             continue
-        if not _passes_fee_policy(conn, policy):
-            result.excluded[cid] = "fee_policy"
-            continue
         result.connection_ids.append(cid)
 
     if not result.connection_ids:
         # 量子化不明で厳格判定できないケースは、そもそも VERIFIED にならない前提。
-        result.rejected_reason = "no_verified_free_candidate" if policy.free_only else "no_verified_candidate"
+        result.rejected_reason = "no_verified_candidate"
     return result
 
 
@@ -158,11 +147,6 @@ def _select_custom_single(connections, policy, cooldown_until, has_auth, now) ->
         result.excluded[cid] = "disabled"
         result.rejected_reason = "custom_connection_disabled"
         return result
-    if policy.free_only and conn.kind is ConnectionKind.CUSTOM_EXTERNAL:
-        # 外部カスタムは料金を判定できないため free_only では実行不可（設定エラー表示）。
-        result.excluded[cid] = "free_only_blocks_external_custom"
-        result.rejected_reason = "free_only_blocks_external_custom"
-        return result
     if conn.auth.type != "none" and not has_auth.get(cid, False):
         result.excluded[cid] = "no_auth"
         result.rejected_reason = "custom_connection_no_auth"
@@ -173,15 +157,6 @@ def _select_custom_single(connections, policy, cooldown_until, has_auth, now) ->
         return result
     result.connection_ids.append(cid)
     return result
-
-
-def _passes_fee_policy(conn: VlmConnection, policy: RouterPolicy) -> bool:
-    if not policy.free_only:
-        return True
-    if conn.free_for_automation:
-        return True
-    # 無料経路でなくても、有料継続が有効かつこの接続が個別許可されていれば候補に残す。
-    return policy.paid_continuation and conn.paid_continuation_allowed
 
 
 def _provider_has_connection(provider_id: str, connections: dict[str, VlmConnection]) -> bool:

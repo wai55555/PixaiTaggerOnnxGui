@@ -124,8 +124,7 @@ def _profile_from_dict(d: dict) -> VlmModelProfile | None:
         if not mid:
             continue
         bindings[prov] = ModelBinding(provider_id=prov, model_id=mid,
-                                      identity_status=ModelIdentityStatus.UNKNOWN,
-                                      free_route=bool(b.get("free_route", False)))
+                                      identity_status=ModelIdentityStatus.UNKNOWN)
     if not bindings:
         return None
     return VlmModelProfile(
@@ -175,7 +174,6 @@ def build_connection_map(vlm_settings, model_profile=None) -> dict[str, VlmConne
     テンプレートの既定 model_id をそのまま使う（旧挙動）。APIキーは vlm_secrets が別途
     secret_ref から解決するのでここでは埋めない。
     """
-    paid_set = {p.strip() for p in str(getattr(vlm_settings, "paid_connections", "")).split(",") if p.strip()}
     cf_account = (str(getattr(vlm_settings, "cloudflare_account_id", "") or "").strip()
                   or os.environ.get("CLOUDFLARE_ACCOUNT_ID", "").strip())
     anthropic_workspace = (
@@ -185,10 +183,6 @@ def build_connection_map(vlm_settings, model_profile=None) -> dict[str, VlmConne
     profile_id = getattr(model_profile, "profile_id", "") or getattr(vlm_settings, "model_profile_id", "")
     result: dict[str, VlmConnection] = {}
     for conn in default_builtin_connections():
-        # 有料継続の個別許可を反映（provider_id 単位）。順序反映は Router 側で行う。
-        if conn.provider_id in paid_set:
-            conn.paid_continuation_allowed = True
-
         binding = model_profile.binding_for(conn.provider_id) if model_profile is not None else None
         override = overrides.get(f"{profile_id}:{conn.provider_id}")
         # 内蔵VLM経路では、保存済みの古い／手入力の非VLM IDを実行に使わない。
@@ -197,12 +191,9 @@ def build_connection_map(vlm_settings, model_profile=None) -> dict[str, VlmConne
         # ようにする。
         if override and is_vlm_model_id(model_profile, conn.provider_id, override):
             conn.model_id = override
-            if binding is not None:
-                conn.is_known_free_route = binding.free_route
         elif binding is not None and is_vlm_model_id(model_profile, conn.provider_id,
                                                      binding.model_id):
             conn.model_id = binding.model_id or conn.model_id
-            conn.is_known_free_route = binding.free_route
         elif binding is not None:
             # User-defined profiles can contain stale or text-only IDs. Do not let a
             # profile binding bypass the same VLM-only guard used for manual overrides.
@@ -250,8 +241,6 @@ def build_generation_profile(vlm_settings) -> GenerationProfile:
 def build_router_policy(vlm_settings) -> RouterPolicy:
     return RouterPolicy(
         execution_mode=parse_execution_mode(vlm_settings.execution_mode),
-        free_only=bool(vlm_settings.free_only),
-        paid_continuation=bool(vlm_settings.paid_continuation),
         selected_connection_id=(vlm_settings.selected_connection_id or None),
         allow_declared_identity=not bool(getattr(vlm_settings, "strict_identity", False)),
     )

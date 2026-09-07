@@ -192,26 +192,20 @@ def test_settings_dialog_roundtrip():
         assert row["status"].width() == 180
         assert row["name"].alignment() & Qt.AlignmentFlag.AlignLeft
     dlg.mode_custom.setChecked(True)
-    dlg.fee_paid.setChecked(True)
     dlg.max_tokens.setValue(1500)
     assert dlg.language_combo.currentData() == "en" and not dlg.language_combo.isEnabled()
-    for r in dlg._route_rows.values():
-        if r["conn"].provider_id == "cloudflare":
-            r["paid_ok"].setChecked(True)
     assert not hasattr(dlg, "cf_account_edit")
     assert dlg._route_rows["builtin-huggingface"]["enabled"].isChecked() is False
     for cid in ("builtin-vercel", "builtin-openai", "builtin-anthropic"):
         assert dlg._route_rows[cid]["enabled"].isChecked() is False
-        assert dlg._route_rows[cid]["conn"].is_known_free_route is False
     assert "builtin-ovhcloud" not in dlg._route_rows
     dlg._on_cloudflare_verified("fedcba9876543210fedcba9876543210")
     assert dlg.strict_check.isChecked() is False       # default off
     dlg.strict_check.setChecked(True)
     dlg._on_save()
     assert s.vlm.execution_mode == "custom_single"
-    assert s.vlm.paid_continuation is True
     assert s.vlm.max_output_tokens == 1500
-    assert "cloudflare" in s.vlm.paid_connections
+    assert not hasattr(s.vlm, "free_only")
     assert s.vlm.cloudflare_account_id == "fedcba9876543210fedcba9876543210"
     assert "gemma-4-31b-it:cloudflare" in s.vlm.verified_set()
     assert s.vlm.language == "en"
@@ -233,7 +227,7 @@ def test_settings_dialog_roundtrip():
     dlg.profile_combo.setCurrentIndex(gpt_i)
     assert dlg._route_rows["builtin-openai"]["model_edit"].currentText() == "gpt-5.6-luna"
     assert dlg._route_rows["builtin-openai"]["conn"].protocol == "openai_responses"
-    assert dlg._route_rows["builtin-openai"]["enabled"].isChecked() is False
+    assert dlg._route_rows["builtin-openai"]["enabled"].isChecked() is True
     for pid, model_id in (
         ("openai-gpt-5.6-sol", "gpt-5.6-sol"),
         ("openai-gpt-5.6-terra", "gpt-5.6-terra"),
@@ -247,6 +241,7 @@ def test_settings_dialog_roundtrip():
     assert dlg._route_rows["builtin-anthropic"]["model_edit"].currentText() == \
         "claude-haiku-4-5-20251001"
     assert dlg._route_rows["builtin-anthropic"]["conn"].protocol == "anthropic_messages"
+    assert dlg._route_rows["builtin-anthropic"]["enabled"].isChecked() is True
     for pid, model_id in (
         ("claude-fable-5-1", "claude-fable-5-1"),
         ("claude-fable-5", "claude-fable-5"),
@@ -335,7 +330,6 @@ def test_custom_connection_persists_routes_and_executes(monkeypatch):
     settings = A.load_settings(A.get_default_config())
     settings.vlm.execution_mode = "custom_single"
     settings.vlm.selected_connection_id = raw["connection_id"]
-    settings.vlm.free_only = True
     connections = _VC.build_connection_map(settings.vlm, M.GEMMA_4_31B_IT)
     conn = connections[raw["connection_id"]]
     assert conn.kind is ConnectionKind.CUSTOM_LOCAL

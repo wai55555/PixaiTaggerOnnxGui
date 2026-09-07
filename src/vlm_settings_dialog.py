@@ -4,7 +4,7 @@
   - キャプションプロファイル（表示のみ）
   - 実行モード（内蔵の厳格フォールバック / カスタム接続単独）
   - フォールバック経路（内蔵3接続の有効・APIキー・診断）
-  - 料金ポリシー（無料経路のみ / 有料継続）
+  - 接続経路とプロバイダー側の料金注意
   - 詳細な出力設定（詳細度・文数・キャラクター名・Markdown・最大トークン）
   - カスタム接続の追加・編集・削除
 """
@@ -45,8 +45,7 @@ _MARKDOWN_KEYS = ["disabled", "allowed"]
 
 # フォールバック経路グリッドの列。up/down は1セルに横並びで入れる。
 (_ROUTE_COL_UPDOWN, _ROUTE_COL_ENABLED, _ROUTE_COL_NAME, _ROUTE_COL_MODEL,
- _ROUTE_COL_LIST, _ROUTE_COL_REGISTER, _ROUTE_COL_STATUS, _ROUTE_COL_PAID,
- _ROUTE_COL_DIAG) = range(9)
+ _ROUTE_COL_LIST, _ROUTE_COL_REGISTER, _ROUTE_COL_STATUS, _ROUTE_COL_DIAG) = range(8)
 
 _BUILTIN_SECRET_REF = {
     "builtin-gemini": "vlm/gemini/api_key",
@@ -199,18 +198,11 @@ class VlmSettingsDialog(QDialog):
         self.strict_check = QCheckBox(self._t("Vlm", "Settings_Strict_Identity"))
         self.strict_check.setToolTip(self._t("Vlm", "Settings_Strict_Identity_Tooltip"))
         rv.addWidget(self.strict_check)
+        self.route_cost_note = QLabel(self._t("Vlm", "Settings_Route_Cost_Note"))
+        self.route_cost_note.setStyleSheet("color: gray;")
+        self.route_cost_note.setToolTip(self._t("Vlm", "Settings_Route_Cost_Note"))
+        rv.addWidget(self.route_cost_note)
         root.addWidget(routes)
-
-        fee = QGroupBox(self._t("Vlm", "Settings_Fee_Policy"))
-        fv = QVBoxLayout(fee)
-        self.fee_free_only = QRadioButton(self._t("Vlm", "Settings_Fee_FreeOnly"))
-        self.fee_paid = QRadioButton(self._t("Vlm", "Settings_Fee_Paid"))
-        fv.addWidget(self.fee_free_only)
-        fv.addWidget(self.fee_paid)
-        self.fee_note = QLabel(self._t("Vlm", "Settings_Fee_Note"))
-        self.fee_note.setWordWrap(True)
-        fv.addWidget(self.fee_note)
-        root.addWidget(fee)
 
         det = QGroupBox(self._t("Vlm", "Settings_Detail"))
         dfrm = QFormLayout(det)
@@ -254,7 +246,6 @@ class VlmSettingsDialog(QDialog):
         root.addWidget(buttons)
 
         self.mode_custom.toggled.connect(lambda on: self.custom_select.setEnabled(on))
-        self.fee_paid.toggled.connect(self._sync_paid_rows)
 
     def _make_route_row(self, conn) -> dict:
         # up/down は1つのグリッドセルに収めるため小さなコンテナにまとめる。
@@ -300,14 +291,13 @@ class VlmSettingsDialog(QDialog):
         status.setFixedWidth(180)
         status.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Preferred)
         status.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-        paid_ok = QCheckBox(self._t("Vlm", "Settings_Route_PaidOk"))
         diag_btn = QPushButton(self._t("Vlm", "Settings_Diagnose"))
         diag_btn.clicked.connect(lambda _=False, cid=conn.connection_id: self._diagnose_one(cid))
         return {
             "updown": updown, "up": up, "down": down, "name": name,
             "enabled": enabled, "model_edit": model_combo, "list_btn": list_btn,
             "register": register_btn,
-            "status": status, "paid_ok": paid_ok, "diag_btn": diag_btn,
+            "status": status, "diag_btn": diag_btn,
             "secret_ref": _BUILTIN_SECRET_REF.get(conn.connection_id, conn.auth.secret_ref),
             "conn": conn,
         }
@@ -316,8 +306,7 @@ class VlmSettingsDialog(QDialog):
         ("updown", _ROUTE_COL_UPDOWN), ("enabled", _ROUTE_COL_ENABLED),
         ("name", _ROUTE_COL_NAME), ("model_edit", _ROUTE_COL_MODEL),
         ("list_btn", _ROUTE_COL_LIST), ("register", _ROUTE_COL_REGISTER),
-        ("status", _ROUTE_COL_STATUS), ("paid_ok", _ROUTE_COL_PAID),
-        ("diag_btn", _ROUTE_COL_DIAG),
+        ("status", _ROUTE_COL_STATUS), ("diag_btn", _ROUTE_COL_DIAG),
     )
 
     def _rebuild_routes(self) -> None:
@@ -325,7 +314,7 @@ class VlmSettingsDialog(QDialog):
         あるものはその model_id を、無いものは空欄（＝ここに実 ID を入れて接続を試す）。"""
         for r in self._route_rows.values():
             for key in ("updown", "enabled", "name", "model_edit", "list_btn",
-                        "register", "status", "paid_ok", "diag_btn"):
+                        "register", "status", "diag_btn"):
                 w = r[key]
                 w.setParent(None)
                 w.deleteLater()
@@ -358,13 +347,10 @@ class VlmSettingsDialog(QDialog):
     def _apply_route_states(self) -> None:
         profile = vlm_config.resolve_model_profile(self._vlm)
         order = set(vlm_config.ordered_builtin_provider_ids(self._vlm, profile))
-        paid = {p.strip() for p in str(self._vlm.paid_connections).split(",") if p.strip()}
         for cid, r in self._route_rows.items():
             provider = r["conn"].provider_id
             r["enabled"].setChecked(provider in order)
-            r["paid_ok"].setChecked(provider in paid)
             self._refresh_route_status(cid)
-        self._sync_paid_rows()
 
     def _on_profile_changed(self) -> None:
         pid = self.profile_combo.currentData()
@@ -397,7 +383,7 @@ class VlmSettingsDialog(QDialog):
         return {
             "profile_id": p.profile_id, "display_name": p.display_name,
             "canonical_model_id": p.canonical_model_id,
-            "bindings": {prov: {"model_id": b.model_id, "free_route": b.free_route}
+            "bindings": {prov: {"model_id": b.model_id}
                          for prov, b in p.bindings.items()},
         }
 
@@ -592,8 +578,6 @@ class VlmSettingsDialog(QDialog):
         self._refresh_custom_list()
         self.custom_select.setEnabled(self.mode_custom.isChecked())
 
-        self.fee_free_only.setChecked(self._vlm.free_only)
-        self.fee_paid.setChecked(not self._vlm.free_only)
         self.strict_check.setChecked(bool(getattr(self._vlm, "strict_identity", False)))
 
         _select(self.detail_combo, self._vlm.detail_level)
@@ -602,7 +586,7 @@ class VlmSettingsDialog(QDialog):
         _select(self.markdown_combo, self._vlm.markdown)
         _select(self.language_combo, self._vlm.language or "en")
         self.max_tokens.setValue(int(self._vlm.max_output_tokens))
-        # 経路行の有効/有料/状態は _rebuild_routes -> _apply_route_states で反映済み。
+        # 経路行の有効状態は _rebuild_routes -> _apply_route_states で反映済み。
 
     def _refresh_route_status(self, cid: str) -> None:
         r = self._route_rows[cid]
@@ -626,11 +610,6 @@ class VlmSettingsDialog(QDialog):
         label.setToolTip(full_text)
         label.setText(label.fontMetrics().elidedText(
             full_text, Qt.TextElideMode.ElideRight, label.width()))
-
-    def _sync_paid_rows(self) -> None:
-        paid = self.fee_paid.isChecked()
-        for r in self._route_rows.values():
-            r["paid_ok"].setEnabled(paid)
 
     def _refresh_custom_list(self) -> None:
         self.custom_list.clear()
@@ -843,8 +822,6 @@ class VlmSettingsDialog(QDialog):
         v.selected_connection_id = (
             (self.custom_select.currentData() or "")
             if self.mode_custom.isChecked() else v.selected_connection_id)
-        v.free_only = self.fee_free_only.isChecked()
-        v.paid_continuation = self.fee_paid.isChecked()
         v.strict_identity = self.strict_check.isChecked()
         v.detail_level = self.detail_combo.currentData()
         v.sentence_mode = self.sentence_combo.currentData()
@@ -859,9 +836,6 @@ class VlmSettingsDialog(QDialog):
                              if self._route_rows[cid]["enabled"].isChecked()]
         if enabled_providers:
             v.connection_order = ",".join(enabled_providers)
-        v.paid_connections = ",".join(
-            self._route_rows[cid]["conn"].provider_id for cid in self._route_order
-            if self._route_rows[cid]["paid_ok"].isChecked())
         # API キーは「APIキー登録」ボタン経由で即時保存されるので、ここでは扱わない。
 
         vlm_config.save_custom_connections(self._custom_connections)

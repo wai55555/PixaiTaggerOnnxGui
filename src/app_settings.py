@@ -163,15 +163,10 @@ class Vlm:
     enabled: bool = False
     model_profile_id: str = DEFAULT_VLM_MODEL_PROFILE_ID
     generation_profile_id: str = "default-caption-en"
-    free_only: bool = True
-    paid_continuation: bool = False
     # builtin_fallback / custom_single
     execution_mode: str = "builtin_fallback"
     selected_connection_id: str = ""
     connection_order: str = DEFAULT_VLM_CONNECTION_ORDER
-    # 有料継続を個別許可した内蔵プロバイダー（カンマ区切り）。free_only かつ
-    # paid_continuation のときだけ意味を持つ。
-    paid_connections: str = ""
     # Cloudflare Workers AI はアカウント ID を URL に含むため別途保持する。
     cloudflare_account_id: str = ""
     # 複数Workspace対象のAnthropic APIキーで必要。単一Workspaceキーなら空でよい。
@@ -242,9 +237,8 @@ def get_default_config() -> configparser.ConfigParser:
         'Vlm': {
             'enabled': 'False',
             'model_profile_id': DEFAULT_VLM_MODEL_PROFILE_ID, 'generation_profile_id': 'default-caption-en',
-            'free_only': 'True', 'paid_continuation': 'False',
             'execution_mode': 'builtin_fallback', 'selected_connection_id': '',
-            'connection_order': DEFAULT_VLM_CONNECTION_ORDER, 'paid_connections': '',
+            'connection_order': DEFAULT_VLM_CONNECTION_ORDER,
             'cloudflare_account_id': '',
             'anthropic_workspace_id': '',
             'language': 'en', 'detail_level': 'maximum_detail',
@@ -375,12 +369,9 @@ def _load_vlm(config: configparser.ConfigParser) -> Vlm:
         enabled=gb('enabled', d.enabled),
         model_profile_id=g('model_profile_id', d.model_profile_id),
         generation_profile_id=g('generation_profile_id', d.generation_profile_id),
-        free_only=gb('free_only', d.free_only),
-        paid_continuation=gb('paid_continuation', d.paid_continuation),
         execution_mode=g('execution_mode', d.execution_mode).strip().lower() or d.execution_mode,
         selected_connection_id=g('selected_connection_id', d.selected_connection_id),
         connection_order=g('connection_order', d.connection_order),
-        paid_connections=g('paid_connections', d.paid_connections),
         cloudflare_account_id=g('cloudflare_account_id', d.cloudflare_account_id).strip(),
         anthropic_workspace_id=g('anthropic_workspace_id', d.anthropic_workspace_id).strip(),
         language=g('language', d.language),

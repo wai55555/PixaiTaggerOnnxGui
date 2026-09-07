@@ -285,17 +285,10 @@ def test_router_builtin_fallback():
     conns = {c.connection_id: c for c in C.default_builtin_connections()}
     has_auth = {cid: True for cid in conns}
 
-    # free_only: cloudflare is not a known free route -> excluded
-    pol = R.RouterPolicy(free_only=True, paid_continuation=False)
+    pol = R.RouterPolicy()
     cs = R.select_candidates(profile, conns, pol, has_auth=has_auth)
-    assert cs.connection_ids == ["builtin-gemini", "builtin-openrouter"]
-    assert cs.excluded.get("builtin-cloudflare") == "fee_policy"
-
-    # paid_continuation + cloudflare allowed -> included last
-    conns["builtin-cloudflare"].paid_continuation_allowed = True
-    pol2 = R.RouterPolicy(free_only=True, paid_continuation=True)
-    cs2 = R.select_candidates(profile, conns, pol2, has_auth=has_auth)
-    assert cs2.connection_ids == ["builtin-gemini", "builtin-openrouter", "builtin-cloudflare"]
+    assert cs.connection_ids == ["builtin-gemini", "builtin-openrouter", "builtin-cloudflare",
+                                 "builtin-huggingface", "builtin-vercel"]
 
     # missing auth on gemini -> excluded
     cs3 = R.select_candidates(profile, conns, pol, has_auth={"builtin-openrouter": True})
@@ -304,17 +297,19 @@ def test_router_builtin_fallback():
     # cooldown on openrouter
     cs4 = R.select_candidates(profile, conns, pol, has_auth=has_auth,
                               cooldown_until={"builtin-openrouter": time.time() + 999})
-    assert cs4.connection_ids == ["builtin-gemini"]
+    assert cs4.connection_ids == ["builtin-gemini", "builtin-cloudflare",
+                                  "builtin-huggingface", "builtin-vercel"]
 
     # shipped profile: bindings are DECLARED. Default policy allows DECLARED
-    # (user picks the services + order), so gemini/openrouter still qualify.
+    # (user picks the services + order), so every configured binding qualifies.
     cs5 = R.select_candidates(M.GEMMA_4_26B_A4B_IT, conns, pol, has_auth=has_auth)
-    assert cs5.connection_ids == ["builtin-gemini", "builtin-openrouter"]
+    assert cs5.connection_ids == ["builtin-gemini", "builtin-openrouter", "builtin-cloudflare",
+                                  "builtin-vercel"]
 
     # strict opt-out: allow_declared_identity=False -> DECLARED excluded as before
-    strict = R.RouterPolicy(free_only=True, allow_declared_identity=False)
+    strict = R.RouterPolicy(allow_declared_identity=False)
     cs6 = R.select_candidates(M.GEMMA_4_26B_A4B_IT, conns, strict, has_auth=has_auth)
-    assert not cs6.has_candidates and cs6.rejected_reason == "no_verified_free_candidate"
+    assert not cs6.has_candidates and cs6.rejected_reason == "no_verified_candidate"
     assert cs6.excluded.get("builtin-gemini") == "not_verified"
 
     # UNKNOWN identity is always excluded, even with allow_declared_identity=True
@@ -324,12 +319,12 @@ def test_router_builtin_fallback():
         for pid, b in M.GEMMA_4_26B_A4B_IT.bindings.items()})
     cs7 = R.select_candidates(unknown, conns, pol, has_auth=has_auth)
     assert not cs7.has_candidates and cs7.excluded.get("builtin-gemini") == "identity_unknown"
-    assert "builtin-gemini=fee_policy" in R.explain_candidate_failure(
-        "no_verified_free_candidate", {"builtin-gemini": "fee_policy"})
+    assert "builtin-gemini=not_verified" in R.explain_candidate_failure(
+        "no_verified_candidate", {"builtin-gemini": "not_verified"})
     print("  router builtin_fallback: OK")
 
 
-def test_router_gemma31_gemini_verified_free_candidate():
+def test_router_gemma31_gemini_verified_candidate():
     import dataclasses
 
     profile = dataclasses.replace(M.GEMMA_4_31B_IT, bindings={
@@ -339,11 +334,9 @@ def test_router_gemma31_gemini_verified_free_candidate():
         for pid, binding in M.GEMMA_4_31B_IT.bindings.items()})
     conns = {c.connection_id: c for c in C.default_builtin_connections()}
     has_auth = {cid: True for cid in conns}
-    candidates = R.select_candidates(
-        profile, conns, R.RouterPolicy(free_only=True), has_auth=has_auth)
+    candidates = R.select_candidates(profile, conns, R.RouterPolicy(), has_auth=has_auth)
     assert "builtin-gemini" in candidates.connection_ids
-    assert candidates.excluded.get("builtin-gemini") != "fee_policy"
-    print("  verified Gemma 4 31B Gemini route remains eligible in free-only mode: OK")
+    print("  verified Gemma 4 31B Gemini route remains eligible: OK")
 
 
 def test_router_custom_single():
@@ -360,28 +353,22 @@ def test_router_custom_single():
     conns = {c.connection_id: c for c in (ext, loc)}
     profile = M.GEMMA_4_26B_A4B_IT
 
-    # free_only blocks external custom
-    pol = R.RouterPolicy(execution_mode=R.ExecutionMode.CUSTOM_SINGLE, free_only=True,
+    # External custom connections are allowed when selected and authenticated.
+    pol = R.RouterPolicy(execution_mode=R.ExecutionMode.CUSTOM_SINGLE,
                          selected_connection_id="cust-ext")
     cs = R.select_candidates(profile, conns, pol, has_auth={"cust-ext": True})
-    assert not cs.has_candidates and cs.rejected_reason == "free_only_blocks_external_custom"
+    assert cs.connection_ids == ["cust-ext"]
 
-    # free_only allows local custom (single)
-    pol2 = R.RouterPolicy(execution_mode=R.ExecutionMode.CUSTOM_SINGLE, free_only=True,
+    # Local custom connection remains available without credentials.
+    pol2 = R.RouterPolicy(execution_mode=R.ExecutionMode.CUSTOM_SINGLE,
                           selected_connection_id="cust-loc")
     cs2 = R.select_candidates(profile, conns, pol2)
     assert cs2.connection_ids == ["cust-loc"]
 
-    # free_only OFF -> external custom single allowed (with auth)
-    pol3 = R.RouterPolicy(execution_mode=R.ExecutionMode.CUSTOM_SINGLE, free_only=False,
-                          selected_connection_id="cust-ext")
-    cs3 = R.select_candidates(profile, conns, pol3, has_auth={"cust-ext": True})
-    assert cs3.connection_ids == ["cust-ext"]
-
     # custom is never mixed into builtin fallback
-    pol4 = R.RouterPolicy(execution_mode=R.ExecutionMode.BUILTIN_FALLBACK, free_only=True)
-    cs4 = R.select_candidates(profile, conns, pol4)
-    assert not cs4.has_candidates  # no builtin connections present at all
+    pol3 = R.RouterPolicy(execution_mode=R.ExecutionMode.BUILTIN_FALLBACK)
+    cs3 = R.select_candidates(profile, conns, pol3)
+    assert not cs3.has_candidates  # no builtin connections present at all
     print("  router custom_single: OK")
 
 
@@ -449,15 +436,7 @@ def test_connection_locality():
     assert C.resolve_custom_kind(C.ConnectionLocality.AUTO, "") is C.ConnectionKind.CUSTOM_EXTERNAL  # unknown -> external
     assert C.resolve_custom_kind(C.ConnectionLocality.LOCAL, "https://api.openai.com/v1") is C.ConnectionKind.CUSTOM_LOCAL
 
-    ext = C.VlmConnection("id", "n", C.ConnectionKind.CUSTOM_EXTERNAL, "openai_chat_completions", "u", "m")
-    loc = C.VlmConnection("id", "n", C.ConnectionKind.CUSTOM_LOCAL, "openai_chat_completions", "u", "m")
-    bi_free = C.VlmConnection("id", "n", C.ConnectionKind.BUILTIN, "x", "u", "m", is_known_free_route=True)
-    bi_paid = C.VlmConnection("id", "n", C.ConnectionKind.BUILTIN, "x", "u", "m", is_known_free_route=False)
-    assert not ext.free_for_automation
-    assert loc.free_for_automation
-    assert bi_free.free_for_automation
-    assert not bi_paid.free_for_automation
-    print("  connection locality + free_for_automation: OK")
+    print("  connection locality: OK")
 
 
 def test_verified_binding_promotion():
@@ -481,7 +460,7 @@ def test_verified_binding_promotion():
 
     # strict router (allow_declared_identity=False) now keeps the promoted gemini, drops the rest
     conns = {c.connection_id: c for c in C.default_builtin_connections()}
-    strict = R.RouterPolicy(free_only=True, allow_declared_identity=False)
+    strict = R.RouterPolicy(allow_declared_identity=False)
     cs = R.select_candidates(prof, conns, strict, has_auth={cid: True for cid in conns})
     assert cs.connection_ids == ["builtin-gemini"], cs.connection_ids
     print("  verified binding promotion: mark + resolve promote + strict router: OK")
@@ -504,7 +483,7 @@ def test_multi_provider_profiles():
             "claude-sonnet-4-6", "claude-sonnet-4-5", "claude-haiku-4-5"} <= ids
 
     def _s(profile_id):
-        s = types.SimpleNamespace(model_profile_id=profile_id, paid_connections="",
+        s = types.SimpleNamespace(model_profile_id=profile_id,
                                   cloudflare_account_id="", verified_bindings="", model_id_overrides="")
         s.verified_set = lambda: set()
         s.order_list = lambda: ["gemini", "openrouter", "cloudflare"]
@@ -535,7 +514,6 @@ def test_multi_provider_profiles():
     gemma = CFG.resolve_model_profile(_s("gemma-4-26b-a4b-it"))
     gemma_cm = CFG.build_connection_map(_s("gemma-4-26b-a4b-it"), gemma)
     assert gemma_cm["builtin-huggingface"].model_id == "google/gemma-4-26B-A4B-it"
-    assert gemma_cm["builtin-huggingface"].free_for_automation is False
     assert gemma.bindings["huggingface"].identity_status is M.ModelIdentityStatus.UNKNOWN
     assert "huggingface" not in CFG.ordered_builtin_provider_ids(_s("gemma-4-26b-a4b-it"), gemma)
     enabled_hf = _s("gemma-4-26b-a4b-it")
@@ -543,7 +521,6 @@ def test_multi_provider_profiles():
     assert CFG.ordered_builtin_provider_ids(enabled_hf, gemma)[-1] == "huggingface"
 
     assert gemma_cm["builtin-vercel"].model_id == "google/gemma-4-26b-a4b-it"
-    assert gemma_cm["builtin-vercel"].free_for_automation is False
     gpt = CFG.resolve_model_profile(_s("openai-gpt-5.6-luna"))
     gpt_cm = CFG.build_connection_map(_s("openai-gpt-5.6-luna"), gpt)
     assert gpt_cm["builtin-openai"].model_id == "gpt-5.6-luna"
@@ -552,20 +529,8 @@ def test_multi_provider_profiles():
     assert CFG.ordered_builtin_provider_ids(_s("openai-gpt-5.6-luna"), gpt) == [
         "openai", "vercel"]
     auth = {cid: True for cid in gpt_cm}
-    blocked = R.select_candidates(gpt, gpt_cm, R.RouterPolicy(free_only=True), has_auth=auth)
-    assert not blocked.has_candidates
-    assert blocked.excluded["builtin-openai"] == "fee_policy"
-    assert blocked.excluded["builtin-vercel"] == "fee_policy"
-    assert "no free route" in R.explain_candidate_failure(
-        blocked.rejected_reason, blocked.excluded)
-    paid_direct = R.select_candidates(
-        gpt, gpt_cm, R.RouterPolicy(free_only=False), has_auth=auth)
+    paid_direct = R.select_candidates(gpt, gpt_cm, R.RouterPolicy(), has_auth=auth)
     assert paid_direct.connection_ids == ["builtin-openai", "builtin-vercel"]
-    for cid in ("builtin-openai", "builtin-vercel"):
-        gpt_cm[cid].paid_continuation_allowed = True
-    paid = R.select_candidates(
-        gpt, gpt_cm, R.RouterPolicy(free_only=True, paid_continuation=True), has_auth=auth)
-    assert paid.connection_ids == ["builtin-openai", "builtin-vercel"]
     claude_settings = _s("claude-haiku-4-5")
     claude_settings.anthropic_workspace_id = "wrkspc_test123"
     claude = CFG.resolve_model_profile(claude_settings)
@@ -578,7 +543,7 @@ def test_multi_provider_profiles():
     assert CFG.ordered_builtin_provider_ids(claude_settings, claude) == [
         "anthropic", "vercel"]
     claude_paid = R.select_candidates(
-        claude, claude_cm, R.RouterPolicy(free_only=False),
+        claude, claude_cm, R.RouterPolicy(),
         has_auth={cid: True for cid in claude_cm})
     assert claude_paid.connection_ids == ["builtin-anthropic", "builtin-vercel"]
 
@@ -619,10 +584,9 @@ def test_default_vlm_profile_and_fallback_order():
     assert settings.vlm.order_list() == [
         "gemini", "nvidia", "openrouter", "cloudflare", "groq"]
     assert CFG.ordered_builtin_provider_ids(settings.vlm) == settings.vlm.order_list()
-    assert M.GEMMA_4_31B_IT.bindings["gemini"].free_route is True
     profile = CFG.resolve_model_profile(settings.vlm)
     connections = CFG.build_connection_map(settings.vlm, profile)
-    assert connections["builtin-gemini"].free_for_automation is True
+    assert connections["builtin-gemini"].enabled is True
     print("  default VLM profile Gemma 4 31B IT; fallback order Gemini -> NVIDIA -> OpenRouter -> Cloudflare -> Groq: OK")
 
 
@@ -692,7 +656,7 @@ def test_vlm_only_model_guard():
         bindings={"groq": M.ModelBinding("groq", "groq/compound-mini")})
     import types
     bad_settings = types.SimpleNamespace(
-        model_profile_id="user-bad", paid_connections="", cloudflare_account_id="",
+        model_profile_id="user-bad", cloudflare_account_id="",
         anthropic_workspace_id="", verified_bindings="", model_id_overrides="",
         model_id_override_map=lambda: {}, order_list=lambda: ["groq"])
     import vlm_config as CFG
@@ -754,15 +718,14 @@ def test_user_defined_profiles():
             "profile_id": "user-g3", "display_name": "My Gemma 3 27B",
             "canonical_model_id": "gemma-3-27b-it",
             "bindings": {
-                "gemini": {"model_id": "gemma-3-27b-it", "free_route": True},
-                "openrouter": {"model_id": "google/gemma-3-27b-it:free", "free_route": True},
+                "gemini": {"model_id": "gemma-3-27b-it"},
+                "openrouter": {"model_id": "google/gemma-3-27b-it:free"},
             }}])
         aps = {p.profile_id: p for p in CFG.all_profiles()}
         assert "user-g3" in aps and CFG.is_user_profile("user-g3")
         p = aps["user-g3"]
         assert set(p.bindings) == {"gemini", "openrouter"}
         assert p.bindings["gemini"].identity_status is M.ModelIdentityStatus.UNKNOWN
-        assert p.bindings["openrouter"].free_route is True
 
         # a user profile with the same id as a shipped one overrides it
         CFG.save_user_profiles([
