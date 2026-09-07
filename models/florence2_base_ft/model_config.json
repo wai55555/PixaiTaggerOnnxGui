@@ -36,6 +36,9 @@
     "pad_token_id": 1,
     "decoder_start_token_id": 2,
     "max_new_tokens": 200,
+    "decoder_layers": 6,
+    "decoder_attention_heads": 12,
+    "decoder_head_dim": 64,
     "tasks": {
       "CAPTION": "What does the image describe?",
       "DETAILED_CAPTION": "Describe in detail what is shown in the image.",

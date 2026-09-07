@@ -16,7 +16,19 @@ GEMINI.md
 AGENT.md
 config.ini
 
-# Downloaded model files that should not be committed
-pixai-tagger-v0.9-onnx/model.onnx
-pixai-tagger-v0.9-onnx/model.onnx.bak
-pixai-tagger-v0.9-onnx/selected_tags.csv
+# Multi-model support: downloaded per-model files live under models/<model_id>/.
+# Only the hand-authored model_config.json for each model is tracked, plus PixAI's
+# hand-curated tag translation CSVs (PixAI has no model_config.json - see constants.py).
+models/*/*
+!models/*/model_config.json
+!models/pixai-tagger-v0.9/selected_tags_*.csv
+# selected_tags_en.csv is redundant with selected_tags.csv (already English) - keep excluded.
+models/pixai-tagger-v0.9/selected_tags_en.csv
+.aider*
+
+# Local-only working files / notes
+.omo/
+.venv-wsl/
+diff.patch
+docs/
+onnx_model/

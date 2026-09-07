@@ -6,7 +6,8 @@ from PySide6.QtCore import (
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout,
     QGridLayout, QGroupBox, QLabel, QLineEdit, QPushButton,
-    QTextEdit, QSizePolicy, QSplitter, QStackedWidget, QComboBox, QButtonGroup
+    QTextEdit, QSizePolicy, QSplitter, QStackedWidget, QComboBox, QButtonGroup,
+    QCheckBox
 )
 from PySide6.QtGui import (
     QIcon
@@ -167,6 +168,31 @@ class Ui_MainWindow(object):
         controls_layout.addWidget(main_window.grid_view_button)
         controls_layout.addWidget(main_window.model_combo)
         layout.addLayout(controls_layout)
+
+        # VLM 接続トグル（260901_VLM_*）。選択中モデル種別とは独立。ON のとき、
+        # ローカルモデルの代わりにネットワーク VLM で生成する。出力形式（タグ列 /
+        # 自然文）は VLM プロンプト次第なので、タグ付け・キャプションどちらにも使える。
+        vlm_row = QHBoxLayout()
+        main_window.use_vlm_check = QCheckBox(
+            main_window.locale_manager.get_string("Vlm", "Use_Vlm_Checkbox"))
+        main_window.use_vlm_check.setToolTip(
+            main_window.locale_manager.get_string("Vlm", "Use_Vlm_Tooltip"))
+        main_window.use_vlm_check.setChecked(bool(getattr(main_window.settings.vlm, "enabled", False)))
+        main_window.use_vlm_check.toggled.connect(main_window._on_use_vlm_toggled)  # type: ignore
+        main_window.vlm_settings_button = QPushButton(
+            main_window.locale_manager.get_string("Vlm", "Method_Settings_Button"))
+        main_window.vlm_single_test_button = QPushButton(
+            main_window.locale_manager.get_string("Vlm", "Method_Single_Test_Button"))
+        main_window.vlm_settings_button.clicked.connect(main_window._open_vlm_settings)  # type: ignore
+        main_window.vlm_single_test_button.clicked.connect(main_window._run_vlm_single_test)  # type: ignore
+        _vlm_on = bool(getattr(main_window.settings.vlm, "enabled", False))
+        main_window.vlm_settings_button.setVisible(_vlm_on)
+        main_window.vlm_single_test_button.setVisible(_vlm_on)
+        vlm_row.addWidget(main_window.use_vlm_check)
+        vlm_row.addWidget(main_window.vlm_settings_button)
+        vlm_row.addWidget(main_window.vlm_single_test_button)
+        vlm_row.addStretch(1)
+        layout.addLayout(vlm_row)
         return group
 
     def _create_viewer_group(self, main_window: 'MainWindow') -> QSplitter:
@@ -444,6 +470,22 @@ class Ui_MainWindow(object):
         main_window.existing_mode_combo.setCurrentIndex(idx if idx >= 0 else 0)
         main_window.existing_mode_combo.currentIndexChanged.connect(main_window._on_existing_mode_changed)  # type: ignore
         mode_row.addWidget(main_window.existing_mode_combo)
+
+        # 一括処理の対象選択（すべて / 未生成のみ / 失敗のみ / 選択画像のみ）。
+        # 実行ボタンのすぐ上、既存ファイル設定と同じ行に置く（260903_vlm-gap-fix.md todo 5）。
+        mode_row.addSpacing(12)
+        mode_row.addWidget(QLabel(main_window.locale_manager.get_string("MainWindow", "Target_Mode_Label")))
+        main_window.target_mode_combo = QComboBox()
+        for key, label_key in (("ALL", "Target_Mode_All"), ("UNPROCESSED", "Target_Mode_Unprocessed"),
+                               ("FAILED", "Target_Mode_Failed"), ("SELECTED", "Target_Mode_Selected")):
+            main_window.target_mode_combo.addItem(
+                main_window.locale_manager.get_string("MainWindow", label_key), key)
+        _tm_current = str(main_window.settings.behavior.target_mode).upper()
+        _tm_idx = main_window.target_mode_combo.findData(_tm_current)
+        main_window.target_mode_combo.setCurrentIndex(_tm_idx if _tm_idx >= 0 else 0)
+        main_window.target_mode_combo.currentIndexChanged.connect(main_window._on_target_mode_changed)  # type: ignore
+        mode_row.addWidget(main_window.target_mode_combo)
+
         mode_row.addStretch(1)
         outer.addLayout(mode_row)
 

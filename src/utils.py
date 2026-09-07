@@ -9,8 +9,8 @@ from datetime import datetime
 import hashlib
 import configparser
 
-# Get the base directory whether this module is compiled into an executable or not.
-BASE_DIR = Path(sys.executable).parent if getattr(sys, 'frozen', False) else Path(__file__).parent
+from constants import BASE_DIR
+
 LOG_FILE_PATH = BASE_DIR / "debug_log.txt"
 CONFIG_PATH = BASE_DIR / "config.ini"
 
