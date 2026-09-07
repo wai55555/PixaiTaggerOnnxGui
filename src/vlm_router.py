@@ -42,6 +42,19 @@ def explain_rejected_reason(reason: str) -> str:
     return f"{raw}: {_REJECTION_HINTS.get(raw, 'check VLM route settings and connection availability')}"
 
 
+def explain_candidate_failure(reason: str, excluded: dict[str, str] | None = None) -> str:
+    """候補が空になった理由と、接続ごとの除外理由をまとめて返す。"""
+    message = explain_rejected_reason(reason)
+    if not excluded:
+        return message
+    if (reason == "no_verified_free_candidate"
+            and excluded and all(why == "fee_policy" for why in excluded.values())):
+        message = ("selected model has no free route; switch the fee policy to paid or "
+                   "choose a model with a free route")
+    details = ", ".join(f"{connection_id}={why}" for connection_id, why in excluded.items())
+    return f"{message}; excluded candidates: {details}"
+
+
 @dataclass
 class RouterPolicy:
     execution_mode: ExecutionMode = ExecutionMode.BUILTIN_FALLBACK

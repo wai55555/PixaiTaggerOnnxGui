@@ -356,8 +356,8 @@ class VlmSettingsDialog(QDialog):
         self._apply_route_states()
 
     def _apply_route_states(self) -> None:
-        order = set(self._vlm.order_list() or ["gemini", "nvidia", "openrouter",
-                                               "cloudflare", "groq"])
+        profile = vlm_config.resolve_model_profile(self._vlm)
+        order = set(vlm_config.ordered_builtin_provider_ids(self._vlm, profile))
         paid = {p.strip() for p in str(self._vlm.paid_connections).split(",") if p.strip()}
         for cid, r in self._route_rows.items():
             provider = r["conn"].provider_id
@@ -814,7 +814,18 @@ class VlmSettingsDialog(QDialog):
     def _show_diag_report(self, conn, report) -> None:
         lines = [f"[{i.status.value}] {i.name}: {i.detail}" for i in report.items]
         if getattr(report, "can_mark_binding_verified", False):
-            lines.append("[PASS] " + self._t("Vlm", "Settings_Diagnose_Reachability_Verified"))
+            http_item = report.item("HTTP response")
+            extraction_item = report.item("Caption extraction")
+            content_verified = (
+                not getattr(report, "lightweight", False)
+                and http_item is not None and http_item.status is DiagStatus.PASS
+                and extraction_item is not None
+                and extraction_item.status is DiagStatus.PASS
+            )
+            summary_key = ("Settings_Diagnose_Content_Verified"
+                           if content_verified
+                           else "Settings_Diagnose_Reachability_Verified")
+            lines.append("[PASS] " + self._t("Vlm", summary_key))
         icon = {DiagStatus.PASS: QMessageBox.Icon.Information,
                 DiagStatus.WARN: QMessageBox.Icon.Warning,
                 DiagStatus.FAIL: QMessageBox.Icon.Critical}.get(report.overall, QMessageBox.Icon.Information)

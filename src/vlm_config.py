@@ -335,9 +335,12 @@ def ordered_builtin_provider_ids(vlm_settings, model_profile=None) -> list[str]:
 
     設定ダイアログのフォールバック経路リストでチェックを外した provider は
     connection_order から除かれるので足し戻さない（「無効化」を尊重）。ただし
-    `model_profile` は引数互換のため受け取るが、binding にあるだけの provider は
-    足し戻さない。UI で明示的にチェックした経路だけを実行対象にする。
-    設定が空のときだけ既定のGemini → NVIDIA → OpenRouter → Cloudflare → Groqへ戻す。
+    選択プロファイルと設定済み順に共通する provider が1つもない場合だけ、
+    プロファイルの binding 順へ切り替える。これにより OpenAI / Claude のように
+    既定の無料候補リストに含まれないプロファイルも、選択直後から実行可能になる。
+    共通する provider がある場合は、利用者が外した経路を足し戻さない。
+    プロファイルがない／bindingもないときだけ既定のGemini → NVIDIA → OpenRouter
+    → Cloudflare → Groqへ戻す。
     """
     known = set(KNOWN_BUILTIN_PROVIDERS)
     seen: set[str] = set()
@@ -346,4 +349,8 @@ def ordered_builtin_provider_ids(vlm_settings, model_profile=None) -> list[str]:
         if p in known and p not in seen:
             seen.add(p)
             out.append(p)
+    if model_profile is not None:
+        profile_order = [pid for pid in model_profile.bindings if pid in known]
+        if profile_order and not any(pid in profile_order for pid in out):
+            return profile_order
     return out or ["gemini", "nvidia", "openrouter", "cloudflare", "groq"]

@@ -24,7 +24,7 @@ import vlm_persistence
 import vlm_secrets
 from vlm_image import ImagePreprocessConfig, prepare_image
 from vlm_profiles import build_system_prompt, build_user_prompt
-from vlm_router import ExecutionMode, explain_rejected_reason, select_candidates
+from vlm_router import ExecutionMode, explain_candidate_failure, select_candidates
 from vlm_transport import VlmExecutor
 
 
@@ -199,8 +199,9 @@ class VlmCaptionWorker(QObject):
                 return
             if not rt["candidates"].has_candidates:
                 self.log_message.emit(self.get_string("Vlm", "Error_No_Candidate",
-                                                      reason=explain_rejected_reason(
-                                                          rt["candidates"].rejected_reason)), "red")
+                                                      reason=explain_candidate_failure(
+                                                          rt["candidates"].rejected_reason,
+                                                          rt["candidates"].excluded)), "red")
                 return
             image_path = self._selected_file_path
             if image_path is None or not Path(image_path).is_file():
@@ -266,8 +267,9 @@ class VlmCaptionWorker(QObject):
             candidates = rt["candidates"]
             if not candidates.has_candidates:
                 self.log_message.emit(self.get_string("Vlm", "Error_No_Candidate",
-                                                      reason=explain_rejected_reason(
-                                                          candidates.rejected_reason)), "red")
+                                                      reason=explain_candidate_failure(
+                                                          candidates.rejected_reason,
+                                                          candidates.excluded)), "red")
                 for cid, why in candidates.excluded.items():
                     write_debug_log(f"vlm: candidate excluded {cid}: {why}")
                 return

@@ -201,7 +201,10 @@ GEMMA_4_31B_IT = VlmModelProfile(
     quantization="unknown",
     aliases=("google/gemma-4-31b-it", "google/gemma-4-31b-it:free", "@cf/google/gemma-4-31b-it"),
     bindings={
-        "gemini": ModelBinding("gemini", "gemma-4-31b-it", ModelIdentityStatus.UNKNOWN),
+        # Gemini API の Gemma 4 31B IT は無料枠で利用できるため、
+        # free_only の候補選定から除外しない。
+        "gemini": ModelBinding("gemini", "gemma-4-31b-it", ModelIdentityStatus.UNKNOWN,
+                               free_route=True),
         "openrouter": ModelBinding("openrouter", "google/gemma-4-31b-it:free",
                                    ModelIdentityStatus.UNKNOWN, free_route=True),
         "cloudflare": ModelBinding("cloudflare", "@cf/google/gemma-4-31b-it",

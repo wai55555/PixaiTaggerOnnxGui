@@ -324,7 +324,26 @@ def test_router_builtin_fallback():
         for pid, b in M.GEMMA_4_26B_A4B_IT.bindings.items()})
     cs7 = R.select_candidates(unknown, conns, pol, has_auth=has_auth)
     assert not cs7.has_candidates and cs7.excluded.get("builtin-gemini") == "identity_unknown"
+    assert "builtin-gemini=fee_policy" in R.explain_candidate_failure(
+        "no_verified_free_candidate", {"builtin-gemini": "fee_policy"})
     print("  router builtin_fallback: OK")
+
+
+def test_router_gemma31_gemini_verified_free_candidate():
+    import dataclasses
+
+    profile = dataclasses.replace(M.GEMMA_4_31B_IT, bindings={
+        pid: dataclasses.replace(binding,
+                                 identity_status=M.ModelIdentityStatus.VERIFIED,
+                                 provider_constraint=None)
+        for pid, binding in M.GEMMA_4_31B_IT.bindings.items()})
+    conns = {c.connection_id: c for c in C.default_builtin_connections()}
+    has_auth = {cid: True for cid in conns}
+    candidates = R.select_candidates(
+        profile, conns, R.RouterPolicy(free_only=True), has_auth=has_auth)
+    assert "builtin-gemini" in candidates.connection_ids
+    assert candidates.excluded.get("builtin-gemini") != "fee_policy"
+    print("  verified Gemma 4 31B Gemini route remains eligible in free-only mode: OK")
 
 
 def test_router_custom_single():
@@ -530,11 +549,18 @@ def test_multi_provider_profiles():
     assert gpt_cm["builtin-openai"].model_id == "gpt-5.6-luna"
     assert gpt_cm["builtin-openai"].protocol == "openai_responses"
     assert gpt_cm["builtin-vercel"].model_id == "openai/gpt-5.6-luna"
+    assert CFG.ordered_builtin_provider_ids(_s("openai-gpt-5.6-luna"), gpt) == [
+        "openai", "vercel"]
     auth = {cid: True for cid in gpt_cm}
     blocked = R.select_candidates(gpt, gpt_cm, R.RouterPolicy(free_only=True), has_auth=auth)
     assert not blocked.has_candidates
     assert blocked.excluded["builtin-openai"] == "fee_policy"
     assert blocked.excluded["builtin-vercel"] == "fee_policy"
+    assert "no free route" in R.explain_candidate_failure(
+        blocked.rejected_reason, blocked.excluded)
+    paid_direct = R.select_candidates(
+        gpt, gpt_cm, R.RouterPolicy(free_only=False), has_auth=auth)
+    assert paid_direct.connection_ids == ["builtin-openai", "builtin-vercel"]
     for cid in ("builtin-openai", "builtin-vercel"):
         gpt_cm[cid].paid_continuation_allowed = True
     paid = R.select_candidates(
@@ -549,6 +575,12 @@ def test_multi_provider_profiles():
     assert claude_cm["builtin-anthropic"].request_headers == {
         "anthropic-workspace-id": "wrkspc_test123"}
     assert claude_cm["builtin-vercel"].model_id == "anthropic/claude-haiku-4.5"
+    assert CFG.ordered_builtin_provider_ids(claude_settings, claude) == [
+        "anthropic", "vercel"]
+    claude_paid = R.select_candidates(
+        claude, claude_cm, R.RouterPolicy(free_only=False),
+        has_auth={cid: True for cid in claude_cm})
+    assert claude_paid.connection_ids == ["builtin-anthropic", "builtin-vercel"]
 
     for profile_id, provider, model_id in (
         ("openai-gpt-5.6-sol", "openai", "gpt-5.6-sol"),
@@ -587,6 +619,10 @@ def test_default_vlm_profile_and_fallback_order():
     assert settings.vlm.order_list() == [
         "gemini", "nvidia", "openrouter", "cloudflare", "groq"]
     assert CFG.ordered_builtin_provider_ids(settings.vlm) == settings.vlm.order_list()
+    assert M.GEMMA_4_31B_IT.bindings["gemini"].free_route is True
+    profile = CFG.resolve_model_profile(settings.vlm)
+    connections = CFG.build_connection_map(settings.vlm, profile)
+    assert connections["builtin-gemini"].free_for_automation is True
     print("  default VLM profile Gemma 4 31B IT; fallback order Gemini -> NVIDIA -> OpenRouter -> Cloudflare -> Groq: OK")
 
 
