@@ -803,9 +803,29 @@ def test_user_defined_profiles():
                 "groq", "vendor/new-vlm", vlm_capable=True)})
         assert M.is_vlm_model_id(custom, "groq", "vendor/new-vlm")
 
+        CFG.save_user_profiles([{
+            "profile_id": "user-bad-flag", "display_name": "Bad flag",
+            "canonical_model_id": "vendor/text-only",
+            "bindings": {"groq": {
+                "model_id": "vendor/text-only", "vlm_capable": "false"}},
+        }])
+        bad_flag = CFG.user_profile_objects()[0]
+        assert bad_flag.bindings["groq"].vlm_capable is False
+        assert not M.is_vlm_model_id(bad_flag, "groq", "vendor/text-only")
+
+        batch = M.VlmModelProfile(
+            profile_id="user-batch", display_name="Batch", canonical_model_id="vendor/vlm:batch",
+            bindings={"openrouter": M.ModelBinding(
+                "openrouter", "vendor/vlm:batch", vlm_capable=True)})
+        assert not M.is_vlm_model_id(batch, "openrouter", "vendor/vlm:batch")
+
         # a user profile with the same id as a shipped one overrides it
         CFG.save_user_profiles([
-            CFG.load_user_profiles()[0],   # keep user-g3
+            {"profile_id": "user-g3", "display_name": "My Gemma 3 27B",
+             "canonical_model_id": "gemma-3-27b-it",
+             "bindings": {
+                 "gemini": {"model_id": "gemma-3-27b-it"},
+                 "openrouter": {"model_id": "google/gemma-3-27b-it:free"}}},
             {"profile_id": "gemma-4-26b-a4b-it", "display_name": "Gemma (mine)",
              "canonical_model_id": "gemma-3-27b-it",
              "bindings": {"gemini": {"model_id": "gemma-3-27b-it"}}},

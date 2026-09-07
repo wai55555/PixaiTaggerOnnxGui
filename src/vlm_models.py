@@ -907,10 +907,13 @@ def is_vlm_model_id(profile: VlmModelProfile | None, provider_id: str,
             static_capability, _ = classify_model_capability(provider_id, model_id)
             discovered = _DISCOVERED_VLM_MODEL_IDS.get(
                 (provider_id or "").strip().lower(), set())
-            return (binding.vlm_capable
-                    or static_capability is True
-                    or low in _known_vision_model_ids(provider_id)
-                    or _base_catalog_model_id(model_id) in discovered)
+            # Explicit static rejection (for example a :batch route or known
+            # text-only ID) always wins over persisted/discovered allowlists.
+            return (static_capability is not False
+                    and (binding.vlm_capable
+                         or static_capability is True
+                         or low in _known_vision_model_ids(provider_id)
+                         or _base_catalog_model_id(model_id) in discovered))
         if any(other_provider != provider_id
                and other_binding.model_id.strip().lower() == low
                for other_provider, other_binding in profile.bindings.items()):

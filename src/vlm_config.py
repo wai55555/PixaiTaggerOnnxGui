@@ -188,7 +188,9 @@ def _profile_from_dict(d: dict) -> VlmModelProfile | None:
             identity_status=ModelIdentityStatus.UNKNOWN,
             # The immediately preceding format had already catalog-validated
             # these bindings but did not persist the capability bit.
-            vlm_capable=bool(b.get("vlm_capable", True)),
+            # Missing means the legacy catalog-validated format. Other values
+            # must be a literal JSON true; strings such as "false" are rejected.
+            vlm_capable=b.get("vlm_capable", True) is True,
         )
     if not bindings:
         return None

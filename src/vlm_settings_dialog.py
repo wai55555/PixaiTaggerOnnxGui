@@ -978,10 +978,12 @@ class VlmSettingsDialog(QDialog):
         APIキー登録・接続確認は即時保存の操作なので、その結果を保持する。
         """
         immediate = {"verified_bindings", "cloudflare_account_id", "anthropic_workspace_id"}
-        valid_profile_ids = {p.profile_id for p in vlm_config.all_profiles()}
+        ordered_profiles = vlm_config.all_profiles()
+        valid_profile_ids = {p.profile_id for p in ordered_profiles}
         fallback_profile_id = self._vlm_before_dialog.model_profile_id
         if fallback_profile_id not in valid_profile_ids:
-            fallback_profile_id = next(iter(valid_profile_ids), self._vlm.model_profile_id)
+            fallback_profile_id = next(
+                (p.profile_id for p in ordered_profiles), self._vlm.model_profile_id)
         for field in dataclasses.fields(self._vlm):
             if field.name not in immediate:
                 value = getattr(self._vlm_before_dialog, field.name)

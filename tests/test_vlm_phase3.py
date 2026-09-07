@@ -568,6 +568,22 @@ def test_profile_editor_preserves_legacy_catalog_validated_binding():
         "model_id": "vendor/custom-vlm", "vlm_capable": True}
 
 
+def test_cancel_uses_first_ordered_profile_for_missing_snapshot():
+    import app_settings as A
+    from vlm_settings_dialog import VlmSettingsDialog
+
+    settings = A.load_settings(A.get_default_config())
+    dialog = VlmSettingsDialog(settings, lambda sec, key, **kw: key)
+    try:
+        expected = vlm_config.all_profiles()[0].profile_id
+        dialog._vlm_before_dialog.model_profile_id = "missing-profile"
+        settings.vlm.model_profile_id = "also-missing"
+        dialog._restore_unsaved_vlm()
+        assert settings.vlm.model_profile_id == expected
+    finally:
+        dialog.close()
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     for t in tests:
