@@ -9,9 +9,11 @@
 """
 from __future__ import annotations
 
+import ipaddress
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
+from urllib.parse import urlparse
 
 
 class ConnectionKind(str, Enum):
@@ -27,15 +29,41 @@ class ConnectionLocality(str, Enum):
     EXTERNAL = "external"
 
 
-_LOCAL_HOST_HINTS = ("localhost", "127.0.0.1", "0.0.0.0", "::1", "host.docker.internal")
+_LOCAL_HOSTNAMES = {"localhost", "localhost.localdomain", "host.docker.internal"}
+_PRIVATE_NETWORKS = tuple(ipaddress.ip_network(cidr) for cidr in (
+    "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "fc00::/7",
+))
+
+
+def is_local_host(host: str) -> bool:
+    """Return whether *host* names a loopback/private/link-local destination.
+
+    Parse numeric addresses instead of relying on string prefixes: the latter both
+    missed ranges such as 172.16/12 and treated names such as ``10.example.com`` as
+    private.  ``.local`` remains supported for mDNS hosts used by LAN VLM servers.
+    """
+    normalized = (host or "").strip().rstrip(".").lower()
+    if not normalized:
+        return False
+    if normalized in _LOCAL_HOSTNAMES or normalized.endswith(".local"):
+        return True
+    # urlparse removes IPv6 brackets but may leave a zone identifier (fe80::1%eth0).
+    address = normalized.split("%", 1)[0]
+    try:
+        ip = ipaddress.ip_address(address)
+    except ValueError:
+        return False
+    return (ip.is_loopback or ip.is_link_local or ip.is_unspecified
+            or any(ip.version == network.version and ip in network
+                   for network in _PRIVATE_NETWORKS))
 
 
 def _looks_local(base_url: str) -> bool:
-    low = (base_url or "").lower()
-    if not low:
+    try:
+        host = urlparse(base_url or "").hostname or ""
+    except ValueError:
         return False
-    return any(h in low for h in _LOCAL_HOST_HINTS) or low.startswith("http://192.168.") \
-        or low.startswith("http://10.") or ".local" in low
+    return is_local_host(host)
 
 
 def resolve_custom_kind(locality: ConnectionLocality, base_url: str) -> ConnectionKind:

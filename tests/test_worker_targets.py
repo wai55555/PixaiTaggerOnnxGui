@@ -83,9 +83,11 @@ class _OkTagger:
         return [TagResult(tags=[TagPrediction("cat", 0.9, TagCategory.GENERAL)])]
 
 
-def _run_tagger(s, monkeypatch, tagger, decision=None):
+def _run_tagger(s, monkeypatch, tagger, decision=None,
+                mode=ExistingFileMode.OVERWRITE):
     monkeypatch.setattr(workers, "setup_tagger_from_settings",
-                        lambda *a, **k: (tagger, _tagger_settings_dict(Path(s.paths.input_dir))))
+                        lambda *a, **k: (tagger, _tagger_settings_dict(
+                            Path(s.paths.input_dir), mode)))
     monkeypatch.setattr(workers, "ensure_pixai_tags_csv", lambda *a, **k: True)
     w = workers.TaggerThreadWorker(s, decision, get_string=_get_string)
     return w
@@ -161,6 +163,19 @@ def test_tagger_ask_called_only_for_included_files(tmp_path, monkeypatch):
     print("  tagger ASK reached only the FAILED-included file: OK")
 
 
+def test_tagger_stop_does_not_report_skip_outputs_as_failed(tmp_path, monkeypatch):
+    d = tmp_path
+    _make_images(d)
+    (d / "a.txt").write_text("already tagged", encoding="utf-8")
+    s = _tagger_settings(d, existing_mode="SKIP")
+    w = _run_tagger(s, monkeypatch, _OkTagger(), mode=ExistingFileMode.SKIP)
+    logs, changes, failed, totals = _collect(w)
+    w.stop()
+    w.run_tagging()
+    assert [p.name for p in failed] == ["b.jpg", "c.jpg"], failed
+    assert changes == []
+
+
 def _captioner_settings_dict(d: Path, existing_mode=ExistingFileMode.OVERWRITE):
     return {
         "INPUT_DIR": Path(d),
@@ -218,6 +233,19 @@ def test_captioner_failed_rerun_processes_only_failures(tmp_path, monkeypatch):
     assert failed2 == [], failed2
     assert totals2 and all(t == 1 for _, t in totals2), totals2
     print("  captioner FAILED rerun processes only b.jpg, progress total 1: OK")
+
+
+def test_captioner_failure_with_existing_output_is_reported(tmp_path, monkeypatch):
+    d = tmp_path
+    _make_images(d)
+    for name in ("a", "b", "c"):
+        (d / f"{name}.txt").write_text("old caption", encoding="utf-8")
+    s = _tagger_settings(d)
+    w = _run_captioner(s, monkeypatch, _fake_captioner(fail_second=True))
+    logs, changes, failed, totals = _collect(w)
+    w.run_captioning()
+    assert [p.name for p in failed] == ["b.jpg"], failed
+    assert [c.path.name for c in changes] == ["a.txt", "c.txt"]
 
 
 def test_captioner_selected_none_empty_run(tmp_path, monkeypatch):

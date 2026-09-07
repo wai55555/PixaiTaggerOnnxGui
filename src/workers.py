@@ -585,7 +585,6 @@ class CaptionerThreadWorker(QObject):
             def log_to_gui(message: str, color: str):
                 self.log_message.emit(message, color)
 
-            pre_existing = {p.with_suffix(".txt") for p in image_paths if p.with_suffix(".txt").is_file()}
             changed_files = caption_core.process_caption_loop(
                 captioner=captioner,
                 settings=settings_dict,
@@ -595,9 +594,8 @@ class CaptionerThreadWorker(QObject):
                 stop_checker=self.is_stopped,
                 get_string=self.get_string,
                 progress_cb=self.progress_update.emit,
+                failed_paths=failed,
             )
-            changed_paths = {c.path for c in changed_files}
-            failed = [p for p in image_paths if p.with_suffix(".txt") not in changed_paths and p.with_suffix(".txt") not in pre_existing]
             self.batch_completed.emit(changed_files)
             self.batch_failed.emit(failed)
 

@@ -1,6 +1,6 @@
 """VLM Phase 3+ tests: worker existing-file handling, exhaustion break, dialogs.
 
-Offline only. Run:  python tests/test_vlm_phase3.py
+Offline only. Run:  rtk pytest tests/test_vlm_phase3.py -q
 """
 import os
 import sys
@@ -41,7 +41,7 @@ def _ok_body(text):
             "usage": {"prompt_tokens": 1, "completion_tokens": 2}}
 
 
-def _setup(tmpdir, existing_mode, placement, existing_txt=None):
+def _setup(tmpdir, existing_mode, placement, monkeypatch, existing_txt=None):
     import app_settings as A
     import dataclasses
     s = A.load_settings(A.get_default_config())
@@ -57,8 +57,10 @@ def _setup(tmpdir, existing_mode, placement, existing_txt=None):
     verified = {pid: dataclasses.replace(b, identity_status=M.ModelIdentityStatus.VERIFIED,
                                          provider_constraint=None)
                 for pid, b in M.GEMMA_4_26B_A4B_IT.bindings.items()}
-    vlm_config.resolve_model_profile = lambda v: dataclasses.replace(M.GEMMA_4_26B_A4B_IT, bindings=verified)
-    vlm_secrets.get_secret = lambda ref: "FAKEKEY"
+    monkeypatch.setattr(
+        vlm_config, "resolve_model_profile",
+        lambda v: dataclasses.replace(M.GEMMA_4_26B_A4B_IT, bindings=verified))
+    monkeypatch.setattr(vlm_secrets, "get_secret", lambda ref: "FAKEKEY")
     return s
 
 
@@ -69,11 +71,11 @@ def _run(worker):
     return logs
 
 
-def test_append_mode_default_placement_coerced():
+def test_append_mode_default_placement_coerced(monkeypatch):
     """existing_file_mode=APPEND but placement stays default OVERWRITE -> must append, not overwrite."""
     app = _APP
     d = Path(tempfile.mkdtemp())
-    s = _setup(d, "APPEND", "OVERWRITE", existing_txt="1girl, solo")
+    s = _setup(d, "APPEND", "OVERWRITE", monkeypatch, existing_txt="1girl, solo")
     old = T.execute_http
     T.execute_http = lambda req, **kw: RawHttpResponse(200, {}, _ok_body("a natural language description"), "")
     try:
@@ -86,12 +88,12 @@ def test_append_mode_default_placement_coerced():
     print("  APPEND mode + default OVERWRITE placement -> coerced to append: OK")
 
 
-def test_single_test_saves_to_txt():
+def test_single_test_saves_to_txt(monkeypatch):
     """The single-image test now writes the .txt (same save path as the batch) and
     reports one FileChange for undo."""
     app = _APP
     d = Path(tempfile.mkdtemp())
-    s = _setup(d, "OVERWRITE", "OVERWRITE", existing_txt="old caption")
+    s = _setup(d, "OVERWRITE", "OVERWRITE", monkeypatch, existing_txt="old caption")
     old = T.execute_http
     T.execute_http = lambda req, **kw: RawHttpResponse(200, {}, _ok_body("fresh vlm caption"), "")
     try:
@@ -118,10 +120,10 @@ def test_single_test_saves_to_txt():
     print("  single test writes the selected .txt + one undo FileChange: OK")
 
 
-def test_single_test_skip_mode_does_not_write():
+def test_single_test_skip_mode_does_not_write(monkeypatch):
     app = _APP
     d = Path(tempfile.mkdtemp())
-    s = _setup(d, "SKIP", "OVERWRITE", existing_txt="keep me")
+    s = _setup(d, "SKIP", "OVERWRITE", monkeypatch, existing_txt="keep me")
     old = T.execute_http
     T.execute_http = lambda req, **kw: RawHttpResponse(200, {}, _ok_body("nope"), "")
     try:
@@ -138,10 +140,10 @@ def test_single_test_skip_mode_does_not_write():
     print("  single test respects SKIP mode (no write, no undo entry): OK")
 
 
-def test_skip_mode_leaves_existing():
+def test_skip_mode_leaves_existing(monkeypatch):
     app = _APP
     d = Path(tempfile.mkdtemp())
-    s = _setup(d, "SKIP", "OVERWRITE", existing_txt="keep me")
+    s = _setup(d, "SKIP", "OVERWRITE", monkeypatch, existing_txt="keep me")
     old = T.execute_http
     T.execute_http = lambda req, **kw: RawHttpResponse(200, {}, _ok_body("new"), "")
     try:
@@ -154,13 +156,13 @@ def test_skip_mode_leaves_existing():
     print("  SKIP mode leaves existing .txt untouched: OK")
 
 
-def test_all_connections_excluded_breaks_once():
+def test_all_connections_excluded_breaks_once(monkeypatch):
     """Every connection returns 401 -> excluded -> batch stops with a single message, not per-image."""
     app = _APP
     d = Path(tempfile.mkdtemp())
     for i in range(2, 30):
         Image.new("RGB", (8, 8)).save(d / f"i{i}.png")
-    s = _setup(d, "OVERWRITE", "OVERWRITE")
+    s = _setup(d, "OVERWRITE", "OVERWRITE", monkeypatch)
     old = T.execute_http
     T.execute_http = lambda req, **kw: RawHttpResponse(401, {}, {"error": {"message": "bad"}}, "unauthorized")
     try:
@@ -176,7 +178,7 @@ def test_all_connections_excluded_breaks_once():
     print(f"  all-excluded -> single exhaustion message (image_failed lines: {len(image_failed)}): OK")
 
 
-def test_settings_dialog_roundtrip():
+def test_settings_dialog_roundtrip(monkeypatch):
     app = _APP
     import app_settings as A
     s = A.load_settings(A.get_default_config())
@@ -226,10 +228,13 @@ def test_settings_dialog_roundtrip():
     s.vlm.strict_identity = False
     assert vlm_config.build_router_policy(s.vlm).allow_declared_identity is True
 
-    # Earlier worker tests replace this resolver with a fixed Gemma profile.
-    # Restore profile-aware resolution before checking the newly shipped profiles.
-    vlm_config.resolve_model_profile = lambda v: next(
-        (p for p in vlm_config.all_profiles() if p.profile_id == v.model_profile_id), None)
+    # Pin profile-aware resolution for the catalog assertions without leaking it to
+    # later tests.
+    monkeypatch.setattr(
+        vlm_config, "resolve_model_profile",
+        lambda v: next(
+            (p for p in vlm_config.all_profiles()
+             if p.profile_id == v.model_profile_id), None))
     gpt_i = dlg.profile_combo.findData("openai-gpt-5.6-luna")
     dlg.profile_combo.setCurrentIndex(gpt_i)
     assert dlg._route_rows["builtin-openai"]["model_edit"].currentText() == "gpt-5.6-luna"
@@ -373,6 +378,85 @@ def test_custom_connection_persists_routes_and_executes(monkeypatch):
     assert seen["request"].json_body["model"] == "local-gemma-vision"
     assert isinstance(seen["request"].json_body["messages"][1]["content"], list)
     print("  custom connection: dialog -> JSON reload -> local route -> executor: OK")
+
+
+def test_external_http_with_auth_requires_confirmation(monkeypatch):
+    from custom_connection_dialog import CustomConnectionDialog
+    from PySide6.QtWidgets import QMessageBox
+    import custom_connection_dialog as CCD
+    import vlm_secrets
+
+    answers = [QMessageBox.StandardButton.No, QMessageBox.StandardButton.Yes]
+    monkeypatch.setattr(CCD.QMessageBox, "warning", lambda *a, **k: answers.pop(0))
+    stored = []
+    monkeypatch.setattr(
+        vlm_secrets, "set_secret",
+        lambda ref, value, **kwargs: (stored.append((ref, value)) or True))
+
+    dialog = CustomConnectionDialog(lambda sec, key, **kw: key)
+    dialog.name_edit.setText("Explicit external proxy")
+    dialog.locality_combo.setCurrentIndex(dialog.locality_combo.findData("external"))
+    dialog.base_url_edit.setText("http://example.com/v1")
+    dialog.model_edit.setCurrentText("vision-model")
+    dialog.auth_type_combo.setCurrentIndex(dialog.auth_type_combo.findData("bearer"))
+    dialog.api_key_edit.setText("SECRET")
+
+    dialog._on_save()
+    assert dialog.result_connection() is None
+    assert stored == []
+
+    dialog._on_save()
+    assert dialog.result_connection() is not None
+    assert stored and stored[0][1] == "SECRET"
+
+
+def test_settings_close_is_deferred_without_waiting_for_diagnostics():
+    import app_settings as A
+    from vlm_settings_dialog import VlmSettingsDialog
+
+    class Signal:
+        def __init__(self):
+            self.disconnected = False
+
+        def disconnect(self):
+            self.disconnected = True
+
+    class Worker:
+        def __init__(self):
+            self.report_ready = Signal()
+
+        def deleteLater(self):
+            pass
+
+    class Thread:
+        def __init__(self):
+            self.running = True
+            self.quit_called = False
+
+        def isRunning(self):
+            return self.running
+
+        def quit(self):
+            self.quit_called = True
+
+        def deleteLater(self):
+            pass
+
+    dialog = VlmSettingsDialog(
+        A.load_settings(A.get_default_config()), lambda sec, key, **kw: key)
+    worker = Worker()
+    thread = Thread()
+    dialog._diag_worker = worker
+    dialog._diag_thread = thread
+
+    dialog.reject()
+    assert dialog._pending_done == dialog.DialogCode.Rejected
+    assert thread.quit_called and worker.report_ready.disconnected
+
+    thread.running = False
+    dialog._diag_cleanup()
+    assert dialog._pending_done is None
+    assert dialog._diag_thread is None
 
 
 def test_custom_connection_model_list_keeps_only_vlm_models():
@@ -585,7 +669,5 @@ def test_cancel_uses_first_ordered_profile_for_missing_snapshot():
 
 
 if __name__ == "__main__":
-    tests = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
-    for t in tests:
-        t()
-    print(f"\nALL {len(tests)} VLM PHASE 3 TESTS PASSED")
+    import pytest
+    raise SystemExit(pytest.main([__file__, "-q"]))

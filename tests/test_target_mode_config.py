@@ -48,7 +48,7 @@ def test_save_load_round_trip(monkeypatch):
 
     s = A.load_settings(A.get_default_config())
     s.behavior.target_mode = "FAILED"
-    A.save_config(s)
+    assert A.save_config(s) is True
 
     written = configparser.ConfigParser()
     written.read(tmp, encoding="utf-8")

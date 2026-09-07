@@ -6,6 +6,7 @@ vlm_secrets 経由でのみ扱い、返す dict には含めない。
 from __future__ import annotations
 
 from typing import Callable
+from urllib.parse import urlparse
 
 from PySide6.QtCore import QThread, Slot
 from PySide6.QtWidgets import (
@@ -15,7 +16,7 @@ from PySide6.QtWidgets import (
 )
 
 import vlm_secrets
-from vlm_connections import ConnectionLocality, VlmConnection, resolve_custom_kind
+from vlm_connections import ConnectionKind, ConnectionLocality, VlmConnection, resolve_custom_kind
 from vlm_config import new_connection_id
 from vlm_model_list import ModelCatalogEntry, catalog_entry_from_id, filter_vlm_catalog
 from vlm_worker import VlmModelListWorker
@@ -295,6 +296,26 @@ class CustomConnectionDialog(QDialog):
         atype = self.auth_type_combo.currentData()
         secret_ref = self._existing.get("auth", {}).get("secret_ref") if isinstance(self._existing.get("auth"), dict) else ""
         secret_ref = secret_ref or (f"vlm/custom/{cid}" if atype != "none" else "")
+
+        # Do not silently send credentials and source images over cleartext to an
+        # Internet host.  This is deliberately a confirmation rather than a blanket
+        # runtime ban: advanced users may explicitly operate a trusted private proxy,
+        # and CUSTOM_LOCAL remains usable over HTTP without this prompt.
+        try:
+            scheme = urlparse(base_url).scheme.lower()
+        except ValueError:
+            scheme = ""
+        if (kind is ConnectionKind.CUSTOM_EXTERNAL and atype != "none"
+                and scheme == "http"):
+            answer = QMessageBox.warning(
+                self,
+                self._t("Vlm", "Custom_Insecure_Auth_Title"),
+                self._t("Vlm", "Custom_Insecure_Auth_Warning"),
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                return
 
         if atype != "none":
             key = self.api_key_edit.text().strip()

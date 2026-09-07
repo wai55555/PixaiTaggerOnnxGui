@@ -471,6 +471,9 @@ def test_image_preprocess():
 def test_connection_locality():
     assert C.resolve_custom_kind(C.ConnectionLocality.AUTO, "http://localhost:1234/v1") is C.ConnectionKind.CUSTOM_LOCAL
     assert C.resolve_custom_kind(C.ConnectionLocality.AUTO, "http://192.168.1.9:8000") is C.ConnectionKind.CUSTOM_LOCAL
+    assert C.resolve_custom_kind(C.ConnectionLocality.AUTO, "http://172.16.9.4:8000") is C.ConnectionKind.CUSTOM_LOCAL
+    assert C.resolve_custom_kind(C.ConnectionLocality.AUTO, "http://[fe80::1]:8000") is C.ConnectionKind.CUSTOM_LOCAL
+    assert C.resolve_custom_kind(C.ConnectionLocality.AUTO, "http://10.example.com/v1") is C.ConnectionKind.CUSTOM_EXTERNAL
     assert C.resolve_custom_kind(C.ConnectionLocality.AUTO, "https://api.openai.com/v1") is C.ConnectionKind.CUSTOM_EXTERNAL
     assert C.resolve_custom_kind(C.ConnectionLocality.AUTO, "") is C.ConnectionKind.CUSTOM_EXTERNAL  # unknown -> external
     assert C.resolve_custom_kind(C.ConnectionLocality.LOCAL, "https://api.openai.com/v1") is C.ConnectionKind.CUSTOM_LOCAL
@@ -485,6 +488,58 @@ def test_connection_locality():
     assert unset.image_max_long_edge is None
 
     print("  connection locality: OK")
+
+
+def test_captioner_manifest_controls_decoder_cache_shape():
+    import caption_core
+
+    cfg = caption_core.build_captioner_config(Path("custom-captioner"), {
+        "captioner": {
+            "decoder_layers": 8,
+            "decoder_attention_heads": 16,
+            "d_model": 1024,
+        },
+    })
+    assert cfg.decoder_layers == 8
+    assert cfg.decoder_attention_heads == 16
+    assert cfg.decoder_head_dim == 64
+
+
+def test_missing_provider_error_codes_stay_empty():
+    protocols = (
+        PROTO.OpenAIResponsesProtocol(),
+        PROTO.AnthropicMessagesProtocol(),
+        PROTO.GeminiGenerateContentProtocol(),
+    )
+    for protocol in protocols:
+        parsed = protocol.parse_response(400, {"error": {}}, "bad request")
+        assert parsed.error is not None
+        assert parsed.error.provider_code == ""
+
+
+def test_failed_undo_and_redo_remain_retryable():
+    from undo_manager import UndoManager
+
+    class FailingAction:
+        def undo(self):
+            return False
+
+        def redo(self):
+            return False
+
+        def description(self):
+            return "failing action"
+
+    action = FailingAction()
+    manager = UndoManager()
+    manager.push(action)
+    assert manager.undo() is False
+    assert manager.undo_stack == [action]
+
+    manager.undo_stack.clear()
+    manager.redo_stack.append(action)
+    assert manager.redo() is False
+    assert manager.redo_stack == [action]
 
 
 def test_verified_binding_promotion():

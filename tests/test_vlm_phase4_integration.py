@@ -2,7 +2,7 @@
 
 Verifies the "Use VLM connection" toggle and worker routing without exercising
 the full model lifecycle.
-Run:  QT_QPA_PLATFORM=offscreen python tests/test_vlm_phase4_integration.py
+Run:  rtk pytest tests/test_vlm_phase4_integration.py -q
 """
 import os
 import sys
@@ -61,6 +61,17 @@ def test_use_vlm_toggle_surfaces_ui_and_hides_tag_grid():
     assert not w.tag_grid_container.isHidden()
     w.close()
     print("  Use-VLM toggle surfaces VLM UI, hides tag grid, restores on off: OK")
+
+
+def test_vlm_toggle_saves_caption_before_mode_changes(monkeypatch):
+    w = _mw_ready(vlm_enabled=False)
+    states_seen_while_saving = []
+    monkeypatch.setattr(
+        w, "_save_current_caption",
+        lambda: states_seen_while_saving.append(w.settings.vlm.enabled))
+    w._on_use_vlm_toggled(True)
+    assert states_seen_while_saving == [False]
+    w.close()
 
 
 def test_model_combo_greyed_while_vlm_on():
@@ -129,7 +140,7 @@ def test_run_button_skips_model_download_when_vlm_enabled():
     print("  run button: VLM enabled skips the local-model download prompt: OK")
 
 
-def test_api_key_dialog_verify_and_save():
+def test_api_key_dialog_verify_and_save(monkeypatch):
     import time
     import vlm_diagnostics as D
     from vlm_diagnostics import DiagReport, DiagStatus
@@ -138,15 +149,15 @@ def test_api_key_dialog_verify_and_save():
     from api_key_dialog import ApiKeyDialog
     from vlm_connections import VlmConnection, ConnectionKind, AuthSpec
 
-    _orig = (AKD.QMessageBox.information, AKD.QMessageBox.exec, vlm_secrets.set_secret, vlm_secrets.get_secret,
-             vlm_secrets.keyring_available, D.diagnose, vlm_secrets.secret_status)
-    AKD.QMessageBox.information = staticmethod(lambda *a, **k: None)  # don't block on confirm
-    AKD.QMessageBox.exec = lambda self, *a, **k: 0  # service warning is copyable, then closes
-    vlm_secrets.secret_status = lambda ref: "missing"
+    monkeypatch.setattr(AKD.QMessageBox, "information", staticmethod(lambda *a, **k: None))
+    monkeypatch.setattr(AKD.QMessageBox, "exec", lambda self, *a, **k: 0)
+    monkeypatch.setattr(vlm_secrets, "secret_status", lambda ref: "missing")
 
     stored = {}
-    vlm_secrets.set_secret = lambda ref, val, persist: (stored.__setitem__(ref, val) or True)
-    vlm_secrets.keyring_available = lambda: True
+    monkeypatch.setattr(
+        vlm_secrets, "set_secret",
+        lambda ref, val, persist: (stored.__setitem__(ref, val) or True))
+    monkeypatch.setattr(vlm_secrets, "keyring_available", lambda: True)
     conn = VlmConnection("builtin-gemini", "Gemini API", ConnectionKind.BUILTIN,
                          "gemini_generate_content", "https://x/v1beta", "m", provider_id="gemini",
                          auth=AuthSpec(type="header_key", secret_ref="vlm/gemini/api_key",
@@ -154,7 +165,8 @@ def test_api_key_dialog_verify_and_save():
     T2 = lambda sec, key, **kw: key
 
     def _run(diag_report, key, on_confirmed=None):
-        D.diagnose = lambda c, k, do_live_request=True, **kwargs: diag_report
+        monkeypatch.setattr(
+            D, "diagnose", lambda c, k, do_live_request=True, **kwargs: diag_report)
         d = ApiKeyDialog(T2, display_name="Gemini API", secret_ref="vlm/gemini/api_key",
                          conn=conn, key_url="http://k", login_url="http://l", instructions="a\\nb",
                          on_binding_confirmed=on_confirmed)
@@ -227,13 +239,13 @@ def test_api_key_dialog_verify_and_save():
 
     # a key already registered -> the dialog says so (value stays hidden), no more empty-looking field
     tr = lambda sec, key, **kw: key   # returns the locale key name so we can assert on it
-    vlm_secrets.secret_status = lambda ref: "keyring"
+    monkeypatch.setattr(vlm_secrets, "secret_status", lambda ref: "keyring")
     d4 = ApiKeyDialog(tr, display_name="Gemini API", secret_ref="vlm/gemini/api_key",
                       conn=conn, key_url="http://k", login_url="http://l", instructions="x")
     assert d4.current_label.text() == "ApiKey_Current_Registered"
     assert d4.key_edit.text() == "" and d4.key_edit.placeholderText() == "ApiKey_Paste_Placeholder_Update"
     d4.close()
-    vlm_secrets.secret_status = lambda ref: "missing"
+    monkeypatch.setattr(vlm_secrets, "secret_status", lambda ref: "missing")
     d5 = ApiKeyDialog(tr, display_name="Gemini API", secret_ref="vlm/gemini/api_key",
                       conn=conn, key_url="http://k", login_url="http://l", instructions="x")
     assert d5.current_label.text() == "ApiKey_Current_None"
@@ -251,7 +263,7 @@ def test_api_key_dialog_verify_and_save():
         "@cf/google/gemma-4-26b-a4b-it", provider_id="cloudflare",
         auth=AuthSpec(type="bearer", secret_ref="vlm/cloudflare/api_token"),
     )
-    vlm_secrets.secret_status = lambda ref: "missing"
+    monkeypatch.setattr(vlm_secrets, "secret_status", lambda ref: "missing")
     cf_ids = []
     d6 = ApiKeyDialog(
         tr, display_name="Cloudflare Workers AI", secret_ref="vlm/cloudflare/api_token",
@@ -271,7 +283,9 @@ def test_api_key_dialog_verify_and_save():
     token_only.add("HTTP response", DiagStatus.PASS, "token valid and active")
     token_only.add("Caption extraction", DiagStatus.SKIP, "token verify only")
     token_only.http_status = 200
-    D.diagnose = lambda c, k, do_live_request=True, **kwargs: token_only
+    monkeypatch.setattr(
+        D, "diagnose",
+        lambda c, k, do_live_request=True, **kwargs: token_only)
     account_id = "0123456789abcdef0123456789abcdef"
     d6.account_id_edit.setText(account_id)
     d6._check_and_save()
@@ -287,7 +301,9 @@ def test_api_key_dialog_verify_and_save():
     # remain visible instead of collapsing to the generic Cloudflare failure message.
     cf_offline = DiagReport("builtin-cloudflare")
     cf_offline.add("DNS / TCP", DiagStatus.FAIL, "cannot resolve api.cloudflare.com")
-    D.diagnose = lambda c, k, do_live_request=True, **kwargs: cf_offline
+    monkeypatch.setattr(
+        D, "diagnose",
+        lambda c, k, do_live_request=True, **kwargs: cf_offline)
     d6._check_and_save()
     for _ in range(300):
         _APP.processEvents()
@@ -302,7 +318,10 @@ def test_api_key_dialog_verify_and_save():
     cf_good.add("Caption extraction", DiagStatus.PASS, "got text")
     cf_good.http_status = 200
     checked_urls = []
-    D.diagnose = lambda c, k, do_live_request=True, **kwargs: (checked_urls.append(c.base_url) or cf_good)
+    monkeypatch.setattr(
+        D, "diagnose",
+        lambda c, k, do_live_request=True, **kwargs: (
+            checked_urls.append(c.base_url) or cf_good))
     d6.account_id_edit.setText(account_id)
     d6._check_and_save()
     for _ in range(300):
@@ -317,8 +336,8 @@ def test_api_key_dialog_verify_and_save():
     # A registered token can validate a newly entered Account ID without being pasted again.
     stored.clear()
     cf_ids.clear()
-    vlm_secrets.secret_status = lambda ref: "keyring"
-    vlm_secrets.get_secret = lambda ref: "EXISTING_CF_KEY"
+    monkeypatch.setattr(vlm_secrets, "secret_status", lambda ref: "keyring")
+    monkeypatch.setattr(vlm_secrets, "get_secret", lambda ref: "EXISTING_CF_KEY")
     d7 = ApiKeyDialog(
         tr, display_name="Cloudflare Workers AI", secret_ref="vlm/cloudflare/api_token",
         conn=cf, key_url="http://k", login_url="http://l", instructions="x",
@@ -361,7 +380,9 @@ def test_api_key_dialog_verify_and_save():
         "HTTP response", DiagStatus.FAIL,
         "400 model / request rejected: anthropic-workspace-id is required")
     workspace_required.http_status = 400
-    D.diagnose = lambda c, k, do_live_request=True, **kwargs: workspace_required
+    monkeypatch.setattr(
+        D, "diagnose",
+        lambda c, k, do_live_request=True, **kwargs: workspace_required)
     da.workspace_id_edit.setText("")
     da._check_and_save()
     for _ in range(300):
@@ -377,8 +398,10 @@ def test_api_key_dialog_verify_and_save():
     anthropic_good.add("Caption extraction", DiagStatus.PASS, "got text")
     anthropic_good.http_status = 200
     checked_headers = []
-    D.diagnose = lambda c, k, do_live_request=True, **kwargs: (
-        checked_headers.append(dict(c.request_headers)) or anthropic_good)
+    monkeypatch.setattr(
+        D, "diagnose",
+        lambda c, k, do_live_request=True, **kwargs: (
+            checked_headers.append(dict(c.request_headers)) or anthropic_good))
     da.workspace_id_edit.setText("wrkspc_01Test123")
     da._check_and_save()
     for _ in range(300):
@@ -391,14 +414,17 @@ def test_api_key_dialog_verify_and_save():
 
     stored.clear()
     workspace_ids.clear()
-    vlm_secrets.secret_status = lambda ref: "keyring"
-    vlm_secrets.get_secret = lambda ref: "EXISTING_ANTHROPIC_KEY"
+    monkeypatch.setattr(vlm_secrets, "secret_status", lambda ref: "keyring")
+    monkeypatch.setattr(
+        vlm_secrets, "get_secret", lambda ref: "EXISTING_ANTHROPIC_KEY")
     da2 = ApiKeyDialog(
         tr, display_name="Anthropic Claude", secret_ref="vlm/anthropic/api_key",
         conn=anthropic, key_url="http://k", login_url="http://l", instructions="x",
         on_anthropic_workspace_saved=workspace_ids.append,
     )
-    D.diagnose = lambda c, k, do_live_request=True, **kwargs: anthropic_good
+    monkeypatch.setattr(
+        D, "diagnose",
+        lambda c, k, do_live_request=True, **kwargs: anthropic_good)
     da2.workspace_id_edit.setText("wrkspc_Existing123")
     da2._check_and_save()
     for _ in range(300):
@@ -409,9 +435,65 @@ def test_api_key_dialog_verify_and_save():
     assert da2.saved() is True and workspace_ids == ["wrkspc_Existing123"]
     assert stored == {}, "workspace-only update must not copy an existing key"
 
-    (AKD.QMessageBox.information, AKD.QMessageBox.exec, vlm_secrets.set_secret, vlm_secrets.get_secret,
-     vlm_secrets.keyring_available, D.diagnose, vlm_secrets.secret_status) = _orig
     print("  ApiKeyDialog: generic key checks + Cloudflare Account ID/full request: OK")
+
+
+def test_api_key_dialog_close_is_deferred_without_blocking(monkeypatch):
+    import vlm_secrets
+    from api_key_dialog import ApiKeyDialog
+    from vlm_connections import AuthSpec, ConnectionKind, VlmConnection
+
+    monkeypatch.setattr(vlm_secrets, "secret_status", lambda ref: "missing")
+    conn = VlmConnection(
+        "test", "Test", ConnectionKind.BUILTIN, "openai_chat_completions",
+        "https://example.com/v1", "vision-model",
+        auth=AuthSpec(type="bearer", secret_ref="vlm/test/key"))
+    dialog = ApiKeyDialog(
+        lambda sec, key, **kw: key, display_name="Test",
+        secret_ref="vlm/test/key", conn=conn, key_url="", login_url="",
+        instructions="")
+
+    class Signal:
+        def __init__(self):
+            self.disconnected = False
+
+        def disconnect(self):
+            self.disconnected = True
+
+    class Worker:
+        def __init__(self):
+            self.report_ready = Signal()
+
+        def deleteLater(self):
+            pass
+
+    class Thread:
+        def __init__(self):
+            self.running = True
+            self.quit_called = False
+
+        def isRunning(self):
+            return self.running
+
+        def quit(self):
+            self.quit_called = True
+
+        def deleteLater(self):
+            pass
+
+    worker = Worker()
+    thread = Thread()
+    dialog._check_worker = worker
+    dialog._check_thread = thread
+
+    dialog.reject()
+    assert dialog._pending_done_result == dialog.DialogCode.Rejected
+    assert thread.quit_called and worker.report_ready.disconnected
+
+    thread.running = False
+    dialog._on_check_thread_done()
+    assert dialog._pending_done_result is None
+    assert dialog._check_thread is None
 
 
 def test_dotenv_loading():
@@ -454,8 +536,8 @@ def test_dotenv_loading():
             _bak = str(_p) + ".wave3t6bak"
             shutil.move(str(_p), _bak)
             _moved.append((str(_p), _bak))
-    # phase2/phase3 leave a module-global `get_secret = lambda ref: "FAKEKEY"`
-    # with no restore; reload recovers the genuine three-tier implementation.
+    # reload exercises startup loading itself; preserve the function object because
+    # importlib.reload mutates the shared module outside pytest's fixture machinery.
     saved_get_secret = vlm_secrets.get_secret
     os.chdir(d)
     try:
@@ -495,6 +577,18 @@ def test_dotenv_loading():
     print("  .env loading: enabled provider aliases, quotes/export handled, preset wins: OK")
 
 
+def test_env_example_documents_supported_provider_aliases():
+    import vlm_secrets
+
+    text = (Path(__file__).resolve().parent.parent / ".env.example").read_text(
+        encoding="utf-8")
+    for names in vlm_secrets._ENV_ALIASES.values():
+        for name in names:
+            assert f"{name}=" in text
+    assert "ANTHROPIC_WORKSPACE_ID=" in text
+    assert "# MISTRAL_API_KEY=" in text
+
+
 def test_lang_files_parse_and_expose_vlm_keys():
     """Multi-line ini values (no indent) make configparser reject the whole file,
     so every string silently falls back to the raw key. Guard against that."""
@@ -505,7 +599,8 @@ def test_lang_files_parse_and_expose_vlm_keys():
             "ApiKey_Steps_Anthropic", "ApiKey_Cf_Account_Invalid",
             "ApiKey_Anthropic_Workspace", "ApiKey_Anthropic_Workspace_Invalid",
             "ApiKey_Current_Registered_Anthropic", "ApiKey_Copy_Details",
-            "ApiKey_Service_Warning",
+            "ApiKey_Service_Warning", "Custom_Insecure_Auth_Title",
+            "Custom_Insecure_Auth_Warning",
             "Opt_Detail_maximum_detail", "Opt_Sentence_5", "Opt_CharName_explicit_only",
             "Opt_Markdown_disabled", "Settings_Language_Fixed_Tooltip"]
     for name in ("lang/en.ini", "lang/ja.ini"):
@@ -564,7 +659,5 @@ def test_batch_completed_builds_undo_for_vlm_changes():
 
 
 if __name__ == "__main__":
-    tests = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
-    for t in tests:
-        t()
-    print(f"\nALL {len(tests)} VLM PHASE 4 INTEGRATION TESTS PASSED")
+    import pytest
+    raise SystemExit(pytest.main([__file__, "-q"]))

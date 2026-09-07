@@ -239,7 +239,7 @@ class OpenAIResponsesProtocol(VlmProtocol):
 
     def parse_response(self, status: int, body: Any, text_body: str) -> VlmParseResult:
         if status != 200 or not isinstance(body, dict):
-            code = str(extract_by_path(body, "error.code") if isinstance(body, dict) else "")
+            code = str((extract_by_path(body, "error.code") if isinstance(body, dict) else "") or "")
             err = self._error_from_status(status or 0, text_body, code)
             if code in ("content_filter", "content_policy"):
                 err = VlmAttemptError(VlmErrorReason.CONTENT_POLICY, status or None, err.message, code)
@@ -294,7 +294,7 @@ class AnthropicMessagesProtocol(VlmProtocol):
 
     def parse_response(self, status: int, body: Any, text_body: str) -> VlmParseResult:
         if status != 200 or not isinstance(body, dict):
-            code = str(extract_by_path(body, "error.type") if isinstance(body, dict) else "")
+            code = str((extract_by_path(body, "error.type") if isinstance(body, dict) else "") or "")
             return VlmParseResult(error=self._error_from_status(status or 0, text_body, code))
         text = _anthropic_text(body, self.default_text_path)
         finish = str(body.get("stop_reason") or "")
@@ -344,7 +344,7 @@ class GeminiGenerateContentProtocol(VlmProtocol):
 
     def parse_response(self, status: int, body: Any, text_body: str) -> VlmParseResult:
         if status != 200 or not isinstance(body, dict):
-            code = str(extract_by_path(body, "error.status") if isinstance(body, dict) else "")
+            code = str((extract_by_path(body, "error.status") if isinstance(body, dict) else "") or "")
             return VlmParseResult(error=self._error_from_status(status or 0, text_body, code))
 
         block_reason = str(extract_by_path(body, "promptFeedback.blockReason") or "")

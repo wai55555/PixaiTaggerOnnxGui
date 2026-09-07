@@ -565,6 +565,10 @@ class MainWindow(QMainWindow):
         checked = bool(checked)
         if checked == self.settings.vlm.enabled:
             return
+        # Save while the OLD output mode is still active.  Disabling VLM first can make
+        # _save_current_caption() decide that this is a tagger view and silently discard
+        # an edit still waiting in the debounce timer.
+        self._save_current_caption()
         self.settings.vlm.enabled = checked
         self.save_current_config()
         write_debug_log(f"use_vlm -> {checked}")

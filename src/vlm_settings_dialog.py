@@ -142,7 +142,7 @@ class VlmSettingsDialog(QDialog):
         self._diag_thread: QThread | None = None
         self._diag_worker: VlmDiagnosticsWorker | None = None
         self._diag_pending_profile_id: str | None = None
-        self._ml_pending_done: int | None = None
+        self._pending_done: int | None = None
         self.setWindowTitle(get_string("Vlm", "Settings_Title"))
         self.setMinimumWidth(520)
         self._build()
@@ -567,12 +567,7 @@ class VlmSettingsDialog(QDialog):
             self._ml_thread = None
         for rr in self._route_rows.values():
             rr["list_btn"].setEnabled(True)
-        if self._ml_pending_done is not None:
-            result = self._ml_pending_done
-            self._ml_pending_done = None
-            if result != QDialog.DialogCode.Accepted and not self._dialog_saved:
-                self._restore_unsaved_vlm()
-            QDialog.done(self, result)
+        self._finish_pending_done_if_ready()
 
     def _relayout_routes(self) -> None:
         # グリッドから全セルを外す（ウィジェットは消さない）。順序を _route_order の
@@ -848,44 +843,57 @@ class VlmSettingsDialog(QDialog):
         for r in self._route_rows.values():
             r["diag_btn"].setEnabled(enabled)
 
-    def _await_diag_thread(self) -> None:
-        # 診断スレッド実行中にダイアログが閉じられたら、スレッド破棄前に終了を待つ
-        # （QThread: Destroyed while thread is still running を防ぐ）。診断のタイムアウトは
-        # 短く固定してあるので待ち時間は限定的。
-        th = getattr(self, "_diag_thread", None)
-        if th is not None and th.isRunning():
+    def _has_running_background_work(self) -> bool:
+        return any(
+            thread is not None and thread.isRunning()
+            for thread in (getattr(self, "_diag_thread", None),
+                           getattr(self, "_ml_thread", None))
+        )
+
+    def _defer_done_until_background_finishes(self, result: int) -> bool:
+        """Disconnect UI results and close only after every worker thread exits."""
+        if not self._has_running_background_work():
+            return False
+        if self._pending_done is None:
+            self._pending_done = result
+        diag_thread = getattr(self, "_diag_thread", None)
+        if diag_thread is not None and diag_thread.isRunning():
             try:
                 self._diag_worker.report_ready.disconnect()
-            except (RuntimeError, TypeError):
+            except (RuntimeError, TypeError, AttributeError):
                 pass
-            th.quit()
-            th.wait(45000)   # 診断の最大 connect(10s)+read(30s) を上回る値
-
-    def done(self, r: int) -> None:
-        # accept() / reject() 双方の通り道。Close ボタンも X も window X もここを通る。
-        self._await_diag_thread()
+            diag_thread.quit()
         ml_thread = getattr(self, "_ml_thread", None)
         if ml_thread is not None and ml_thread.isRunning():
-            # モデル一覧取得中に GUI スレッドを最大30秒ブロックしない。結果は画面へ
-            # 反映せず、スレッド終了後に _ml_cleanup が閉じる。
-            self._ml_pending_done = r
             try:
                 self._ml_worker.result_ready.disconnect()
             except (RuntimeError, TypeError, AttributeError):
                 pass
             ml_thread.quit()
-            self.setEnabled(False)
+        self.setEnabled(False)
+        return True
+
+    def _finish_pending_done_if_ready(self) -> None:
+        if self._pending_done is None or self._has_running_background_work():
+            return
+        result = self._pending_done
+        self._pending_done = None
+        if result != QDialog.DialogCode.Accepted and not self._dialog_saved:
+            self._restore_unsaved_vlm()
+        QDialog.done(self, result)
+
+    def done(self, r: int) -> None:
+        # accept() / reject() 双方の通り道。Close ボタンも X も window X もここを通る。
+        if self._defer_done_until_background_finishes(r):
             return
         if r != QDialog.DialogCode.Accepted and not self._dialog_saved:
             self._restore_unsaved_vlm()
-        super().done(r)
+        QDialog.done(self, r)
 
     def closeEvent(self, event) -> None:
-        if getattr(self, "_ml_thread", None) is not None and self._ml_thread.isRunning():
-            self.done(QDialog.DialogCode.Rejected)
+        if self._defer_done_until_background_finishes(QDialog.DialogCode.Rejected):
             event.ignore()
             return
-        self._await_diag_thread()
         if not self._dialog_saved:
             self._restore_unsaved_vlm()
         super().closeEvent(event)
@@ -900,6 +908,7 @@ class VlmSettingsDialog(QDialog):
         self._diag_pending_conn = None
         self._diag_pending_profile_id = None
         self._set_diag_buttons_enabled(True)
+        self._finish_pending_done_if_ready()
 
     def _show_diag_report(self, conn, report) -> None:
         lines = [f"[{i.status.value}] {i.name}: {i.detail}" for i in report.items]

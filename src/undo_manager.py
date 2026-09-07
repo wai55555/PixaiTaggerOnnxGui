@@ -584,7 +584,10 @@ class UndoManager:
             write_debug_log(f"Undo successful (redo_stack size: {len(self.redo_stack)})")
             return True
         else:
-            write_debug_log("Undo failed, action not added to redo stack")
+            # A transient file-system failure must not consume the only record of the
+            # action.  Keep it at the top so the user can fix the cause and retry.
+            self.undo_stack.append(action)
+            write_debug_log("Undo failed, action restored to undo stack")
             return False
     
     def redo(self) -> bool:
@@ -606,7 +609,8 @@ class UndoManager:
             write_debug_log(f"Redo successful (undo_stack size: {len(self.undo_stack)})")
             return True
         else:
-            write_debug_log("Redo failed, action not added to undo stack")
+            self.redo_stack.append(action)
+            write_debug_log("Redo failed, action restored to redo stack")
             return False
     
     def get_undo_description(self) -> str:

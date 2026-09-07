@@ -1,6 +1,6 @@
 """VLM Phase 2 tests: executor retry/failover/exclude, diagnostics static, worker with mock.
 
-Offline only. Run:  python tests/test_vlm_phase2.py
+Offline only. Run:  rtk pytest tests/test_vlm_phase2.py -q
 """
 import sys
 import types
@@ -655,14 +655,14 @@ def test_model_list_fetch():
     print("  model list fetch: IDs + capability metadata, Gemini/Cloudflare filters, auth: OK")
 
 
-def test_worker_batch_with_mock(tmp=None):
-    import os, tempfile
+def test_worker_batch_with_mock(tmp_path, monkeypatch):
+    import os
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     from PySide6.QtCore import QCoreApplication
     from PIL import Image
     app = QCoreApplication.instance() or QCoreApplication([])
 
-    d = Path(tempfile.mkdtemp())
+    d = tmp_path
     for i in range(3):
         Image.new("RGB", (8, 8)).save(d / f"i{i}.png")
     (d / "i1.txt").write_text("1girl, solo", encoding="utf-8")
@@ -678,13 +678,15 @@ def test_worker_batch_with_mock(tmp=None):
     import vlm_models as M, dataclasses, vlm_secrets, vlm_config
     verified = {pid: dataclasses.replace(b, identity_status=M.ModelIdentityStatus.VERIFIED, provider_constraint=None)
                for pid, b in M.GEMMA_4_26B_A4B_IT.bindings.items()}
-    M.GEMMA_4_26B_A4B_IT.__dict__  # frozen; patch registry instead
-    orig_reg = vlm_config.default_registry
-    vlm_config.resolve_model_profile = lambda v: dataclasses.replace(M.GEMMA_4_26B_A4B_IT, bindings=verified)
-    vlm_secrets.get_secret = lambda ref: "FAKEKEY"
+    monkeypatch.setattr(
+        vlm_config, "resolve_model_profile",
+        lambda v: dataclasses.replace(M.GEMMA_4_26B_A4B_IT, bindings=verified))
+    monkeypatch.setattr(vlm_secrets, "get_secret", lambda ref: "FAKEKEY")
 
-    old = T.execute_http
-    T.execute_http = lambda req, **kw: RawHttpResponse(200, {}, _ok_body("a detailed natural language description of the scene"), "")
+    monkeypatch.setattr(
+        T, "execute_http",
+        lambda req, **kw: RawHttpResponse(
+            200, {}, _ok_body("a detailed natural language description of the scene"), ""))
 
     from vlm_worker import VlmCaptionWorker
     logs = []
@@ -694,10 +696,7 @@ def test_worker_batch_with_mock(tmp=None):
     w.log_message.connect(lambda m, c: logs.append((m, c)))
     w.progress_update.connect(lambda a, b: prog.append((a, b)))
     w.batch_completed.connect(lambda lst: batch.__setitem__("v", lst))
-    try:
-        w.run_captioning()
-    finally:
-        T.execute_http = old
+    w.run_captioning()
 
     txt0 = (d / "i0.txt").read_text(encoding="utf-8")
     txt1 = (d / "i1.txt").read_text(encoding="utf-8")
@@ -709,7 +708,5 @@ def test_worker_batch_with_mock(tmp=None):
 
 
 if __name__ == "__main__":
-    tests = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
-    for t in tests:
-        t()
-    print(f"\nALL {len(tests)} VLM PHASE 2 TESTS PASSED")
+    import pytest
+    raise SystemExit(pytest.main([__file__, "-q"]))

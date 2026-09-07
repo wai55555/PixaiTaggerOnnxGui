@@ -816,15 +816,23 @@ def process_image_loop(
             failed_seen.add(path)
             failed_paths.append(path)
 
+    def mark_remaining_failed(start: int) -> None:
+        """Record unprocessed work without labelling SKIP outputs as failures."""
+        if failed_paths is None:
+            return
+        for pending in image_paths[start:]:
+            if (mode is ExistingFileMode.SKIP
+                    and pending.with_suffix(".txt").is_file()):
+                continue
+            mark_failed(pending)
+
     for i, image_path in enumerate(image_paths):
         if progress_cb and ((i + 1) % progress_step == 0 or i == total - 1):
             progress_cb(i + 1, total)
         if stop_checker and stop_checker():
             core_log_gui(_get_string_internal("TaggerCore", "Tagging_Process_Aborted_By_User"), "red")
             log_dbg(_get_string_internal("TaggerCore", "Tagging_Process_Aborted_By_User_Debug"))
-            if failed_paths is not None:
-                for pending in image_paths[i:]:
-                    mark_failed(pending)
+            mark_remaining_failed(i)
             break
 
         # First, check if the output file exists and should be skipped.
@@ -847,9 +855,7 @@ def process_image_loop(
                     continue
                 if stop_checker and stop_checker():
                     # ここで停止要求が来ていたら resolver（GUI 往復しうる）を呼ばずに抜ける
-                    if failed_paths is not None:
-                        for pending in image_paths[i:]:
-                            mark_failed(pending)
+                    mark_remaining_failed(i)
                     break
                 decision = decision_resolver(output_path)
                 if decision is OverwriteDecision.SKIP:

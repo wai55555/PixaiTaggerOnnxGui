@@ -47,6 +47,7 @@ class ApiKeyDialog(QDialog):
         self._on_binding_confirmed = on_binding_confirmed
         self._saved = False
         self._cancel_requested = False
+        self._pending_done_result: int | None = None
         self._check_thread: QThread | None = None
         self._check_worker: VlmDiagnosticsWorker | None = None
         self.setWindowTitle(get_string("Vlm", "ApiKey_Title", service=display_name))
@@ -278,6 +279,10 @@ class ApiKeyDialog(QDialog):
             self._check_thread = None
         if self._cancel_requested:
             self._set_busy(False)
+            result = self._pending_done_result
+            self._pending_done_result = None
+            if result is not None:
+                QDialog.done(self, result)
             return
         failed = getattr(self, "_verify_failed", self._t("Vlm", "ApiKey_Failed_Generic"))
         if failed:
@@ -350,25 +355,29 @@ class ApiKeyDialog(QDialog):
     def saved(self) -> bool:
         return self._saved
 
-    # --- lifecycle: 検証スレッド実行中に閉じられたら待つ ---
-    def _await_check(self) -> None:
+    # --- lifecycle: 検証中の close は GUI を止めず、終了後に完了させる ---
+    def _defer_done_until_check_finishes(self, result: int) -> bool:
         th = getattr(self, "_check_thread", None)
-        if th is not None and th.isRunning():
-            try:
-                self._check_worker.report_ready.disconnect()
-            except (RuntimeError, TypeError):
-                pass
-            th.quit()
-            th.wait(45000)   # 診断の最大 connect(10s)+read(30s) を上回る値
+        if th is None or not th.isRunning():
+            return False
+        self._cancel_requested = True
+        if self._pending_done_result is None:
+            self._pending_done_result = result
+        try:
+            self._check_worker.report_ready.disconnect()
+        except (RuntimeError, TypeError, AttributeError):
+            pass
+        th.quit()
+        self.setEnabled(False)
+        return True
 
     def done(self, r: int) -> None:
-        if r != QDialog.DialogCode.Accepted and self._check_thread is not None:
-            self._cancel_requested = True
-        self._await_check()
-        super().done(r)
+        if r != QDialog.DialogCode.Accepted and self._defer_done_until_check_finishes(r):
+            return
+        QDialog.done(self, r)
 
     def closeEvent(self, event) -> None:
-        if self._check_thread is not None:
-            self._cancel_requested = True
-        self._await_check()
+        if self._defer_done_until_check_finishes(QDialog.DialogCode.Rejected):
+            event.ignore()
+            return
         super().closeEvent(event)

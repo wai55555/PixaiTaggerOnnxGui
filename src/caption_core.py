@@ -36,14 +36,6 @@ else:
 
 _get_string: GetString = lambda section, key, **kwargs: str(key)
 
-# Florence-2-base architecture constants (design.md 8.2節, confirmed against the real
-# decoder_model_merged_quantized.onnx graph: 6 decoder layers, 12 attention heads,
-# 64-dim heads -> 768 hidden size).
-NUM_DECODER_LAYERS = 6
-NUM_ATTENTION_HEADS = 12
-HEAD_DIM = 64
-
-
 @dataclass(frozen=True)
 class CaptionerConfig:
     model_dir: Path
@@ -56,6 +48,11 @@ class CaptionerConfig:
     pad_token_id: int = 1
     decoder_start_token_id: int = 2
     max_new_tokens: int = 200
+    # Florence-2-base defaults. Custom captioner manifests can override these for
+    # decoder graphs with a different KV-cache layout.
+    decoder_layers: int = 6
+    decoder_attention_heads: int = 12
+    decoder_head_dim: int = 64
     tasks: dict[str, str] = field(default_factory=dict)
     default_task: str = "MORE_DETAILED_CAPTION"
 
@@ -63,6 +60,20 @@ class CaptionerConfig:
 def build_captioner_config(model_dir: Path, model_config: dict[str, Any]) -> CaptionerConfig:
     cap = model_config.get("captioner") if isinstance(model_config.get("captioner"), dict) else {}
     d = CaptionerConfig(model_dir=model_dir)
+    decoder_layers = int(cap.get("decoder_layers", d.decoder_layers))
+    attention_heads = int(cap.get("decoder_attention_heads", d.decoder_attention_heads))
+    if decoder_layers <= 0 or attention_heads <= 0:
+        raise ValueError("captioner decoder_layers and decoder_attention_heads must be positive")
+    configured_head_dim = cap.get("decoder_head_dim")
+    if configured_head_dim is None and cap.get("d_model") is not None:
+        hidden_size = int(cap["d_model"])
+        if hidden_size <= 0 or hidden_size % attention_heads:
+            raise ValueError("captioner d_model must be positive and divisible by decoder_attention_heads")
+        configured_head_dim = hidden_size // attention_heads
+    head_dim = int(configured_head_dim if configured_head_dim is not None
+                   else d.decoder_head_dim)
+    if head_dim <= 0:
+        raise ValueError("captioner decoder_head_dim must be positive")
     return CaptionerConfig(
         model_dir=model_dir,
         image_size=cap.get("image_size", d.image_size),
@@ -74,6 +85,9 @@ def build_captioner_config(model_dir: Path, model_config: dict[str, Any]) -> Cap
         pad_token_id=cap.get("pad_token_id", d.pad_token_id),
         decoder_start_token_id=cap.get("decoder_start_token_id", d.decoder_start_token_id),
         max_new_tokens=cap.get("max_new_tokens", d.max_new_tokens),
+        decoder_layers=decoder_layers,
+        decoder_attention_heads=attention_heads,
+        decoder_head_dim=head_dim,
         tasks=cap.get("tasks", {}) or d.tasks,
         default_task=cap.get("default_task", d.default_task),
     )
@@ -164,8 +178,9 @@ class Florence2Captioner:
         # required by the graph even though unused on this branch, so feed zero-length
         # placeholders for all of them.
         past_kv: dict[str, "NDArray[np.float32]"] = {}
-        empty = np.zeros((batch_size, NUM_ATTENTION_HEADS, 0, HEAD_DIM), dtype=np.float32)
-        for i in range(NUM_DECODER_LAYERS):
+        empty = np.zeros((batch_size, self.config.decoder_attention_heads, 0,
+                          self.config.decoder_head_dim), dtype=np.float32)
+        for i in range(self.config.decoder_layers):
             past_kv[f"past_key_values.{i}.decoder.key"] = empty
             past_kv[f"past_key_values.{i}.decoder.value"] = empty
             past_kv[f"past_key_values.{i}.encoder.key"] = empty
@@ -198,7 +213,7 @@ class Florence2Captioner:
             generated.append(next_token)
 
             new_past_kv: dict[str, "NDArray[np.float32]"] = {}
-            for i in range(NUM_DECODER_LAYERS):
+            for i in range(self.config.decoder_layers):
                 new_past_kv[f"past_key_values.{i}.decoder.key"] = output_map[f"present.{i}.decoder.key"]
                 new_past_kv[f"past_key_values.{i}.decoder.value"] = output_map[f"present.{i}.decoder.value"]
                 if step == 0:
@@ -273,6 +288,7 @@ def process_caption_loop(
     stop_checker: Callable[[], bool] | None,
     get_string: GetString | None,
     progress_cb: Callable[[int, int], None] | None = None,
+    failed_paths: list[Path] | None = None,
 ) -> list[FileChange]:
     """Captioner counterpart of tagging_core.process_image_loop.
 
@@ -303,16 +319,32 @@ def process_caption_loop(
     n_skipped = 0
     n_errors = 0
     n_unchanged = 0
+    failed_seen = set(failed_paths or ())
     # progress_cb もクロススレッド signal なので毎画像発行を避け、全体で ~200 回に間引く
     # （PR#16 レビュー指摘）。最後の1枚は必ず発行して N/N に到達させる。
     # 天井除算: total//200 だと 201〜399 枚で step=1 になり間引きが効かない。
     progress_step = max(1, (total + 199) // 200)
+
+    def mark_failed(path: Path) -> None:
+        if failed_paths is not None and path not in failed_seen:
+            failed_seen.add(path)
+            failed_paths.append(path)
+
+    def mark_remaining_failed(start: int) -> None:
+        if failed_paths is None:
+            return
+        for pending in image_paths[start:]:
+            if (mode is ExistingFileMode.SKIP
+                    and pending.with_suffix(".txt").is_file()):
+                continue
+            mark_failed(pending)
 
     for i, image_path in enumerate(image_paths):
         if progress_cb and ((i + 1) % progress_step == 0 or i == total - 1):
             progress_cb(i + 1, total)
         if stop_checker and stop_checker():
             core_log_gui(_get_string_internal("TaggerCore", "Tagging_Process_Aborted_By_User"), "red")
+            mark_remaining_failed(i)
             break
 
         base_name, _ = os.path.splitext(str(image_path))
@@ -331,6 +363,7 @@ def process_caption_loop(
                     log_dbg("process_caption_loop: ASK モードだが decision_resolver が未設定のためスキップします")
                     continue
                 if stop_checker and stop_checker():
+                    mark_remaining_failed(i)
                     break
                 if decision_resolver(output_path) is OverwriteDecision.SKIP:
                     n_skipped += 1
@@ -345,6 +378,7 @@ def process_caption_loop(
                 image = Image.open(f).convert("RGB")
         except Exception as e:
             n_errors += 1
+            mark_failed(image_path)
             log_dbg(f"Caption image load failed for {relative_path}: {type(e).__name__}: {e}")
             core_log_gui(_get_string_internal("TaggerCore", "Image_Load_Failed_Short", current_index_str=current_index_str, relative_path_name=relative_path.name), "red")
             continue
@@ -353,6 +387,7 @@ def process_caption_loop(
             caption, cancelled = captioner.generate(image, task_prompt, stop_checker)
         except Exception as e:
             n_errors += 1
+            mark_failed(image_path)
             log_dbg(f"Caption generation failed for {relative_path}: {type(e).__name__}: {e}")
             core_log_gui(_get_string_internal("TaggerCore", "Tag_Inference_Failed_Short", current_index_str=current_index_str, relative_path_name=relative_path.name), "red")
             continue
@@ -363,6 +398,7 @@ def process_caption_loop(
             # leave the loop - the outer stop check would end it on the next pass anyway.
             log_dbg(f"Caption generation cancelled for {relative_path}; not writing a partial caption.")
             core_log_gui(_get_string_internal("TaggerCore", "Caption_Cancelled_Short", current_index_str=current_index_str, relative_path_name=relative_path.name), "orange")
+            mark_remaining_failed(i)
             break
 
         if not caption.strip():
@@ -371,6 +407,7 @@ def process_caption_loop(
             # 潰してしまう。新規側でも中身のない .txt を作って「生成済み」に見せてしまう。
             # 失敗扱いにして触らない（PR#16 レビュー指摘: coderabbit）。
             n_errors += 1
+            mark_failed(image_path)
             log_dbg(f"Caption generation returned empty text for {relative_path}; leaving the file untouched.")
             core_log_gui(_get_string_internal("TaggerCore", "Caption_Empty_Short", current_index_str=current_index_str, relative_path_name=relative_path.name), "orange")
             continue
@@ -385,6 +422,7 @@ def process_caption_loop(
                 # 原本を破壊する（PR#16 レビュー指摘）。OVERWRITE でも同じ undo 経由の
                 # 破壊が起きるので placement を問わず触らずスキップする。
                 n_errors += 1
+                mark_failed(image_path)
                 log_dbg(f"caption: 既存ファイルの読み込みに失敗したためスキップします {output_path.name}: {type(e).__name__}: {e}")
                 core_log_gui(_get_string_internal("TaggerCore", "Save_Failed_Short", current_index_str=current_index_str, output_path_name=output_path.name), "red")
                 continue
@@ -408,6 +446,7 @@ def process_caption_loop(
             log_dbg(_get_string_internal("TaggerCore", "Tag_Output_Success", current_index_str=current_index_str, output_path_name=output_path.name))
         except Exception as e:
             n_errors += 1
+            mark_failed(image_path)
             log_dbg(f"Caption save failed for {output_path.name}: {type(e).__name__}: {e}")
             core_log_gui(_get_string_internal("TaggerCore", "Save_Failed_Short", current_index_str=current_index_str, output_path_name=output_path.name), "red")
 

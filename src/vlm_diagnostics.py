@@ -16,7 +16,7 @@ from urllib.parse import urlparse
 
 from PIL import Image
 
-from vlm_connections import VlmConnection
+from vlm_connections import VlmConnection, is_local_host
 from vlm_errors import VlmErrorReason
 from vlm_image import ImagePreprocessConfig, prepare_image
 from vlm_profiles import GenerationProfile, build_system_prompt, build_user_prompt
@@ -538,5 +538,5 @@ def _classify_extraction(raw: RawHttpResponse, protocol, configured_path: str = 
 
 
 def _looks_localish(host: str) -> bool:
-    h = host.lower()
-    return h in ("localhost", "127.0.0.1", "::1") or h.startswith("192.168.") or h.startswith("10.") or h.endswith(".local")
+    """Compatibility wrapper for diagnostics and its existing tests."""
+    return is_local_host(host)
