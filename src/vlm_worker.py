@@ -221,7 +221,10 @@ class VlmCaptionWorker(QObject):
                 return
             result = rt["executor"].caption_one(spec_base, rt["candidates"].connection_ids)
             self._emit_attempt_summary(image_path.name, result)
-            if self.is_stopped() or result.stopped:
+            # _emit_attempt_summary already reports executor-observed cancellation.
+            if result.stopped:
+                return
+            if self.is_stopped():
                 self.log_message.emit(self.get_string("Vlm", "Stopped_By_User"), "orange")
                 return
             if not result.ok:
@@ -301,26 +304,33 @@ class VlmCaptionWorker(QObject):
             self.log_message.emit(self.get_string("Vlm", "Batch_Start", count=total), "blue")
             executor: VlmExecutor = rt["executor"]
 
+            def remaining_failures(start: int) -> list[Path]:
+                """Return unprocessed inputs that would still require VLM work."""
+                pending = image_paths[start:]
+                if mode is ExistingFileMode.SKIP:
+                    return [p for p in pending if not p.with_suffix(".txt").is_file()]
+                return list(pending)
+
             for i, image_path in enumerate(image_paths):
                 if self.is_stopped():
                     self.log_message.emit(self.get_string("Vlm", "Stopped_By_User"), "orange")
-                    failed.extend(image_paths[i:])
+                    failed.extend(remaining_failures(i))
                     break
                 if (i + 1) % step == 0 or i == total - 1:
                     self.progress_update.emit(i + 1, total)
-
-                # 全接続が除外／クールダウンで生き残りゼロになったら、画像ごとに
-                # エラーを吐き続けず（issue #10 と同じ飽和）1行で打ち切る。
-                if not executor.live_candidates(candidates.connection_ids):
-                    self.log_message.emit(self.get_string("Vlm", "All_Connections_Exhausted"), "red")
-                    failed.extend(image_paths[i:])
-                    break
 
                 output_path = image_path.with_suffix(".txt")
                 will_write, decision = self._resolve_existing(output_path, mode)
                 if not will_write:
                     n_skipped += 1
                     continue
+
+                # 既存出力をSKIPする画像は、接続が尽きていても失敗では
+                # ない。それを解決した後、実際に生成が必要な画像でだけ打ち切る。
+                if not executor.live_candidates(candidates.connection_ids):
+                    self.log_message.emit(self.get_string("Vlm", "All_Connections_Exhausted"), "red")
+                    failed.extend(remaining_failures(i))
+                    break
                 eff_placement = "OVERWRITE" if decision is OverwriteDecision.OVERWRITE else placement
                 # 「常に追記」を選んでいるのに placement が既定の OVERWRITE のままだと
                 # 既存キャプションを丸ごと捨ててしまう（PR#16 の caption_core 修正と同方針）。
@@ -338,12 +348,12 @@ class VlmCaptionWorker(QObject):
                 result = executor.caption_one(spec_base, candidates.connection_ids)
                 if self.is_stopped() or result.stopped:
                     self.log_message.emit(self.get_string("Vlm", "Stopped_By_User"), "orange")
-                    failed.extend(image_paths[i:])
+                    failed.extend(remaining_failures(i))
                     break
                 if result.stop_job:
                     reason = _error_reason_for_log(result.error) if result.error else "prompt_format_error"
                     self.log_message.emit(self.get_string("Vlm", "Job_Stopped", reason=reason), "red")
-                    failed.extend(image_paths[i:])
+                    failed.extend(remaining_failures(i))
                     break
                 if not result.ok:
                     n_errors += 1

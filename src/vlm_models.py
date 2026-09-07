@@ -63,6 +63,9 @@ class ModelBinding:
     model_id: str
     identity_status: ModelIdentityStatus = ModelIdentityStatus.UNKNOWN
     provider_constraint: ProviderConstraint | None = None
+    # User profiles persist this only after the model list/static catalog has
+    # confirmed image input + text output. It survives process-local discovery.
+    vlm_capable: bool = False
     def effective_identity_status(self) -> ModelIdentityStatus:
         """provider_constraint を固定できていない場合、VERIFIED を格下げする。"""
         status = self.identity_status
@@ -904,7 +907,8 @@ def is_vlm_model_id(profile: VlmModelProfile | None, provider_id: str,
             static_capability, _ = classify_model_capability(provider_id, model_id)
             discovered = _DISCOVERED_VLM_MODEL_IDS.get(
                 (provider_id or "").strip().lower(), set())
-            return (static_capability is True
+            return (binding.vlm_capable
+                    or static_capability is True
                     or low in _known_vision_model_ids(provider_id)
                     or _base_catalog_model_id(model_id) in discovered)
         if any(other_provider != provider_id

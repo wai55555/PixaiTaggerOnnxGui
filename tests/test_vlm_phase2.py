@@ -424,6 +424,15 @@ def test_diagnostics_live_extraction_branches():
     st, _ = D._classify_extraction(RawHttpResponse(200, {}, {
         "content": [], "stop_reason": "max_tokens"}, "{}"), anthropic)
     assert st is D.DiagStatus.WARN
+
+    # A custom extraction path must not bypass protocol-level safety signals.
+    custom_gemini = get_protocol("gemini_generate_content")
+    custom_gemini.default_text_path = "custom.caption"
+    st, _ = D._classify_extraction(RawHttpResponse(200, {}, {
+        "promptFeedback": {"blockReason": "SAFETY"},
+        "custom": {"caption": "misleading text"},
+    }, "{}"), custom_gemini, "custom.caption")
+    assert st is D.DiagStatus.WARN
     print("  diagnostics extraction: text->PASS, MAX_TOKENS->WARN, bad shape->FAIL+preview, 500->SKIP: OK")
 
 

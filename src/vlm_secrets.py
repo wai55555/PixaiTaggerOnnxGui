@@ -1,6 +1,6 @@
 """API キーなど秘密情報の解決（260901_VLM_spec.md 15章 / implement_plan 13.1節）。
 
-優先順位: OS の秘密情報ストレージ（keyring） → 環境変数 → セッション中だけ保持。
+優先順位: セッション中だけ保持 → OS の秘密情報ストレージ（keyring） → 環境変数。
 秘密値は config.ini / vlm_connections.json / 設定エクスポート / debug log / エラー
 ダイアログのいずれにも出さない。この層だけが実体を扱う。
 """

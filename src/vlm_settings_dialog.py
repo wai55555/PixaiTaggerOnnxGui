@@ -24,7 +24,7 @@ import vlm_config
 import vlm_models
 import vlm_profiles
 import vlm_secrets
-from app_settings import save_config
+import app_settings
 from custom_connection_dialog import CustomConnectionDialog
 from vlm_connections import ConnectionKind, VlmConnection
 from vlm_diagnostics import DiagStatus
@@ -136,6 +136,7 @@ class VlmSettingsDialog(QDialog):
         self._vlm = settings.vlm
         self._vlm_before_dialog = dataclasses.replace(self._vlm)
         self._dialog_saved = False
+        self._immediate_settings_saved = False
         self._t = get_string
         self._custom_connections: list[dict] = vlm_config.load_custom_connections()
         self._diag_thread: QThread | None = None
@@ -400,7 +401,8 @@ class VlmSettingsDialog(QDialog):
         return {
             "profile_id": p.profile_id, "display_name": p.display_name,
             "canonical_model_id": p.canonical_model_id,
-            "bindings": {prov: {"model_id": b.model_id}
+            "bindings": {prov: {"model_id": b.model_id,
+                                 "vlm_capable": b.vlm_capable}
                          for prov, b in p.bindings.items()},
         }
 
@@ -439,10 +441,25 @@ class VlmSettingsDialog(QDialog):
         if QMessageBox.question(self, self._t("Vlm", "Settings_Profile"),
                                 self._t("Vlm", "Profile_Delete_Confirm")) != QMessageBox.StandardButton.Yes:
             return
-        users = [d for d in vlm_config.load_user_profiles() if d.get("profile_id") != pid]
-        vlm_config.save_user_profiles(users)
+        previous_users = vlm_config.load_user_profiles()
+        users = [d for d in previous_users if d.get("profile_id") != pid]
+        if not vlm_config.save_user_profiles(users):
+            QMessageBox.critical(self, self._t("Vlm", "Settings_Title"),
+                                 self._t("Vlm", "Settings_Save_Failed"))
+            return
         self._reload_profiles(vlm_config.all_profiles()[0].profile_id if vlm_config.all_profiles() else None)
         self._vlm.model_profile_id = self.profile_combo.currentData() or self._vlm.model_profile_id
+        if self._vlm_before_dialog.model_profile_id == pid:
+            # Profile deletion is immediate. Persist its fallback and move the
+            # cancellation snapshot too, so Cancel cannot resurrect a deleted ID.
+            if not self._persist_immediate_settings():
+                vlm_config.save_user_profiles(previous_users)
+                self._vlm.model_profile_id = pid
+                self._reload_profiles(pid)
+                QMessageBox.critical(self, self._t("Vlm", "Settings_Title"),
+                                     self._t("Vlm", "Settings_Save_Failed"))
+                return
+            self._vlm_before_dialog.model_profile_id = self._vlm.model_profile_id
         self._rebuild_routes()
 
     def _on_model_id_edited(self, cid: str) -> None:
@@ -773,7 +790,7 @@ class VlmSettingsDialog(QDialog):
                 and getattr(conn, "provider_id", "")):
             if vlm_config.mark_binding_verified(
                     self._vlm, conn.provider_id, profile_id=self._diag_pending_profile_id):
-                save_config(self._settings)
+                self._persist_immediate_settings()
                 cid = next((c for c, r in self._route_rows.items()
                             if r["conn"].provider_id == conn.provider_id), None)
                 if cid:
@@ -815,17 +832,17 @@ class VlmSettingsDialog(QDialog):
         """接続確認に使えた Account ID を保存する（binding確認は共通callbackで行う）。"""
         self._vlm.cloudflare_account_id = account_id
         vlm_config.mark_binding_verified(self._vlm, "cloudflare")
-        save_config(self._settings)
+        self._persist_immediate_settings()
 
     def _on_anthropic_workspace_saved(self, workspace_id: str) -> None:
         """検証に使えた任意のWorkspace IDを保存する。空は単一Workspaceキーを表す。"""
         self._vlm.anthropic_workspace_id = workspace_id
-        save_config(self._settings)
+        self._persist_immediate_settings()
 
     def _on_api_key_binding_confirmed(self, provider_id: str) -> None:
         """キー登録時の軽量疎通確認を次回も表示できるよう保存する。"""
         if provider_id and vlm_config.mark_binding_verified(self._vlm, provider_id):
-            save_config(self._settings)
+            self._persist_immediate_settings()
 
     def _set_diag_buttons_enabled(self, enabled: bool) -> None:
         for r in self._route_rows.values():
@@ -943,9 +960,12 @@ class VlmSettingsDialog(QDialog):
             v.connection_order = ",".join(enabled_providers)
         # API キーは「APIキー登録」ボタン経由で即時保存されるので、ここでは扱わない。
 
-        custom_saved = vlm_config.save_custom_connections(self._custom_connections)
-        config_saved = save_config(self._settings)
-        if not custom_saved or not config_saved:
+        saved = vlm_config.save_settings_transaction(
+            self._custom_connections,
+            config_path=app_settings.CONFIG_PATH,
+            save_config_callback=lambda: app_settings.save_config(self._settings),
+        )
+        if not saved:
             QMessageBox.critical(self, self._t("Vlm", "Settings_Title"),
                                  self._t("Vlm", "Settings_Save_Failed"))
             return
@@ -958,10 +978,27 @@ class VlmSettingsDialog(QDialog):
         APIキー登録・接続確認は即時保存の操作なので、その結果を保持する。
         """
         immediate = {"verified_bindings", "cloudflare_account_id", "anthropic_workspace_id"}
+        valid_profile_ids = {p.profile_id for p in vlm_config.all_profiles()}
+        fallback_profile_id = self._vlm_before_dialog.model_profile_id
+        if fallback_profile_id not in valid_profile_ids:
+            fallback_profile_id = next(iter(valid_profile_ids), self._vlm.model_profile_id)
         for field in dataclasses.fields(self._vlm):
             if field.name not in immediate:
-                setattr(self._vlm, field.name,
-                        getattr(self._vlm_before_dialog, field.name))
+                value = getattr(self._vlm_before_dialog, field.name)
+                if field.name == "model_profile_id":
+                    value = fallback_profile_id
+                setattr(self._vlm, field.name, value)
+        # A diagnostic/API-key callback may have saved the whole in-memory
+        # dataclass while regular dialog edits were still pending. Re-save the
+        # restored snapshot plus the intentionally retained immediate fields.
+        if self._immediate_settings_saved and app_settings.save_config(self._settings):
+            self._immediate_settings_saved = False
+
+    def _persist_immediate_settings(self) -> bool:
+        saved = app_settings.save_config(self._settings)
+        if saved:
+            self._immediate_settings_saved = True
+        return saved
 
 
 def _combo(pairs) -> QComboBox:

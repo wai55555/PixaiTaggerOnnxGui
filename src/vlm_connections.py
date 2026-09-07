@@ -155,7 +155,8 @@ class VlmConnection:
                              if str(k).strip() and v is not None}
             if isinstance(raw_headers, dict) else {},
             request_body=dict(data.get("request_body") or {}) if isinstance(data.get("request_body"), dict) else {},
-            image_max_long_edge=parsed_image_max if parsed_image_max > 0 else None,
+            image_max_long_edge=max(256, min(8192, parsed_image_max))
+            if parsed_image_max > 0 else None,
         )
 
 

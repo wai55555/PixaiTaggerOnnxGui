@@ -52,11 +52,15 @@ class VlmAttemptError:
         - already_retried_same: 同一接続でのリトライを今回すでに1回使ったか
         """
         r = self.reason
-        retries = (int(same_retries) if same_retries is not None
+        explicit_retry_count = same_retries is not None
+        retries = (int(same_retries) if explicit_retry_count
                    else (1 if already_retried_same else 0))
         can_retry_same = max(0, int(retry_same_max)) > retries
         if r is VlmErrorReason.TIMEOUT:
-            if can_retry_same:
+            # Preserve the legacy consecutive-timeout guard for callers that have
+            # not migrated to an explicit retry counter.  New callers can opt into
+            # retry_same_max > 1 by passing same_retries.
+            if can_retry_same and (explicit_retry_count or consecutive_timeouts <= 1):
                 return VlmErrorClass.RETRY_SAME
             return VlmErrorClass.FAILOVER
         if r is VlmErrorReason.RATE_LIMITED:
@@ -88,7 +92,7 @@ def _looks_like_prompt_format(message: str, provider_code: str = "") -> bool:
     return any(marker in low for marker in (
         "messages[", "content must be", "content[", "image_url", "input_image",
         "inline_data", "inlineimage", "multimodal", "prompt format",
-        "request body", "invalid image", "image input", "unsupported content",
+        "request body",
     ))
 
 

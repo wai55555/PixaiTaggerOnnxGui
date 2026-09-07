@@ -218,6 +218,8 @@ class ProfileEditorDialog(QDialog):
             QMessageBox.warning(self, self.windowTitle(), self._t("Vlm", "ProfileEdit_Need_Name"))
             return
         bindings: dict[str, dict] = {}
+        src_bindings = self._src.get("bindings")
+        src_bindings = src_bindings if isinstance(src_bindings, dict) else {}
         for prov, r in self._rows.items():
             if not r["inc"].isChecked():
                 continue
@@ -227,12 +229,18 @@ class ProfileEditorDialog(QDialog):
             probe = vlm_models.VlmModelProfile(
                 profile_id="_manual_probe", display_name="_", canonical_model_id=mid,
                 base_model=mid, aliases=(mid,))
-            if not vlm_models.is_vlm_model_id(probe, prov, mid):
+            original = src_bindings.get(prov)
+            original = original if isinstance(original, dict) else {}
+            original_mid = str(original.get("model_id", "")).strip()
+            # An unchanged persisted binding was catalog-validated when it was
+            # created. Discovery is process-local, so requiring it again after a
+            # restart would make an otherwise untouched profile impossible to save.
+            if mid != original_mid and not vlm_models.is_vlm_model_id(probe, prov, mid):
                 QMessageBox.warning(
                     self, self.windowTitle(),
                     self._t("Vlm", "ProfileEdit_Model_Not_Vlm", provider=prov, model=mid))
                 return
-            bindings[prov] = {"model_id": mid}
+            bindings[prov] = {"model_id": mid, "vlm_capable": True}
         if not bindings:
             QMessageBox.warning(self, self.windowTitle(), self._t("Vlm", "ProfileEdit_Need_Route"))
             return

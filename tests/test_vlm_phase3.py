@@ -191,6 +191,13 @@ def test_settings_dialog_roundtrip():
     for row in dlg._route_rows.values():
         assert row["status"].width() == 180
         assert row["name"].alignment() & Qt.AlignmentFlag.AlignLeft
+    dlg._custom_connections.append({
+        "connection_id": "test-custom", "display_name": "Test custom",
+        "kind": "custom_local", "protocol": "openai_chat_completions",
+        "base_url": "http://127.0.0.1:1234/v1", "model_id": "local-vlm",
+        "auth": {"type": "none"},
+    })
+    dlg._refresh_custom_list()
     dlg.mode_custom.setChecked(True)
     dlg.max_tokens.setValue(1500)
     assert dlg.language_combo.currentData() == "en" and not dlg.language_combo.isEnabled()
@@ -475,6 +482,90 @@ def test_settings_dialog_keeps_unbound_route_discoverable():
             dlg.close()
         vlm_config.resolve_model_profile = old_resolver
     print("  unbound route remains available for VLM discovery and diagnosis: OK")
+
+
+def test_settings_transaction_rolls_back_both_files(tmp_path, monkeypatch):
+    connections_path = tmp_path / "vlm_connections.json"
+    config_path = tmp_path / "config.ini"
+    connections_path.write_text("old-connections", encoding="utf-8")
+    config_path.write_text("old-config", encoding="utf-8")
+    monkeypatch.setattr(vlm_config, "VLM_CONNECTIONS_PATH", connections_path)
+
+    def fail_after_partial_config_write():
+        config_path.write_text("partial-new-config", encoding="utf-8")
+        return False
+
+    assert not vlm_config.save_settings_transaction(
+        [{"connection_id": "new"}], config_path=config_path,
+        save_config_callback=fail_after_partial_config_write)
+    assert connections_path.read_text(encoding="utf-8") == "old-connections"
+    assert config_path.read_text(encoding="utf-8") == "old-config"
+
+
+def test_cancel_repersists_regular_fields_after_immediate_confirmation(tmp_path, monkeypatch):
+    import app_settings as A
+    from vlm_settings_dialog import VlmSettingsDialog
+
+    config_path = tmp_path / "config.ini"
+    monkeypatch.setattr(A, "CONFIG_PATH", config_path)
+    settings = A.load_settings(A.get_default_config())
+    dialog = VlmSettingsDialog(settings, lambda sec, key, **kw: key)
+    try:
+        assert settings.vlm.strict_identity is False
+        settings.vlm.strict_identity = True  # representative unsaved regular edit
+        dialog._on_api_key_binding_confirmed("gemini")
+        assert A.load_settings(A.load_config()).vlm.strict_identity is True
+
+        dialog._restore_unsaved_vlm()
+        reloaded = A.load_settings(A.load_config()).vlm
+        assert settings.vlm.strict_identity is False
+        assert reloaded.strict_identity is False
+        assert "gemma-4-31b-it:gemini" in reloaded.verified_set()
+    finally:
+        dialog.close()
+
+
+def test_deleted_selected_profile_is_not_restored_on_cancel(tmp_path, monkeypatch):
+    import app_settings as A
+    from PySide6.QtWidgets import QMessageBox
+    from vlm_settings_dialog import VlmSettingsDialog
+
+    monkeypatch.setattr(A, "CONFIG_PATH", tmp_path / "config.ini")
+    monkeypatch.setattr(vlm_config, "VLM_PROFILES_PATH", tmp_path / "vlm_profiles.json")
+    assert vlm_config.save_user_profiles([{
+        "profile_id": "user-delete-me", "display_name": "Delete me",
+        "canonical_model_id": "vendor/custom-vlm",
+        "bindings": {"groq": {"model_id": "vendor/custom-vlm", "vlm_capable": True}},
+    }])
+    settings = A.load_settings(A.get_default_config())
+    settings.vlm.model_profile_id = "user-delete-me"
+    assert A.save_config(settings)
+    monkeypatch.setattr(QMessageBox, "question", lambda *a, **k: QMessageBox.StandardButton.Yes)
+    dialog = VlmSettingsDialog(settings, lambda sec, key, **kw: key)
+    try:
+        dialog._del_profile()
+        assert not vlm_config.is_user_profile("user-delete-me")
+        assert settings.vlm.model_profile_id != "user-delete-me"
+        dialog._restore_unsaved_vlm()
+        assert settings.vlm.model_profile_id != "user-delete-me"
+        assert A.load_settings(A.load_config()).vlm.model_profile_id != "user-delete-me"
+    finally:
+        dialog.close()
+
+
+def test_profile_editor_preserves_legacy_catalog_validated_binding():
+    from vlm_profile_editor import ProfileEditorDialog
+
+    dialog = ProfileEditorDialog(lambda sec, key, **kw: key, {
+        "profile_id": "user-legacy", "display_name": "Legacy",
+        "canonical_model_id": "vendor/custom-vlm",
+        "bindings": {"groq": {"model_id": "vendor/custom-vlm"}},
+    })
+    dialog._on_save()
+    result = dialog.result_profile()
+    assert result is not None
+    assert result["bindings"]["groq"] == {
+        "model_id": "vendor/custom-vlm", "vlm_capable": True}
 
 
 if __name__ == "__main__":

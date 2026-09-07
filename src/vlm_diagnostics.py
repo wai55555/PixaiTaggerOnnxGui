@@ -511,13 +511,10 @@ def _classify_extraction(raw: RawHttpResponse, protocol, configured_path: str = 
     MAX_TOKENS / length）がある。その場合はエンドポイント・認証・リクエスト形状は通って
     いるので WARN 止まり。真に形が違うときだけ FAIL（本文の頭を付ける）。
     """
-    if raw.status == 200 and configured_path and isinstance(raw.json_body, (dict, list)):
-        configured = extract_by_path(raw.json_body, configured_path)
-        if isinstance(configured, str) and configured.strip():
-            return DiagStatus.PASS, f"got {len(configured.strip())} chars via {configured_path}"
     parsed = protocol.parse_response(raw.status, raw.json_body, raw.text_body)
     if parsed.ok:
-        return DiagStatus.PASS, f"got {len(parsed.text or '')} chars"
+        via = f" via {configured_path}" if configured_path else ""
+        return DiagStatus.PASS, f"got {len(parsed.text or '')} chars{via}"
     if parsed.error and parsed.error.reason is VlmErrorReason.CONTENT_POLICY:
         return DiagStatus.WARN, "content policy on the test image (extraction path unverified)"
     if raw.status != 200:

@@ -366,6 +366,36 @@ def test_vlm_single_test_never_emits_batch_failed(tmp_path, monkeypatch):
     print("  vlm single test emits batch_completed but never batch_failed: OK")
 
 
+def test_vlm_single_test_reports_cancellation_once(tmp_path, monkeypatch):
+    d = tmp_path
+    images = _make_images(d, names=("a",), ext=".png")
+    s = _vlm_settings(d)
+    rt = _fake_vlm_runtime()
+    rt["executor"].caption_one = lambda spec, ids: SimpleNamespace(
+        ok=False, text="", connection_id="", model_id="", stopped=True,
+        stop_job=False, attempts=[], error=None)
+    w = _run_vlm(s, monkeypatch, rt, selected=images[0], single_test=True)
+    logs, _, _, _ = _collect(w)
+    w.run_captioning()
+    assert [message for message, _ in logs if message == "Stopped_By_User"] == [
+        "Stopped_By_User"]
+
+
+def test_vlm_exhaustion_does_not_fail_skip_outputs(tmp_path, monkeypatch):
+    d = tmp_path
+    _make_images(d, ext=".png")
+    (d / "a.txt").write_text("existing", encoding="utf-8")
+    (d / "c.txt").write_text("existing", encoding="utf-8")
+    s = _vlm_settings(d, existing_mode="SKIP")
+    rt = _fake_vlm_runtime()
+    rt["executor"].live_candidates = lambda ids: []
+    w = _run_vlm(s, monkeypatch, rt)
+    logs, _, failed, _ = _collect(w)
+    w.run_captioning()
+    assert [p.name for p in failed] == ["b.png"], failed
+    assert sum("All_Connections_Exhausted" in message for message, _ in logs) == 1
+
+
 if __name__ == "__main__":
     import pytest
     raise SystemExit(pytest.main([__file__, "-q"]))

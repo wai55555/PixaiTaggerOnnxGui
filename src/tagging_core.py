@@ -804,6 +804,7 @@ def process_image_loop(
     n_skipped = 0
     n_errors = 0
     n_unchanged = 0
+    failed_seen = set(failed_paths or ())
     # progress_cb 自体もクロススレッドの queued signal なので、毎画像発行すると
     # シグナルのキュー投入コストが積み上がる（PR#16 レビュー指摘）。全体で ~200 回に
     # 間引く。最後の1枚は必ず発行して N/N（完了）に到達させる。
@@ -811,7 +812,8 @@ def process_image_loop(
     progress_step = max(1, (total + 199) // 200)
 
     def mark_failed(path: Path) -> None:
-        if failed_paths is not None and path not in failed_paths:
+        if failed_paths is not None and path not in failed_seen:
+            failed_seen.add(path)
             failed_paths.append(path)
 
     for i, image_path in enumerate(image_paths):

@@ -253,6 +253,10 @@ def test_error_classification():
     assert E.reason_from_http_status(429) is E.VlmErrorReason.RATE_LIMITED
     assert E.reason_from_http_status(503) is E.VlmErrorReason.SERVER_ERROR
     assert E.reason_from_http_status(404) is E.VlmErrorReason.MODEL_UNSUPPORTED
+    assert E.reason_from_http_status(
+        400, "messages[1].content must be a string") is E.VlmErrorReason.PROMPT_FORMAT_ERROR
+    assert E.reason_from_http_status(
+        400, "invalid image data") is E.VlmErrorReason.BAD_RESPONSE
     print("  error classification: OK")
 
 
@@ -471,6 +475,15 @@ def test_connection_locality():
     assert C.resolve_custom_kind(C.ConnectionLocality.AUTO, "") is C.ConnectionKind.CUSTOM_EXTERNAL  # unknown -> external
     assert C.resolve_custom_kind(C.ConnectionLocality.LOCAL, "https://api.openai.com/v1") is C.ConnectionKind.CUSTOM_LOCAL
 
+    low = C.VlmConnection.from_mapping({
+        "connection_id": "low", "image": {"max_long_edge": 1}})
+    high = C.VlmConnection.from_mapping({
+        "connection_id": "high", "image": {"max_long_edge": 99999}})
+    unset = C.VlmConnection.from_mapping({"connection_id": "unset"})
+    assert low.image_max_long_edge == 256
+    assert high.image_max_long_edge == 8192
+    assert unset.image_max_long_edge is None
+
     print("  connection locality: OK")
 
 
@@ -663,12 +676,15 @@ def test_vlm_only_model_guard():
     assert gemma is not None
     assert M.is_known_non_vision_model("groq", "groq/compound-mini") is True
     assert M.is_vlm_model_id(qwen, "groq", "groq/compound-mini") is False
-    assert M.is_vlm_model_id(qwen, "groq", "qwen/qwen3.8-27b") is True
+    # OpenRouter's provider-prefixed alias must not cross into Groq when that
+    # profile already declares a different exact Groq binding.
+    assert M.is_vlm_model_id(qwen, "groq", "qwen/qwen3.8-27b") is False
     assert M.is_vlm_model_id(gemma, "groq", "qwen/qwen3.8-27b") is True
     assert M.filter_vlm_model_ids(
         qwen, "groq",
-        ["groq/compound-mini", "qwen/qwen3.8-27b", "llama-3.3-70b-versatile"],
-    ) == ["qwen/qwen3.8-27b"]
+        ["groq/compound-mini", "qwen/qwen3.8-27b", "qwen3.8-27b",
+         "llama-3.3-70b-versatile"],
+    ) == ["qwen3.8-27b"]
     for provider, model_ids in {
         "openai": ["gpt-4o", "gpt-4o-mini", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"],
         "anthropic": [
@@ -778,6 +794,14 @@ def test_user_defined_profiles():
         p = aps["user-g3"]
         assert set(p.bindings) == {"gemini", "openrouter"}
         assert p.bindings["gemini"].identity_status is M.ModelIdentityStatus.UNKNOWN
+        assert p.bindings["gemini"].vlm_capable is True
+        # Capability persisted in a user profile remains usable even when the
+        # process-local discovered-model cache is empty after restart.
+        custom = M.VlmModelProfile(
+            profile_id="user-live", display_name="Live", canonical_model_id="vendor/new-vlm",
+            bindings={"groq": M.ModelBinding(
+                "groq", "vendor/new-vlm", vlm_capable=True)})
+        assert M.is_vlm_model_id(custom, "groq", "vendor/new-vlm")
 
         # a user profile with the same id as a shipped one overrides it
         CFG.save_user_profiles([

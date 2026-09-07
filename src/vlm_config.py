@@ -9,6 +9,8 @@ import dataclasses
 import json
 import os
 import uuid
+from collections.abc import Callable
+from pathlib import Path
 
 from constants import BASE_DIR
 from utils import write_debug_log
@@ -67,6 +69,60 @@ def save_custom_connections(connections: list[dict]) -> bool:
             pass
 
 
+def _snapshot_file(path: Path) -> tuple[bool, bytes]:
+    return (True, path.read_bytes()) if path.is_file() else (False, b"")
+
+
+def _restore_file(path: Path, snapshot: tuple[bool, bytes]) -> bool:
+    """Restore one transaction snapshot without exposing a partial file."""
+    existed, payload = snapshot
+    tmp = path.with_name(f"{path.stem}.{uuid.uuid4().hex}.rollback.tmp")
+    try:
+        if not existed:
+            if path.exists():
+                path.unlink()
+            return True
+        with tmp.open("wb") as f:
+            f.write(payload)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+        return True
+    except OSError as e:
+        write_debug_log(f"vlm_config: cannot roll back {path.name}: {e}")
+        return False
+    finally:
+        try:
+            if tmp.exists():
+                tmp.unlink()
+        except OSError:
+            pass
+
+
+def save_settings_transaction(connections: list[dict], *, config_path: Path,
+                              save_config_callback: Callable[[], bool]) -> bool:
+    """Save the connection JSON and config.ini as one rollback-capable unit."""
+    paths = (VLM_CONNECTIONS_PATH, Path(config_path))
+    try:
+        snapshots = {path: _snapshot_file(path) for path in paths}
+    except OSError as e:
+        write_debug_log(f"vlm_config: cannot snapshot settings transaction: {e}")
+        return False
+
+    if not save_custom_connections(connections):
+        return False
+    try:
+        if save_config_callback():
+            return True
+    except Exception as e:  # noqa: BLE001 - callback boundary; rollback below
+        write_debug_log(f"vlm_config: config save callback failed: {type(e).__name__}: {e}")
+
+    restore_results = [_restore_file(path, snapshots[path]) for path in paths]
+    if not all(restore_results):
+        write_debug_log("vlm_config: settings transaction rollback was incomplete")
+    return False
+
+
 def new_connection_id(prefix: str = "custom") -> str:
     return f"{prefix}-{uuid.uuid4().hex[:12]}"
 
@@ -74,7 +130,8 @@ def new_connection_id(prefix: str = "custom") -> str:
 # --- vlm_profiles.json（利用者が作る／編集するモデルプロファイル） -------------------
 # 出荷プロファイルは推定なので、モデル一覧で見つけた実 ID を束ねた「自分のプロファイル」を
 # ここに保存する。binding の identity は UNKNOWN（接続診断のフル PASS または認証済み
-# 429／診断上限到達確認で verified 昇格）。
+# 429／診断上限到達確認で verified 昇格）。VLM能力は一覧で確認した
+# `vlm_capable` を保存し、再起動後にもプロセス内カタログへ依存しない。
 
 def load_user_profiles() -> list[dict]:
     if not VLM_PROFILES_PATH.is_file():
@@ -126,8 +183,13 @@ def _profile_from_dict(d: dict) -> VlmModelProfile | None:
         mid = str(b.get("model_id", "")).strip()
         if not mid:
             continue
-        bindings[prov] = ModelBinding(provider_id=prov, model_id=mid,
-                                      identity_status=ModelIdentityStatus.UNKNOWN)
+        bindings[prov] = ModelBinding(
+            provider_id=prov, model_id=mid,
+            identity_status=ModelIdentityStatus.UNKNOWN,
+            # The immediately preceding format had already catalog-validated
+            # these bindings but did not persist the capability bit.
+            vlm_capable=bool(b.get("vlm_capable", True)),
+        )
     if not bindings:
         return None
     return VlmModelProfile(
