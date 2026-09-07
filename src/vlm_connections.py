@@ -110,6 +110,8 @@ class VlmConnection:
     request_headers: dict[str, str] = field(default_factory=dict)
     # プロバイダー固有のJSONオプション。Cloudflare Gemma 4では推論を無効化する。
     request_body: dict[str, Any] = field(default_factory=dict)
+    # カスタム接続だけに適用する画像前処理上限。None は生成プロファイルの既定値。
+    image_max_long_edge: int | None = None
 
     @property
     def is_custom(self) -> bool:
@@ -126,6 +128,14 @@ class VlmConnection:
             kind = ConnectionKind(kind_raw)
         except ValueError:
             kind = ConnectionKind.CUSTOM_EXTERNAL
+        raw_auth = data.get("auth")
+        raw_retry = data.get("retry")
+        raw_response = data.get("response")
+        raw_headers = data.get("request_headers")
+        raw_image = data.get("image")
+        image_max = (raw_image.get("max_long_edge")
+                     if isinstance(raw_image, dict) else data.get("image_max_long_edge"))
+        parsed_image_max = _i(image_max, 0)
         return cls(
             connection_id=str(data["connection_id"]),
             display_name=str(data.get("display_name", data["connection_id"])),
@@ -135,13 +145,17 @@ class VlmConnection:
             model_id=str(data.get("model_id", "")),
             provider_id=str(data.get("provider_id", "")),
             enabled=bool(data.get("enabled", True)),
-            auth=AuthSpec.from_mapping(data.get("auth")),
-            retry=RetryPolicy.from_mapping(data.get("retry")),
+            auth=AuthSpec.from_mapping(raw_auth if isinstance(raw_auth, dict) else None),
+            retry=RetryPolicy.from_mapping(raw_retry if isinstance(raw_retry, dict) else None),
             verify_tls=bool(data.get("verify_tls", True)),
             concurrency=max(1, _i(data.get("concurrency"), 1)),
-            text_path=str(data.get("response", {}).get("text_path", "") if isinstance(data.get("response"), dict) else data.get("text_path", "")),
-            error_path=str(data.get("response", {}).get("error_path", "") if isinstance(data.get("response"), dict) else data.get("error_path", "")),
+            text_path=str(raw_response.get("text_path", "") if isinstance(raw_response, dict) else data.get("text_path", "")),
+            error_path=str(raw_response.get("error_path", "") if isinstance(raw_response, dict) else data.get("error_path", "")),
+            request_headers={str(k): str(v) for k, v in raw_headers.items()
+                             if str(k).strip() and v is not None}
+            if isinstance(raw_headers, dict) else {},
             request_body=dict(data.get("request_body") or {}) if isinstance(data.get("request_body"), dict) else {},
+            image_max_long_edge=parsed_image_max if parsed_image_max > 0 else None,
         )
 
 

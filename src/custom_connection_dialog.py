@@ -49,6 +49,7 @@ class CustomConnectionDialog(QDialog):
         self._result: dict | None = None
         self._model_thread: QThread | None = None
         self._model_worker: VlmModelListWorker | None = None
+        self._pending_done: int | None = None
         self.setWindowTitle(get_string("Vlm", "Custom_Dialog_Title"))
         self.setMinimumWidth(460)
         self._build()
@@ -236,7 +237,8 @@ class CustomConnectionDialog(QDialog):
             return
         entries = [entry if isinstance(entry, ModelCatalogEntry)
                    else catalog_entry_from_id("", str(entry)) for entry in result]
-        vlm_ids = [entry.model_id for entry in filter_vlm_catalog(entries)]
+        vlm_ids = [entry.model_id for entry in filter_vlm_catalog(
+            entries, exclude_disabled_markers=False)]
         current = self.model_edit.currentText().strip()
         self.model_edit.blockSignals(True)
         self.model_edit.clear()
@@ -260,6 +262,23 @@ class CustomConnectionDialog(QDialog):
             self._model_thread = None
         self.model_fetch_btn.setEnabled(True)
         self._save_button.setEnabled(True)
+        if self._pending_done is not None:
+            result = self._pending_done
+            self._pending_done = None
+            QDialog.done(self, result)
+
+    def done(self, result: int) -> None:
+        thread = self._model_thread
+        if thread is not None and thread.isRunning():
+            self._pending_done = result
+            try:
+                self._model_worker.result_ready.disconnect()
+            except (RuntimeError, TypeError, AttributeError):
+                pass
+            thread.quit()
+            self.setEnabled(False)
+            return
+        super().done(result)
 
     def _on_save(self) -> None:
         name = self.name_edit.text().strip()
@@ -319,12 +338,9 @@ class CustomConnectionDialog(QDialog):
     def closeEvent(self, event) -> None:
         thread = self._model_thread
         if thread is not None and thread.isRunning():
-            try:
-                self._model_worker.finished.disconnect(thread.quit)
-            except (RuntimeError, TypeError):
-                pass
-            thread.quit()
-            thread.wait(30000)
+            self.done(QDialog.DialogCode.Rejected)
+            event.ignore()
+            return
         super().closeEvent(event)
 
 

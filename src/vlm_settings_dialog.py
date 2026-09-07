@@ -10,6 +10,7 @@
 """
 from __future__ import annotations
 
+import dataclasses
 from typing import Callable
 
 from PySide6.QtCore import Qt, QThread, Slot
@@ -133,10 +134,14 @@ class VlmSettingsDialog(QDialog):
         super().__init__(parent)
         self._settings = settings
         self._vlm = settings.vlm
+        self._vlm_before_dialog = dataclasses.replace(self._vlm)
+        self._dialog_saved = False
         self._t = get_string
         self._custom_connections: list[dict] = vlm_config.load_custom_connections()
         self._diag_thread: QThread | None = None
         self._diag_worker: VlmDiagnosticsWorker | None = None
+        self._diag_pending_profile_id: str | None = None
+        self._ml_pending_done: int | None = None
         self.setWindowTitle(get_string("Vlm", "Settings_Title"))
         self.setMinimumWidth(520)
         self._build()
@@ -545,16 +550,12 @@ class VlmSettingsDialog(QDialog):
             self._ml_thread = None
         for rr in self._route_rows.values():
             rr["list_btn"].setEnabled(True)
-
-    def _await_ml_thread(self) -> None:
-        th = getattr(self, "_ml_thread", None)
-        if th is not None and th.isRunning():
-            try:
-                self._ml_worker.result_ready.disconnect()
-            except (RuntimeError, TypeError):
-                pass
-            th.quit()
-            th.wait(30000)
+        if self._ml_pending_done is not None:
+            result = self._ml_pending_done
+            self._ml_pending_done = None
+            if result != QDialog.DialogCode.Accepted and not self._dialog_saved:
+                self._restore_unsaved_vlm()
+            QDialog.done(self, result)
 
     def _relayout_routes(self) -> None:
         # グリッドから全セルを外す（ウィジェットは消さない）。順序を _route_order の
@@ -749,6 +750,7 @@ class VlmSettingsDialog(QDialog):
         # （QWidget を作り exec() する）がワーカースレッドで走ってクラッシュする。
         # 必ず QObject のバウンドメソッドへつなぎ、対象 conn は self に持たせる。
         self._diag_pending_conn = conn
+        self._diag_pending_profile_id = self._vlm.model_profile_id
         self._diag_thread = QThread(self)
         self._diag_worker = VlmDiagnosticsWorker(conn, api_key)
         self._diag_worker.moveToThread(self._diag_thread)
@@ -769,7 +771,8 @@ class VlmSettingsDialog(QDialog):
         if (getattr(report, "can_mark_binding_verified", False)
                 and not getattr(conn, "is_custom", True)
                 and getattr(conn, "provider_id", "")):
-            if vlm_config.mark_binding_verified(self._vlm, conn.provider_id):
+            if vlm_config.mark_binding_verified(
+                    self._vlm, conn.provider_id, profile_id=self._diag_pending_profile_id):
                 save_config(self._settings)
                 cid = next((c for c, r in self._route_rows.items()
                             if r["conn"].provider_id == conn.provider_id), None)
@@ -844,12 +847,30 @@ class VlmSettingsDialog(QDialog):
     def done(self, r: int) -> None:
         # accept() / reject() 双方の通り道。Close ボタンも X も window X もここを通る。
         self._await_diag_thread()
-        self._await_ml_thread()
+        ml_thread = getattr(self, "_ml_thread", None)
+        if ml_thread is not None and ml_thread.isRunning():
+            # モデル一覧取得中に GUI スレッドを最大30秒ブロックしない。結果は画面へ
+            # 反映せず、スレッド終了後に _ml_cleanup が閉じる。
+            self._ml_pending_done = r
+            try:
+                self._ml_worker.result_ready.disconnect()
+            except (RuntimeError, TypeError, AttributeError):
+                pass
+            ml_thread.quit()
+            self.setEnabled(False)
+            return
+        if r != QDialog.DialogCode.Accepted and not self._dialog_saved:
+            self._restore_unsaved_vlm()
         super().done(r)
 
     def closeEvent(self, event) -> None:
+        if getattr(self, "_ml_thread", None) is not None and self._ml_thread.isRunning():
+            self.done(QDialog.DialogCode.Rejected)
+            event.ignore()
+            return
         self._await_diag_thread()
-        self._await_ml_thread()
+        if not self._dialog_saved:
+            self._restore_unsaved_vlm()
         super().closeEvent(event)
 
     def _diag_cleanup(self) -> None:
@@ -860,6 +881,7 @@ class VlmSettingsDialog(QDialog):
             self._diag_thread.deleteLater()
             self._diag_thread = None
         self._diag_pending_conn = None
+        self._diag_pending_profile_id = None
         self._set_diag_buttons_enabled(True)
 
     def _show_diag_report(self, conn, report) -> None:
@@ -889,11 +911,17 @@ class VlmSettingsDialog(QDialog):
 
     def _on_save(self) -> None:
         v = self._vlm
+        custom_mode = self.mode_custom.isChecked()
+        selected_custom_id = self.custom_select.currentData() if custom_mode else None
+        if custom_mode and not any(
+                c.get("connection_id") == selected_custom_id for c in self._custom_connections):
+            QMessageBox.warning(self, self._t("Vlm", "Settings_Exec_Mode"),
+                                self._t("Vlm", "Settings_Custom_Select_Required"))
+            return
         v.model_profile_id = self.profile_combo.currentData() or v.model_profile_id
-        v.execution_mode = "custom_single" if self.mode_custom.isChecked() else "builtin_fallback"
+        v.execution_mode = "custom_single" if custom_mode else "builtin_fallback"
         v.selected_connection_id = (
-            (self.custom_select.currentData() or "")
-            if self.mode_custom.isChecked() else v.selected_connection_id)
+            (selected_custom_id or "") if custom_mode else v.selected_connection_id)
         v.strict_identity = self.strict_check.isChecked()
         v.prompt_mode = self.prompt_mode_combo.currentData() or "standard"
         v.detail_level = self.detail_combo.currentData()
@@ -907,16 +935,33 @@ class VlmSettingsDialog(QDialog):
         enabled_providers = [self._route_rows[cid]["conn"].provider_id
                              for cid in self._route_order
                              if self._route_rows[cid]["enabled"].isChecked()]
+        if not custom_mode and not enabled_providers:
+            QMessageBox.warning(self, self._t("Vlm", "Settings_Routes"),
+                                self._t("Vlm", "Settings_Route_Select_Required"))
+            return
         if enabled_providers:
             v.connection_order = ",".join(enabled_providers)
         # API キーは「APIキー登録」ボタン経由で即時保存されるので、ここでは扱わない。
 
-        vlm_config.save_custom_connections(self._custom_connections)
-        try:
-            save_config(self._settings)
-        except Exception:  # noqa: BLE001
-            pass
+        custom_saved = vlm_config.save_custom_connections(self._custom_connections)
+        config_saved = save_config(self._settings)
+        if not custom_saved or not config_saved:
+            QMessageBox.critical(self, self._t("Vlm", "Settings_Title"),
+                                 self._t("Vlm", "Settings_Save_Failed"))
+            return
+        self._dialog_saved = True
         self.accept()
+
+    def _restore_unsaved_vlm(self) -> None:
+        """Close/Cancelでダイアログだけの変更を元へ戻す。
+
+        APIキー登録・接続確認は即時保存の操作なので、その結果を保持する。
+        """
+        immediate = {"verified_bindings", "cloudflare_account_id", "anthropic_workspace_id"}
+        for field in dataclasses.fields(self._vlm):
+            if field.name not in immediate:
+                setattr(self._vlm, field.name,
+                        getattr(self._vlm_before_dialog, field.name))
 
 
 def _combo(pairs) -> QComboBox:

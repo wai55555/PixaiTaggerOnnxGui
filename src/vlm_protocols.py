@@ -137,7 +137,7 @@ class VlmProtocol:
     @staticmethod
     def _error_from_status(status: int, text_body: str, provider_code: str = "") -> VlmAttemptError:
         return VlmAttemptError(
-            reason=reason_from_http_status(status),
+            reason=reason_from_http_status(status, text_body, provider_code),
             http_status=status,
             message=(text_body or "")[:500],
             provider_code=provider_code,
@@ -353,7 +353,13 @@ class GeminiGenerateContentProtocol(VlmProtocol):
         finish = str(extract_by_path(body, "candidates[0].finishReason") or "")
         if finish in ("SAFETY", "PROHIBITED_CONTENT", "BLOCKLIST"):
             return VlmParseResult(error=VlmAttemptError(VlmErrorReason.CONTENT_POLICY, 200, f"finishReason={finish}"))
-        text = _gemini_answer_text(body) or extract_by_path(body, self.default_text_path)
+        # A custom response path is an explicit contract.  Do not silently fall back
+        # to Gemini's usual candidate-part scan, otherwise a response can appear
+        # successful while the configured path is actually wrong.
+        if self.default_text_path != type(self).default_text_path:
+            text = extract_by_path(body, self.default_text_path)
+        else:
+            text = _gemini_answer_text(body) or extract_by_path(body, self.default_text_path)
         pt = _as_int(extract_by_path(body, "usageMetadata.promptTokenCount"))
         ct = _as_int(extract_by_path(body, "usageMetadata.candidatesTokenCount"))
         if not isinstance(text, str) or not text.strip():

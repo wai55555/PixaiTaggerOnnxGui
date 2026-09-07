@@ -117,7 +117,10 @@ def _profile_from_dict(d: dict) -> VlmModelProfile | None:
     if not pid:
         return None
     bindings: dict[str, ModelBinding] = {}
-    for prov, b in (d.get("bindings") or {}).items():
+    raw_bindings = d.get("bindings")
+    if not isinstance(raw_bindings, dict):
+        return None
+    for prov, b in raw_bindings.items():
         if not isinstance(b, dict):
             continue
         mid = str(b.get("model_id", "")).strip()
@@ -280,7 +283,7 @@ def _apply_verified_promotions(profile, vlm_settings):
         if (_binding_token(profile.profile_id, pid) in verified
                 and binding.identity_status is not ModelIdentityStatus.VERIFIED):
             changed[pid] = dataclasses.replace(
-                binding, identity_status=ModelIdentityStatus.VERIFIED, provider_constraint=None)
+                binding, identity_status=ModelIdentityStatus.VERIFIED)
         else:
             changed[pid] = binding
     return dataclasses.replace(profile, bindings=changed)

@@ -115,7 +115,7 @@ def build_prompt_preview(
     custom_system_prompt_active = bool(profile.custom_system_prompt.strip())
     settings = (
         PromptPreviewSetting("prompt_mode", profile.prompt_mode.value, "prompt",
-                             custom_system_prompt_active),
+                             False),
         PromptPreviewSetting("language", profile.language, "prompt", custom_system_prompt_active),
         PromptPreviewSetting("detail_level", profile.detail_level.value, "prompt",
                              custom_system_prompt_active,

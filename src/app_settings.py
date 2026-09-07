@@ -367,7 +367,13 @@ def _load_vlm(config: configparser.ConfigParser) -> Vlm:
     d = Vlm()
     g = lambda k, fb: config.get('Vlm', k, fallback=fb)  # noqa: E731
     gb = lambda k, fb: config.getboolean('Vlm', k, fallback=fb)  # noqa: E731
-    gi = lambda k, fb: config.getint('Vlm', k, fallback=fb)  # noqa: E731
+
+    def gi(k: str, fb: int) -> int:
+        try:
+            return config.getint('Vlm', k, fallback=fb)
+        except (TypeError, ValueError):
+            return fb
+
     return Vlm(
         enabled=gb('enabled', d.enabled),
         model_profile_id=g('model_profile_id', d.model_profile_id),
@@ -391,8 +397,12 @@ def _load_vlm(config: configparser.ConfigParser) -> Vlm:
     )
 
 
-def save_config(settings: AppSettings):
-    """Saves the AppSettings object to the config.ini file."""
+def save_config(settings: AppSettings) -> bool:
+    """Saves the AppSettings object to the config.ini file.
+
+    Return the persistence result so dialogs can keep unsaved changes open when the
+    configuration file cannot be written.
+    """
     write_debug_log(_get_string("ConfigUtils", "Settings_Save_Start"), _get_string)
     config = configparser.ConfigParser()
 
@@ -439,8 +449,10 @@ def save_config(settings: AppSettings):
         with open(CONFIG_PATH, 'w', encoding='utf-8') as f:
             config.write(f)
         write_debug_log(_get_string("ConfigUtils", "Config_File_Save_Success", CONFIG_PATH=CONFIG_PATH), _get_string)
+        return True
     except Exception as e:
         write_debug_log(_get_string("ConfigUtils", "Config_File_Save_Failed", e=e), _get_string)
+        return False
 def update_model_verification_status(model_id: str, is_verified: bool, get_string: GetString):
     """
     Loads config, sets the verification status for a single model_id, and saves it.

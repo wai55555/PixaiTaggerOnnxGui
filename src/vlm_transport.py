@@ -147,6 +147,7 @@ class ConnectionRuntime:
     excluded_reason: str = ""            # 空なら候補として生きている
     consecutive_timeouts: int = 0
     retried_same_this_image: bool = False
+    same_retries_this_image: int = 0
     rate_limit: RateLimitState | None = None
 
     @property
@@ -239,6 +240,7 @@ class VlmExecutor:
                 continue
 
             rt.retried_same_this_image = False
+            rt.same_retries_this_image = 0
             outcome = self._try_connection(conn, image, profile, spec_base, result)
             if outcome == "success":
                 return result
@@ -274,7 +276,7 @@ class VlmExecutor:
         # 同一接続での再試行回数の上限。分類ロジックが必ず有限回で FAILOVER へ倒す
         # 想定だが、将来の分類変更で無限ループにならないための保険も兼ねる。
         same_conn_attempts = 0
-        max_same_conn_attempts = max(1, conn.retry.retry_same_max) + 1
+        max_same_conn_attempts = max(0, conn.retry.retry_same_max) + 1
 
         while True:
             if self._stop():
@@ -317,8 +319,13 @@ class VlmExecutor:
             else:
                 rt.consecutive_timeouts = 0
 
-            cls = err.classify(consecutive_timeouts=rt.consecutive_timeouts,
-                               already_retried_same=rt.retried_same_this_image)
+            cls = err.classify(
+                consecutive_timeouts=rt.consecutive_timeouts,
+                already_retried_same=rt.retried_same_this_image,
+                same_retries=rt.same_retries_this_image,
+                retry_same_max=conn.retry.retry_same_max,
+                retry_5xx=conn.retry.retry_5xx,
+            )
             result.attempts.append(AttemptRecord(
                 connection_id=conn.connection_id, model_id=conn.model_id,
                 http_status=err.http_status, error_reason=err.reason.value,
@@ -330,6 +337,7 @@ class VlmExecutor:
 
             if cls is VlmErrorClass.RETRY_SAME and same_conn_attempts < max_same_conn_attempts:
                 rt.retried_same_this_image = True
+                rt.same_retries_this_image += 1
                 continue
             if cls is VlmErrorClass.EXCLUDE:
                 rt.excluded_reason = err.reason.value

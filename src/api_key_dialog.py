@@ -46,6 +46,7 @@ class ApiKeyDialog(QDialog):
         self._on_anthropic_workspace_saved = on_anthropic_workspace_saved
         self._on_binding_confirmed = on_binding_confirmed
         self._saved = False
+        self._cancel_requested = False
         self._check_thread: QThread | None = None
         self._check_worker: VlmDiagnosticsWorker | None = None
         self.setWindowTitle(get_string("Vlm", "ApiKey_Title", service=display_name))
@@ -275,6 +276,9 @@ class ApiKeyDialog(QDialog):
         if self._check_thread is not None:
             self._check_thread.deleteLater()
             self._check_thread = None
+        if self._cancel_requested:
+            self._set_busy(False)
+            return
         failed = getattr(self, "_verify_failed", self._t("Vlm", "ApiKey_Failed_Generic"))
         if failed:
             self._set_busy(False)
@@ -358,9 +362,13 @@ class ApiKeyDialog(QDialog):
             th.wait(45000)   # 診断の最大 connect(10s)+read(30s) を上回る値
 
     def done(self, r: int) -> None:
+        if r != QDialog.DialogCode.Accepted and self._check_thread is not None:
+            self._cancel_requested = True
         self._await_check()
         super().done(r)
 
     def closeEvent(self, event) -> None:
+        if self._check_thread is not None:
+            self._cancel_requested = True
         self._await_check()
         super().closeEvent(event)

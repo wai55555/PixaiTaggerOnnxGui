@@ -26,6 +26,7 @@ from vlm_protocols import (
     get_protocol, apply_request_headers,
 )
 from vlm_transport import RawHttpResponse, execute_http
+from vlm_model_list import _extract_catalog
 
 # Cloudflare のトークン検証はアカウント ID やモデルに依存しない専用エンドポイント。
 _CLOUDFLARE_TOKEN_VERIFY_URL = "https://api.cloudflare.com/client/v4/user/tokens/verify"
@@ -238,7 +239,16 @@ def _run_lightweight_probe(rep: DiagReport, conn: VlmConnection,
     provider_detail = _response_error_detail(raw)
     rep.billing_blocked = is_billing_or_credit_block(provider_detail)
     if raw.status == 200 and isinstance(raw.json_body, (dict, list)):
-        rep.add("HTTP response", DiagStatus.PASS, "200 OK (lightweight model-list check)")
+        try:
+            model_entries = _extract_catalog(raw.json_body, conn.provider_id)
+        except (TypeError, ValueError, AttributeError):
+            model_entries = []
+        if model_entries:
+            rep.add("HTTP response", DiagStatus.PASS,
+                    f"200 OK (lightweight model-list check; {len(model_entries)} entries)")
+        else:
+            rep.add("HTTP response", DiagStatus.FAIL,
+                    "200 OK but model-list response contained no model entries")
     elif rep.billing_blocked:
         detail = f"{raw.status} billing / credits unavailable (endpoint reached; inference not verified)"
         if provider_detail:
@@ -291,7 +301,13 @@ def diagnose(conn: VlmConnection, api_key: str | None, *,
     rep = DiagReport(connection_id=conn.connection_id, lightweight=lightweight)
 
     # 1. URL / 設定値の形式
-    parsed = urlparse(conn.base_url)
+    try:
+        parsed = urlparse(conn.base_url)
+        # Accessing .port is itself validating for malformed ports and bracketed IPv6.
+        parsed_port = parsed.port
+    except ValueError as e:
+        rep.add("URL format", DiagStatus.FAIL, f"invalid base_url: {e}")
+        return rep
     if parsed.scheme not in ("http", "https") or not parsed.netloc:
         rep.add("URL format", DiagStatus.FAIL, f"invalid base_url: {conn.base_url!r}")
         return rep
@@ -327,7 +343,7 @@ def diagnose(conn: VlmConnection, api_key: str | None, *,
         rep.add("Protocol", DiagStatus.PASS, conn.protocol)
 
     host = parsed.hostname or ""
-    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    port = parsed_port or (443 if parsed.scheme == "https" else 80)
 
     if not do_live_request:
         # 静的検査モード: ネットワークに触れない（DNS / TCP / TLS / 実リクエストを飛ばす）。
@@ -495,6 +511,10 @@ def _classify_extraction(raw: RawHttpResponse, protocol, configured_path: str = 
     MAX_TOKENS / length）がある。その場合はエンドポイント・認証・リクエスト形状は通って
     いるので WARN 止まり。真に形が違うときだけ FAIL（本文の頭を付ける）。
     """
+    if raw.status == 200 and configured_path and isinstance(raw.json_body, (dict, list)):
+        configured = extract_by_path(raw.json_body, configured_path)
+        if isinstance(configured, str) and configured.strip():
+            return DiagStatus.PASS, f"got {len(configured.strip())} chars via {configured_path}"
     parsed = protocol.parse_response(raw.status, raw.json_body, raw.text_body)
     if parsed.ok:
         return DiagStatus.PASS, f"got {len(parsed.text or '')} chars"

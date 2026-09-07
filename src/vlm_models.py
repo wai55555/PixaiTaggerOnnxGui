@@ -186,25 +186,26 @@ GEMMA_4_26B_A4B_IT = VlmModelProfile(
     },
 )
 
-# --- 2.2 「後から追加する内蔵候補」。実モデル ID は接続で確定させる前提なので UNKNOWN。
+# --- 2.2 Gemma 4 31B IT。各ホスト型経路の実体は DECLARED とし、軽量確認または
+# 生成成功後に `[Vlm] verified_bindings` で VERIFIED へ昇格させる。
 GEMMA_4_31B_IT = VlmModelProfile(
     profile_id="gemma-4-31b-it",
     display_name="Gemma 4 31B IT",
     canonical_model_id="gemma-4-31b-it",
     family="Gemma 4",
     base_model="gemma-4-31b-it",
-    quantization="unknown",
+    quantization="provider_managed",
     aliases=("google/gemma-4-31b-it", "google/gemma-4-31b-it:free", "@cf/google/gemma-4-31b-it"),
     bindings={
-        "gemini": ModelBinding("gemini", "gemma-4-31b-it", ModelIdentityStatus.UNKNOWN),
+        "gemini": ModelBinding("gemini", "gemma-4-31b-it", ModelIdentityStatus.DECLARED),
         "openrouter": ModelBinding("openrouter", "google/gemma-4-31b-it:free",
-                                   ModelIdentityStatus.UNKNOWN),
+                                   ModelIdentityStatus.DECLARED),
         "cloudflare": ModelBinding("cloudflare", "@cf/google/gemma-4-31b-it",
-                                   ModelIdentityStatus.UNKNOWN),
-        "nvidia": ModelBinding("nvidia", "google/gemma-4-31b-it", ModelIdentityStatus.UNKNOWN),
-        "groq": ModelBinding("groq", "gemma-4-31b-it", ModelIdentityStatus.UNKNOWN),
+                                   ModelIdentityStatus.DECLARED),
+        "nvidia": ModelBinding("nvidia", "google/gemma-4-31b-it", ModelIdentityStatus.DECLARED),
+        "groq": ModelBinding("groq", "gemma-4-31b-it", ModelIdentityStatus.DECLARED),
         "huggingface": ModelBinding("huggingface", "google/gemma-4-31B-it",
-                                     ModelIdentityStatus.UNKNOWN),
+                                     ModelIdentityStatus.DECLARED),
         "vercel": ModelBinding("vercel", "google/gemma-4-31b-it",
                                 ModelIdentityStatus.DECLARED),
     },
@@ -854,9 +855,6 @@ def _known_vision_model_ids(provider_id: str) -> set[str]:
             continue
         if binding.model_id:
             ids.add(binding.model_id.strip().lower())
-        ids.update(a.strip().lower() for a in profile.aliases if a.strip())
-        if profile.canonical_model_id:
-            ids.add(profile.canonical_model_id.strip().lower())
     return ids
 
 
@@ -895,8 +893,28 @@ def is_vlm_model_id(profile: VlmModelProfile | None, provider_id: str,
         return False
     known_profile = _known_profile_for_model(provider_id, model_id)
     if profile is not None and profile.binding_for(provider_id) is not None:
-        if model_id.strip().lower() in _profile_model_ids(profile, provider_id):
+        low = model_id.strip().lower()
+        binding = profile.binding_for(provider_id)
+        # A profile's aliases are shared metadata, but many aliases are provider
+        # specific (for example OpenRouter's :free ID is not Gemini's ID). The
+        # current provider's exact binding is authoritative; an exact binding from
+        # another provider is not an acceptable substitute. Identical IDs on two
+        # providers remain valid because the current binding matches first.
+        if binding is not None and low == binding.model_id.strip().lower():
+            static_capability, _ = classify_model_capability(provider_id, model_id)
+            discovered = _DISCOVERED_VLM_MODEL_IDS.get(
+                (provider_id or "").strip().lower(), set())
+            return (static_capability is True
+                    or low in _known_vision_model_ids(provider_id)
+                    or _base_catalog_model_id(model_id) in discovered)
+        if any(other_provider != provider_id
+               and other_binding.model_id.strip().lower() == low
+               for other_provider, other_binding in profile.bindings.items()):
+            return False
+        if profile.canonical_model_id and low == profile.canonical_model_id.strip().lower():
             return True
+        if low in {alias.strip().lower() for alias in profile.aliases if alias.strip()}:
+            return False
         # 既知の別プロファイルIDを、同じ世代というだけで別モデルとして採用しない。
         if known_profile is not None and known_profile.profile_id != profile.profile_id:
             return False

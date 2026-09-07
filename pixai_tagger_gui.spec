@@ -13,7 +13,7 @@ _source_dir = os.path.join(_project_root, 'src')
 # the models/<model_id>/ directory structure. constants._seed_bundled_model_files() copies
 # them out of _internal/ into the user-visible models/ folder on first launch.
 _model_datas = [
-    (p, os.path.dirname(p))
+    (p, os.path.relpath(os.path.dirname(p), _project_root))
     for p in glob.glob(os.path.join(_project_root, 'models', '*', 'model_config.json'))
 ]
 
@@ -35,7 +35,8 @@ def _translation_suffixes():
 # both gitignored - that would make the build depend on the developer's local downloads.
 _pixai_dir = os.path.join(_project_root, 'models', 'pixai-tagger-v0.9')
 _model_datas += [
-    (os.path.join(_pixai_dir, f'selected_tags_{suffix}.csv'), _pixai_dir)
+    (os.path.join(_pixai_dir, f'selected_tags_{suffix}.csv'),
+     os.path.relpath(_pixai_dir, _project_root))
     for suffix in _translation_suffixes()
     if os.path.isfile(os.path.join(_pixai_dir, f'selected_tags_{suffix}.csv'))
 ]

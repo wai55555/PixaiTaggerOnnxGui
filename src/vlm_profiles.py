@@ -117,7 +117,7 @@ def _clamp_int(raw: object, default: int, *, lo: int, hi: int) -> int:
 # --- プロンプト組み立て（spec.md 5章） ----------------------------------------------
 
 _BASE_INSTRUCTION = (
-    "Write a highly detailed English natural-language caption for this image.\n"
+    "Write a highly detailed natural-language caption for this image.\n"
     "Describe only what is visibly supported by the image.\n"
     "Do not invent names, events, locations, or details that cannot be seen.\n"
     "Do not output an introductory explanation or a trailing summary."
@@ -165,7 +165,7 @@ _MARKDOWN_DISABLED_CLAUSE = (
 # tag-like output.  Keep all three factual and image-grounded; the training
 # caption mode must not turn visible uncertainty into invented metadata.
 _DATASET_LONG_INSTRUCTION = (
-    "Write a dense English training caption for this image as one natural-language "
+    "Write a dense training caption for this image as one natural-language "
     "paragraph.\n"
     "Describe only what is visibly supported by the image, including the main "
     "subject(s), count, appearance, hair, face, expression, clothing, pose, action, "
@@ -179,7 +179,7 @@ _DATASET_LONG_INSTRUCTION = (
 )
 
 _SHORT_TAGS_INSTRUCTION = (
-    "Convert this image into a concise English list of comma-separated visual tags.\n"
+    "Convert this image into a concise list of comma-separated visual tags.\n"
     "Prioritize the main subject(s), count, visible appearance, hair, clothing, pose, "
     "action, setting, composition, colors, lighting, and clearly visible style or "
     "medium.\n"
@@ -204,15 +204,11 @@ def build_system_prompt(profile: GenerationProfile) -> str:
         return profile.custom_system_prompt.strip()
 
     if profile.prompt_mode is PromptMode.DATASET_LONG:
-        parts = [_DATASET_LONG_INSTRUCTION]
-        if profile.language.lower() not in ("en", "english", ""):
-            parts.append(f"Write the caption in {profile.language}.")
+        parts = [_DATASET_LONG_INSTRUCTION, _language_clause(profile.language)]
         return "\n".join(parts)
 
     if profile.prompt_mode is PromptMode.SHORT_TAGS:
-        parts = [_SHORT_TAGS_INSTRUCTION]
-        if profile.language.lower() not in ("en", "english", ""):
-            parts.append(f"Write the tags in {profile.language}.")
+        parts = [_SHORT_TAGS_INSTRUCTION, _language_clause(profile.language)]
         return "\n".join(parts)
 
     parts = [_BASE_INSTRUCTION, _DETAIL_CLAUSE[profile.detail_level],
@@ -220,9 +216,18 @@ def build_system_prompt(profile: GenerationProfile) -> str:
              _CHARACTER_CLAUSE[profile.character_name_mode]]
     if profile.markdown is MarkdownMode.DISABLED:
         parts.append(_MARKDOWN_DISABLED_CLAUSE)
-    if profile.language.lower() not in ("en", "english", ""):
-        parts.append(f"Write the caption in {profile.language}.")
+    parts.append(_language_clause(profile.language))
     return "\n".join(parts)
+
+
+def _language_clause(language: str) -> str:
+    raw = str(language or "en").strip()
+    labels = {
+        "en": "English", "english": "English", "ja": "Japanese", "japanese": "Japanese",
+        "zh": "Chinese", "zh-cn": "Chinese", "zh_tw": "Traditional Chinese",
+        "ko": "Korean", "fr": "French", "de": "German", "es": "Spanish",
+    }
+    return f"Write the output in {labels.get(raw.lower(), raw or 'English')}."
 
 
 def build_user_prompt(profile: GenerationProfile) -> str:

@@ -58,7 +58,7 @@ def _first_int(headers: dict, names: tuple[str, ...]) -> int | None:
             continue
         try:
             return int(float(v))
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             continue
     return None
 

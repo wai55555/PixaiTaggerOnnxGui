@@ -190,14 +190,20 @@ def _extract_catalog(body, provider_id: str) -> list[ModelCatalogEntry]:
     return []
 
 
-def filter_vlm_catalog(entries: list[ModelCatalogEntry]) -> list[ModelCatalogEntry]:
-    """一覧から、画像→テキストが確認できた行だけを順序維持で返す。"""
+def filter_vlm_catalog(entries: list[ModelCatalogEntry], *,
+                       exclude_disabled_markers: bool = True) -> list[ModelCatalogEntry]:
+    """一覧から、画像→テキストが確認できた行だけを順序維持で返す。
+
+    Mistral/Pixtral は内蔵候補からは除外するが、カスタム接続は利用者が明示的に
+    登録した接続なので、そこで同モデルを選ぶ権利まで奪わない。
+    """
     out: list[ModelCatalogEntry] = []
     seen: set[str] = set()
     for entry in entries:
         model_low = entry.model_id.lower()
         if (entry.is_vlm
-                and not any(marker in model_low for marker in _DISABLED_BUILTIN_VLM_MARKERS)
+                and (not exclude_disabled_markers
+                     or not any(marker in model_low for marker in _DISABLED_BUILTIN_VLM_MARKERS))
                 and entry.model_id not in seen):
             seen.add(entry.model_id)
             out.append(entry)

@@ -598,6 +598,9 @@ class MainWindow(QMainWindow):
         rel = current_item.data(Qt.ItemDataRole.UserRole + 1)
         selected_path = Path(self.settings.paths.input_dir) / rel
 
+        # ASK/overwrite decisions belong to a batch session and must not leak into
+        # the independent single-image test.
+        self._session_mode_override = None
         self._cleanup_tagger_thread()
         self._update_ui_for_processing(True, 'tagging')
         self._tagger_thread = QThread()
@@ -1663,6 +1666,7 @@ class MainWindow(QMainWindow):
         model_id = self.model_combo.itemData(index)
         if not model_id or model_id == self.settings.model.model_id:
             return
+        self._save_current_caption()
         self.settings.model.model_id = model_id
         self.save_current_config()
         self.model_combo.setToolTip(self.locale_manager.get_string("ModelDescriptions", model_id))
@@ -1929,7 +1933,7 @@ class MainWindow(QMainWindow):
 
     def _check_model_status_and_update_ui(self, auto_start_download: bool = False, force_download: bool = False):
         """Checks for model files and updates the run button's state and appearance."""
-        if not force_download and self._is_model_available():
+        if not force_download and (self.settings.vlm.enabled or self._is_model_available()):
             self.run_button.setText(self.locale_manager.get_string("Constants", "Tag_Button_Text"))
             self.run_button.setStyleSheet(constants.STYLE_BTN_GREEN)
             self.run_button.setEnabled(True)

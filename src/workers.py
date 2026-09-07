@@ -473,11 +473,6 @@ class TaggerThreadWorker(QObject):
                 write_debug_log(str(self.get_string("Workers", "TaggerThreadWorker_Core_Log", message=message)), self.get_string)
                 self.log_message.emit(message, color)
 
-            # 失敗収集: process_image_loop の失敗分岐は tagging_core 側にあり
-            # （当ファイルからは変更不可）、いずれも「出力 .txt を書かずに continue」
-            # する。処理前に存在した .txt を除外すれば、残りの未書き込み＝失敗
-            # （または停止による未処理＝FAILED 再実行の対象）として集められる。
-            pre_existing = {p.with_suffix(".txt") for p in image_paths if p.with_suffix(".txt").is_file()}
             changed_files = process_image_loop(
                 tagger=tagger,
                 image_paths=image_paths,
@@ -487,9 +482,8 @@ class TaggerThreadWorker(QObject):
                 stop_checker=self.is_stopped,
                 get_string=self.get_string,
                 progress_cb=self.progress_update.emit,
+                failed_paths=failed,
             )
-            changed_paths = {c.path for c in changed_files}
-            failed = [p for p in image_paths if p.with_suffix(".txt") not in changed_paths and p.with_suffix(".txt") not in pre_existing]
             self.batch_completed.emit(changed_files)
             self.batch_failed.emit(failed)
             

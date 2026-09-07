@@ -165,14 +165,20 @@ class VlmCaptionWorker(QObject):
         candidates = select_candidates(model_profile, connections, policy,
                                        has_auth=has_auth, supports_image=supports_image)
         executor = VlmExecutor(connections, vlm_secrets.get_secret, stop_checker=self.is_stopped)
+        image_cfg = ImagePreprocessConfig(
+            max_long_edge=gen_profile.image_max_long_edge,
+            fmt=gen_profile.image_format, jpeg_quality=gen_profile.image_jpeg_quality)
+        if policy.execution_mode is ExecutionMode.CUSTOM_SINGLE:
+            custom_conn = connections.get(policy.selected_connection_id or "")
+            if custom_conn is not None and custom_conn.image_max_long_edge:
+                image_cfg = dataclasses.replace(
+                    image_cfg, max_long_edge=custom_conn.image_max_long_edge)
         return {
             "connections": connections, "gen_profile": gen_profile, "policy": policy,
             "candidates": candidates, "executor": executor,
             "system_prompt": build_system_prompt(gen_profile),
             "user_prompt": build_user_prompt(gen_profile),
-            "image_cfg": ImagePreprocessConfig(
-                max_long_edge=gen_profile.image_max_long_edge,
-                fmt=gen_profile.image_format, jpeg_quality=gen_profile.image_jpeg_quality),
+            "image_cfg": image_cfg,
         }
 
     def _spec_base_for(self, image_path: Path, rt) -> dict | None:
@@ -215,6 +221,9 @@ class VlmCaptionWorker(QObject):
                 return
             result = rt["executor"].caption_one(spec_base, rt["candidates"].connection_ids)
             self._emit_attempt_summary(image_path.name, result)
+            if self.is_stopped() or result.stopped:
+                self.log_message.emit(self.get_string("Vlm", "Stopped_By_User"), "orange")
+                return
             if not result.ok:
                 return
 
@@ -295,6 +304,7 @@ class VlmCaptionWorker(QObject):
             for i, image_path in enumerate(image_paths):
                 if self.is_stopped():
                     self.log_message.emit(self.get_string("Vlm", "Stopped_By_User"), "orange")
+                    failed.extend(image_paths[i:])
                     break
                 if (i + 1) % step == 0 or i == total - 1:
                     self.progress_update.emit(i + 1, total)
@@ -303,6 +313,7 @@ class VlmCaptionWorker(QObject):
                 # エラーを吐き続けず（issue #10 と同じ飽和）1行で打ち切る。
                 if not executor.live_candidates(candidates.connection_ids):
                     self.log_message.emit(self.get_string("Vlm", "All_Connections_Exhausted"), "red")
+                    failed.extend(image_paths[i:])
                     break
 
                 output_path = image_path.with_suffix(".txt")
@@ -325,12 +336,14 @@ class VlmCaptionWorker(QObject):
                     continue
 
                 result = executor.caption_one(spec_base, candidates.connection_ids)
-                if result.stopped:
+                if self.is_stopped() or result.stopped:
                     self.log_message.emit(self.get_string("Vlm", "Stopped_By_User"), "orange")
+                    failed.extend(image_paths[i:])
                     break
                 if result.stop_job:
                     reason = _error_reason_for_log(result.error) if result.error else "prompt_format_error"
                     self.log_message.emit(self.get_string("Vlm", "Job_Stopped", reason=reason), "red")
+                    failed.extend(image_paths[i:])
                     break
                 if not result.ok:
                     n_errors += 1

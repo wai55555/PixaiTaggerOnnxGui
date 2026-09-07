@@ -89,6 +89,13 @@ def get_secret(secret_ref: str) -> str | None:
     """secret_ref に対応する秘密値を返す。見つからなければ None。"""
     if not secret_ref:
         return None
+    # A value explicitly entered during this session is an intentional override of
+    # keyring/.env values (for example when the user replaces an environment key
+    # without checking persistent storage). It is still session-only after restart.
+    with _lock:
+        session_value = _session_store.get(secret_ref)
+    if session_value:
+        return session_value
     # 1. keyring
     if keyring is not None:
         try:
@@ -102,9 +109,7 @@ def get_secret(secret_ref: str) -> str | None:
         v = os.environ.get(name)
         if v:
             return v
-    # 3. セッション
-    with _lock:
-        return _session_store.get(secret_ref)
+    return None
 
 
 def set_secret(secret_ref: str, value: str, *, persist: bool) -> bool:
@@ -144,6 +149,9 @@ def secret_status(secret_ref: str) -> str:
     """UI 表示用: 秘密値の在り処。'keyring' / 'env' / 'session' / 'missing'。"""
     if not secret_ref:
         return "missing"
+    with _lock:
+        if secret_ref in _session_store and _session_store[secret_ref]:
+            return "session"
     if keyring is not None:
         try:
             if keyring.get_password(_SERVICE, secret_ref):
@@ -153,9 +161,6 @@ def secret_status(secret_ref: str) -> str:
     for name in _env_candidates(secret_ref):
         if os.environ.get(name):
             return "env"
-    with _lock:
-        if secret_ref in _session_store:
-            return "session"
     return "missing"
 
 

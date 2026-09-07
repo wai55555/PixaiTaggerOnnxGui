@@ -91,9 +91,10 @@ def save_caption(output_path: Path, caption: str, placement: str) -> SaveOutcome
         raise ValueError("empty caption")
 
     previous_content: str | None = None
-    if output_path.is_file():
+    fs_output_path = Path(_long_path_str(output_path))
+    if fs_output_path.is_file():
         # 読めない既存ファイルは新規扱いにしない（undo での破壊防止。PR#16 と同方針）。
-        previous_content = output_path.read_text(encoding="utf-8")
+        previous_content = fs_output_path.read_text(encoding="utf-8")
 
     if placement in ("APPEND", "PREPEND") and previous_content is not None:
         if caption_already_present(previous_content, caption):
@@ -110,22 +111,23 @@ def save_caption(output_path: Path, caption: str, placement: str) -> SaveOutcome
 
 
 def _atomic_write(output_path: Path, content: str) -> None:
-    output_path.parent.mkdir(parents=True, exist_ok=True)
+    os.makedirs(_long_path_str(output_path.parent), exist_ok=True)
     tmp = output_path.with_name(f"{output_path.stem}.{uuid.uuid4().hex}.vlmtmp")
+    long_tmp = _long_path_str(tmp)
     try:
-        with open(_long_path_str(tmp), "w", encoding="utf-8", newline="\n") as f:
+        with open(long_tmp, "w", encoding="utf-8", newline="\n") as f:
             f.write(content)
             f.flush()
             os.fsync(f.fileno())
         # 検証: 書いた内容が読み直せて一致するか。newline="" で改行変換を無効化する
         # （universal newlines だと content に \r\n が含まれる場合に誤って不一致になる）。
-        with open(_long_path_str(tmp), "r", encoding="utf-8", newline="") as f:
+        with open(long_tmp, "r", encoding="utf-8", newline="") as f:
             if f.read() != content:
                 raise OSError("verification mismatch after write")
         os.replace(_long_path_str(tmp), _long_path_str(output_path))
     finally:
         try:
-            if tmp.exists():
-                tmp.unlink()
+            if os.path.exists(long_tmp):
+                os.unlink(long_tmp)
         except OSError:
             pass

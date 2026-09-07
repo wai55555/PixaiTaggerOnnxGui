@@ -66,7 +66,7 @@ Double-clicking, wheel, and dragging are also effective when displaying 3x3. Ctr
 -   **Built-in services with same-model fallback**: Gemini API, OpenRouter and Cloudflare Workers AI are built in (plus Groq, NVIDIA NIM and Mistral). If one service refuses or is rate limited, the next service offering the *same* model is tried automatically - it never silently switches to a different model.
 -   **Custom connections**: Add any OpenAI-compatible endpoint, including local servers such as Ollama, LM Studio, llama.cpp or vLLM.
 -   **Keys stay out of `config.ini`**: Register an API key from the VLM settings dialog; it is checked with one real request and stored in the OS keyring (or read from a `.env` file / environment variable).
--   **Free routes only, by default**: Only routes the app can confirm as free are used unless you explicitly allow paid continuation. Detail level, sentence count, character-name policy and Markdown are adjustable, and captions combine with an existing `.txt` (prepend / append / overwrite) just like tagging output.
+-   **Routes follow your selection**: Only enabled, authenticated routes you ordered are tried; provider billing and metered usage follow each service's terms. No route is treated as free. Detail level, sentence count, character-name policy and Markdown are adjustable, and captions combine with an existing `.txt` (prepend / append / overwrite) just like tagging output.
 
 ## License
 

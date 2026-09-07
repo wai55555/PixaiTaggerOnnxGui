@@ -113,6 +113,11 @@ def select_candidates(
         if status is ModelIdentityStatus.UNKNOWN:
             result.excluded[cid] = "identity_unknown"
             continue
+        if (not policy.allow_declared_identity
+                and status is ModelIdentityStatus.VERIFIED
+                and not profile.quantization_is_strict()):
+            result.excluded[cid] = "quantization_unknown"
+            continue
         if status is not ModelIdentityStatus.VERIFIED and not policy.allow_declared_identity:
             result.excluded[cid] = "not_verified"
             continue

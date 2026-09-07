@@ -41,27 +41,35 @@ class VlmAttemptError:
     # サーバーが返したエラーコード文字列（あれば）。ログ用。
     provider_code: str = ""
 
-    def classify(self, *, consecutive_timeouts: int = 0, already_retried_same: bool = False) -> VlmErrorClass:
+    def classify(self, *, consecutive_timeouts: int = 0,
+                 already_retried_same: bool = False,
+                 same_retries: int | None = None,
+                 retry_same_max: int = 1,
+                 retry_5xx: bool = True) -> VlmErrorClass:
         """このエラーに対する行動を返す（spec.md 8.2 の表）。
 
         - consecutive_timeouts: この接続で連続何回目のタイムアウトか（1 が初回）
         - already_retried_same: 同一接続でのリトライを今回すでに1回使ったか
         """
         r = self.reason
+        retries = (int(same_retries) if same_retries is not None
+                   else (1 if already_retried_same else 0))
+        can_retry_same = max(0, int(retry_same_max)) > retries
         if r is VlmErrorReason.TIMEOUT:
-            if consecutive_timeouts <= 1 and not already_retried_same:
+            if can_retry_same:
                 return VlmErrorClass.RETRY_SAME
             return VlmErrorClass.FAILOVER
         if r is VlmErrorReason.RATE_LIMITED:
             return VlmErrorClass.FAILOVER          # 待機しない
         if r is VlmErrorReason.SERVER_ERROR:
-            return VlmErrorClass.RETRY_SAME if not already_retried_same else VlmErrorClass.FAILOVER
+            return (VlmErrorClass.RETRY_SAME
+                    if retry_5xx and can_retry_same else VlmErrorClass.FAILOVER)
         if r in (VlmErrorReason.AUTH_ERROR, VlmErrorReason.MODEL_UNSUPPORTED):
             return VlmErrorClass.EXCLUDE
         if r is VlmErrorReason.CONTENT_POLICY:
             return VlmErrorClass.FAILOVER
         if r is VlmErrorReason.EMPTY_RESPONSE:
-            return VlmErrorClass.RETRY_SAME if not already_retried_same else VlmErrorClass.FAILOVER
+            return VlmErrorClass.RETRY_SAME if can_retry_same else VlmErrorClass.FAILOVER
         if r is VlmErrorReason.OUTPUT_LIMIT:
             # 設定値を変えない限り同じ応答になるため、同一接続では無駄に再試行しない。
             return VlmErrorClass.FAILOVER
@@ -75,13 +83,27 @@ class VlmAttemptError:
         return VlmErrorClass.FAILOVER
 
 
-def reason_from_http_status(status: int) -> VlmErrorReason:
+def _looks_like_prompt_format(message: str, provider_code: str = "") -> bool:
+    low = f"{provider_code} {message}".lower()
+    return any(marker in low for marker in (
+        "messages[", "content must be", "content[", "image_url", "input_image",
+        "inline_data", "inlineimage", "multimodal", "prompt format",
+        "request body", "invalid image", "image input", "unsupported content",
+    ))
+
+
+def reason_from_http_status(status: int, message: str = "",
+                            provider_code: str = "") -> VlmErrorReason:
+    if status == 408:
+        return VlmErrorReason.TIMEOUT
     if status == 429:
         return VlmErrorReason.RATE_LIMITED
     if status in (401, 403):
         return VlmErrorReason.AUTH_ERROR
     if status == 404:
         return VlmErrorReason.MODEL_UNSUPPORTED
+    if status == 400 and _looks_like_prompt_format(message, provider_code):
+        return VlmErrorReason.PROMPT_FORMAT_ERROR
     if 500 <= status <= 599:
         return VlmErrorReason.SERVER_ERROR
     if 400 <= status <= 499:

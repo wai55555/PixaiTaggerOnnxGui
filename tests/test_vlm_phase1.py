@@ -53,7 +53,8 @@ def test_model_alias_and_identity():
 def test_prompt_building():
     base = P.GenerationProfile()
     sp = P.build_system_prompt(base)
-    assert "highly detailed English" in sp
+    assert "highly detailed natural-language" in sp
+    assert "Write the output in English." in sp
     assert "as many sentences as necessary" in sp          # automatic
     assert "no bullet lists" in sp.lower() or "no bullet" in sp.lower()  # markdown disabled
     assert "unambiguously clear" in sp                     # explicit_only
@@ -163,6 +164,18 @@ def test_protocol_parse():
         {"text": "", "thought": True}]}, "finishReason": "MAX_TOKENS"}]}, "")
     assert not gthink_only.ok and gthink_only.error.reason is E.VlmErrorReason.EMPTY_RESPONSE
 
+    # A custom Gemini extraction path must not be masked by a normal candidate part.
+    gm.default_text_path = "custom.caption"
+    gcustom = gm.parse_response(200, {
+        "candidates": [{"content": {"parts": [{"text": "normal candidate"}]}}],
+        "custom": {"caption": "custom caption"},
+    }, "")
+    assert gcustom.ok and gcustom.text == "custom caption"
+    gcustom_missing = gm.parse_response(200, {
+        "candidates": [{"content": {"parts": [{"text": "normal candidate"}]}}],
+    }, "")
+    assert not gcustom_missing.ok and gcustom_missing.error.reason is E.VlmErrorReason.EMPTY_RESPONSE
+
     responses = PROTO.OpenAIResponsesProtocol()
     rok = responses.parse_response(200, {
         "status": "completed",
@@ -227,6 +240,8 @@ def test_error_classification():
     assert mk(E.VlmErrorReason.TIMEOUT).classify(consecutive_timeouts=1) is E.VlmErrorClass.RETRY_SAME
     assert mk(E.VlmErrorReason.TIMEOUT).classify(consecutive_timeouts=2) is E.VlmErrorClass.FAILOVER
     assert mk(E.VlmErrorReason.TIMEOUT).classify(consecutive_timeouts=1, already_retried_same=True) is E.VlmErrorClass.FAILOVER
+    assert mk(E.VlmErrorReason.TIMEOUT).classify(
+        consecutive_timeouts=2, same_retries=1, retry_same_max=2) is E.VlmErrorClass.RETRY_SAME
     assert mk(E.VlmErrorReason.RATE_LIMITED).classify() is E.VlmErrorClass.FAILOVER
     assert mk(E.VlmErrorReason.SERVER_ERROR).classify() is E.VlmErrorClass.RETRY_SAME
     assert mk(E.VlmErrorReason.SERVER_ERROR).classify(already_retried_same=True) is E.VlmErrorClass.FAILOVER
@@ -607,6 +622,11 @@ def test_default_vlm_profile_and_fallback_order():
     profile = CFG.resolve_model_profile(settings.vlm)
     connections = CFG.build_connection_map(settings.vlm, profile)
     assert connections["builtin-gemini"].enabled is True
+    candidates = R.select_candidates(
+        profile, connections, R.RouterPolicy(),
+        has_auth={cid: True for cid in connections},
+    )
+    assert candidates.connection_ids[0] == "builtin-gemini"
     print("  default VLM profile Gemma 4 31B IT; fallback order Gemini -> NVIDIA -> OpenRouter -> Cloudflare -> Groq: OK")
 
 
@@ -670,6 +690,13 @@ def test_vlm_only_model_guard():
         M.default_registry().get("claude-opus-5"), "anthropic", "claude-sonnet-5")
     assert not M.is_vlm_model_id(gemma, "groq", "gpt-4o")
     assert not M.is_vlm_model_id(gemma, "anthropic", "gpt-4o")
+    # Provider-specific aliases must not cross a bound route, while the same
+    # literal ID can legitimately be used by two providers.
+    gemma31 = M.default_registry().get("gemma-4-31b-it")
+    assert gemma31 is not None
+    assert M.is_vlm_model_id(gemma31, "gemini", "gemma-4-31b-it")
+    assert not M.is_vlm_model_id(gemma31, "gemini", "google/gemma-4-31b-it:free")
+    assert M.is_vlm_model_id(gemma31, "groq", "gemma-4-31b-it")
 
     bad_profile = M.VlmModelProfile(
         profile_id="user-bad", display_name="bad", canonical_model_id="groq/compound-mini",
@@ -682,6 +709,11 @@ def test_vlm_only_model_guard():
     import vlm_config as CFG
     bad_map = CFG.build_connection_map(bad_settings, bad_profile)
     assert bad_map["builtin-groq"].enabled is False
+    arbitrary_profile = M.VlmModelProfile(
+        profile_id="user-arbitrary", display_name="arbitrary", canonical_model_id="vendor/unknown",
+        bindings={"groq": M.ModelBinding("groq", "vendor/unknown")})
+    arbitrary_map = CFG.build_connection_map(bad_settings, arbitrary_profile)
+    assert arbitrary_map["builtin-groq"].enabled is False
     print("  VLM-only model guard: Groq Compound rejected, Qwen vision model retained: OK")
 
 

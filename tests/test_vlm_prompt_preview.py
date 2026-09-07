@@ -18,7 +18,8 @@ def test_default_prompt_text_uses_existing_builders() -> None:
     profile = GenerationProfile()
     preview = build_prompt_preview(profile)
     assert preview.system_prompt
-    assert "Write a highly detailed English" in preview.system_prompt
+    assert "Write a highly detailed natural-language" in preview.system_prompt
+    assert "Write the output in English." in preview.system_prompt
     assert preview.user_prompt == "Caption this image."
     assert not preview.custom_system_prompt_active
 
@@ -33,7 +34,8 @@ def test_custom_prompt_replaces_default_settings() -> None:
     assert preview.custom_system_prompt_active
     prompt_settings = [item for item in preview.settings if item.destination == "prompt"]
     assert prompt_settings
-    assert all(item.overridden for item in prompt_settings)
+    assert not next(item for item in prompt_settings if item.name == "prompt_mode").overridden
+    assert all(item.overridden for item in prompt_settings if item.name != "prompt_mode")
 
 
 def test_prompt_mode_preview_uses_the_same_builders() -> None:

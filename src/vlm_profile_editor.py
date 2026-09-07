@@ -54,6 +54,7 @@ class ProfileEditorDialog(QDialog):
         self._ml_thread: QThread | None = None
         self._ml_worker: VlmModelListWorker | None = None
         self._ml_provider = ""
+        self._pending_done: int | None = None
         self.setWindowTitle(get_string("Vlm", "ProfileEdit_Title"))
         self.setMinimumWidth(560)
         self._build()
@@ -145,7 +146,10 @@ class ProfileEditorDialog(QDialog):
         entries = [entry if isinstance(entry, ModelCatalogEntry)
                    else catalog_entry_from_id(prov, str(entry))
                    for entry in result]
-        vlm_entries = filter_vlm_catalog(entries)
+        # Mistral/Pixtral is intentionally absent from shipped fallback profiles,
+        # but a user-defined profile is an explicit opt-in and must still be able
+        # to select it when the provider reports image input support.
+        vlm_entries = filter_vlm_catalog(entries, exclude_disabled_markers=False)
         vlm_models.register_discovered_vlm_ids(prov, [e.model_id for e in vlm_entries])
         model_ids = [e.model_id for e in vlm_entries]
         combo = r["mid"]
@@ -179,20 +183,33 @@ class ProfileEditorDialog(QDialog):
             self._ml_thread = None
         for r in self._rows.values():
             r["fetch"].setEnabled(not self._read_only)
-
-    def _await_ml(self) -> None:
-        th = self._ml_thread
-        if th is not None and th.isRunning():
-            try:
-                self._ml_worker.result_ready.disconnect()
-            except (RuntimeError, TypeError):
-                pass
-            th.quit()
-            th.wait(30000)
+        if self._pending_done is not None:
+            result = self._pending_done
+            self._pending_done = None
+            QDialog.done(self, result)
 
     def done(self, r: int) -> None:
-        self._await_ml()
+        th = self._ml_thread
+        if th is not None and th.isRunning():
+            # Do not block the GUI thread while a model-list request is in flight.
+            # Disconnect the result so a closing dialog cannot update stale widgets;
+            # _ml_done will finish the close once the worker returns.
+            self._pending_done = r
+            try:
+                self._ml_worker.result_ready.disconnect()
+            except (RuntimeError, TypeError, AttributeError):
+                pass
+            th.quit()
+            self.setEnabled(False)
+            return
         super().done(r)
+
+    def closeEvent(self, event) -> None:
+        if self._ml_thread is not None and self._ml_thread.isRunning():
+            self.done(QDialog.DialogCode.Rejected)
+            event.ignore()
+            return
+        super().closeEvent(event)
 
     # --- save --------------------------------------------------------------
     def _on_save(self) -> None:
@@ -207,6 +224,14 @@ class ProfileEditorDialog(QDialog):
             mid = r["mid"].currentText().strip()
             if not mid:
                 continue
+            probe = vlm_models.VlmModelProfile(
+                profile_id="_manual_probe", display_name="_", canonical_model_id=mid,
+                base_model=mid, aliases=(mid,))
+            if not vlm_models.is_vlm_model_id(probe, prov, mid):
+                QMessageBox.warning(
+                    self, self.windowTitle(),
+                    self._t("Vlm", "ProfileEdit_Model_Not_Vlm", provider=prov, model=mid))
+                return
             bindings[prov] = {"model_id": mid}
         if not bindings:
             QMessageBox.warning(self, self.windowTitle(), self._t("Vlm", "ProfileEdit_Need_Route"))
