@@ -252,10 +252,13 @@ def combine_caption(existing: str, caption: str, placement: str) -> str:
     """
     existing = existing.strip().strip(",").strip()
     caption = caption.strip()
-    if placement == "OVERWRITE" or not existing:
+    if not existing:
         return caption
     if not caption:
+        # 生成文が空なら、OVERWRITE でも既存を残す（空文字で潰さない）。docstring どおり。
         return existing
+    if placement == "OVERWRITE":
+        return caption
     if placement == "PREPEND":
         return f"{caption}, {existing}"
     return f"{existing}, {caption}"
@@ -361,6 +364,16 @@ def process_caption_loop(
             log_dbg(f"Caption generation cancelled for {relative_path}; not writing a partial caption.")
             core_log_gui(_get_string_internal("TaggerCore", "Caption_Cancelled_Short", current_index_str=current_index_str, relative_path_name=relative_path.name), "orange")
             break
+
+        if not caption.strip():
+            # 生成が空文字を返した（モデルの不具合・極端な画像など）。OVERWRITE だと
+            # combine_caption が空文字をそのまま返し、既存キャプションを空ファイルで
+            # 潰してしまう。新規側でも中身のない .txt を作って「生成済み」に見せてしまう。
+            # 失敗扱いにして触らない（PR#16 レビュー指摘: coderabbit）。
+            n_errors += 1
+            log_dbg(f"Caption generation returned empty text for {relative_path}; leaving the file untouched.")
+            core_log_gui(_get_string_internal("TaggerCore", "Caption_Empty_Short", current_index_str=current_index_str, relative_path_name=relative_path.name), "orange")
+            continue
 
         previous_content: str | None = None
         if output_path.is_file():
