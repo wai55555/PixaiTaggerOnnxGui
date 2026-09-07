@@ -7,14 +7,18 @@ from __future__ import annotations
 
 from typing import Callable
 
+from PySide6.QtCore import QThread, Slot
 from PySide6.QtWidgets import (
     QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFormLayout, QGroupBox,
-    QLabel, QLineEdit, QMessageBox, QSpinBox, QVBoxLayout, QWidget,
+    QHBoxLayout, QLabel, QLineEdit, QMessageBox, QPushButton, QSpinBox,
+    QVBoxLayout, QWidget,
 )
 
 import vlm_secrets
-from vlm_connections import ConnectionLocality, resolve_custom_kind
+from vlm_connections import ConnectionLocality, VlmConnection, resolve_custom_kind
 from vlm_config import new_connection_id
+from vlm_model_list import ModelCatalogEntry, catalog_entry_from_id, filter_vlm_catalog
+from vlm_worker import VlmModelListWorker
 
 GetString = Callable[..., str]
 
@@ -43,6 +47,8 @@ class CustomConnectionDialog(QDialog):
         self._t = get_string
         self._existing = dict(existing or {})
         self._result: dict | None = None
+        self._model_thread: QThread | None = None
+        self._model_worker: VlmModelListWorker | None = None
         self.setWindowTitle(get_string("Vlm", "Custom_Dialog_Title"))
         self.setMinimumWidth(460)
         self._build()
@@ -59,12 +65,27 @@ class CustomConnectionDialog(QDialog):
         self.protocol_combo = _combo(_PROTOCOLS)
         self.base_url_edit = QLineEdit()
         self.base_url_edit.setPlaceholderText("http://127.0.0.1:1234/v1")
-        self.model_edit = QLineEdit()
+        model_row = QWidget()
+        model_layout = QHBoxLayout(model_row)
+        model_layout.setContentsMargins(0, 0, 0, 0)
+        self.model_edit = QComboBox()
+        self.model_edit.setEditable(True)
+        self.model_edit.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+        self.model_edit.setMinimumWidth(260)
+        self.model_edit.lineEdit().setPlaceholderText(self._t("Vlm", "Custom_Field_ModelId"))
+        self.model_fetch_btn = QPushButton(self._t("Vlm", "Settings_Route_FetchModels"))
+        self.model_fetch_btn.setToolTip(self._t("Vlm", "Settings_Route_FetchModels_Tooltip"))
+        self.model_fetch_btn.clicked.connect(self._fetch_model_list)
+        model_layout.addWidget(self.model_edit, 1)
+        model_layout.addWidget(self.model_fetch_btn)
+        self.model_status = QLabel()
+        self.model_status.setWordWrap(True)
         bf.addRow(self._t("Vlm", "Custom_Field_Name"), self.name_edit)
         bf.addRow(self._t("Vlm", "Custom_Field_Locality"), self.locality_combo)
         bf.addRow(self._t("Vlm", "Custom_Field_Protocol"), self.protocol_combo)
         bf.addRow(self._t("Vlm", "Custom_Field_BaseUrl"), self.base_url_edit)
-        bf.addRow(self._t("Vlm", "Custom_Field_ModelId"), self.model_edit)
+        bf.addRow(self._t("Vlm", "Custom_Field_ModelId"), model_row)
+        bf.addRow("", self.model_status)
         root.addWidget(basic)
 
         auth = QGroupBox(self._t("Vlm", "Custom_Section_Auth"))
@@ -109,9 +130,13 @@ class CustomConnectionDialog(QDialog):
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
         buttons.accepted.connect(self._on_save)
         buttons.rejected.connect(self.reject)
+        self._save_button = buttons.button(QDialogButtonBox.StandardButton.Save)
         root.addWidget(buttons)
 
         self.auth_type_combo.currentIndexChanged.connect(self._sync_auth_rows)
+        self.base_url_edit.editingFinished.connect(self._fetch_model_list)
+        self.api_key_edit.editingFinished.connect(self._fetch_model_list)
+        self.protocol_combo.currentIndexChanged.connect(self._fetch_model_list)
         self._sync_auth_rows()
 
     def _sync_auth_rows(self) -> None:
@@ -126,7 +151,7 @@ class CustomConnectionDialog(QDialog):
         self.name_edit.setText(str(data.get("display_name", "")))
         _select(self.protocol_combo, data.get("protocol", "openai_chat_completions"))
         self.base_url_edit.setText(str(data.get("base_url", "")))
-        self.model_edit.setText(str(data.get("model_id", "")))
+        self.model_edit.setCurrentText(str(data.get("model_id", "")))
         auth = data.get("auth", {}) if isinstance(data.get("auth"), dict) else {}
         _select(self.auth_type_combo, auth.get("type", "none"))
         self.auth_header_edit.setText(str(auth.get("header_name", "Authorization")))
@@ -150,10 +175,96 @@ class CustomConnectionDialog(QDialog):
             _select_enum(self.locality_combo, ConnectionLocality.AUTO)
         self._sync_auth_rows()
 
+    # --- model list ---------------------------------------------------------
+    def _model_list_connection(self) -> VlmConnection | None:
+        base_url = self.base_url_edit.text().strip()
+        if not base_url:
+            return None
+        cid = str(self._existing.get("connection_id") or "custom-model-list")
+        locality = self.locality_combo.currentData()
+        kind = resolve_custom_kind(locality, base_url)
+        atype = str(self.auth_type_combo.currentData() or "none")
+        return VlmConnection.from_mapping({
+            "connection_id": cid,
+            "display_name": self.name_edit.text().strip() or cid,
+            "kind": kind.value,
+            "protocol": self.protocol_combo.currentData(),
+            "base_url": base_url,
+            "model_id": self.model_edit.currentText().strip(),
+            "verify_tls": self.verify_tls_check.isChecked(),
+            "auth": {
+                "type": atype,
+                "header_name": self.auth_header_edit.text().strip() or "Authorization",
+                "query_param": self.auth_query_edit.text().strip() or "key",
+            },
+        })
+
+    def _model_list_key(self) -> str | None:
+        if self.auth_type_combo.currentData() == "none":
+            return None
+        key = self.api_key_edit.text().strip()
+        if key:
+            return key
+        auth = self._existing.get("auth", {})
+        ref = auth.get("secret_ref", "") if isinstance(auth, dict) else ""
+        return vlm_secrets.get_secret(ref) or None
+
+    def _fetch_model_list(self) -> None:
+        if self._model_thread is not None:
+            return
+        conn = self._model_list_connection()
+        if conn is None:
+            return
+        self.model_status.setText(self._t("Vlm", "Settings_Route_FetchModels_Busy"))
+        self.model_fetch_btn.setEnabled(False)
+        self._save_button.setEnabled(False)
+        self._model_thread = QThread(self)
+        self._model_worker = VlmModelListWorker(conn, self._model_list_key())
+        self._model_worker.moveToThread(self._model_thread)
+        self._model_thread.started.connect(self._model_worker.run)
+        self._model_worker.result_ready.connect(self._on_model_list)
+        self._model_worker.finished.connect(self._model_thread.quit)
+        self._model_thread.finished.connect(self._model_fetch_done)
+        self._model_thread.start()
+
+    @Slot(str, object)
+    def _on_model_list(self, _connection_id: str, result) -> None:
+        if not isinstance(result, list):
+            detail = getattr(result, "message", "") or str(result)
+            self.model_status.setText(self._t(
+                "Vlm", "Settings_Route_FetchModels_Fail", detail=detail))
+            return
+        entries = [entry if isinstance(entry, ModelCatalogEntry)
+                   else catalog_entry_from_id("", str(entry)) for entry in result]
+        vlm_ids = [entry.model_id for entry in filter_vlm_catalog(entries)]
+        current = self.model_edit.currentText().strip()
+        self.model_edit.blockSignals(True)
+        self.model_edit.clear()
+        self.model_edit.addItems(vlm_ids)
+        if current in vlm_ids:
+            self.model_edit.setCurrentText(current)
+        elif vlm_ids:
+            self.model_edit.setCurrentIndex(0)
+        else:
+            self.model_edit.setCurrentText(current)
+        self.model_edit.blockSignals(False)
+        self.model_status.setText(self._t(
+            "Vlm", "Settings_Route_FetchModels_Ok", n=len(vlm_ids)))
+
+    def _model_fetch_done(self) -> None:
+        if self._model_worker is not None:
+            self._model_worker.deleteLater()
+            self._model_worker = None
+        if self._model_thread is not None:
+            self._model_thread.deleteLater()
+            self._model_thread = None
+        self.model_fetch_btn.setEnabled(True)
+        self._save_button.setEnabled(True)
+
     def _on_save(self) -> None:
         name = self.name_edit.text().strip()
         base_url = self.base_url_edit.text().strip()
-        model_id = self.model_edit.text().strip()
+        model_id = self.model_edit.currentText().strip()
         if not name or not base_url or not model_id:
             QMessageBox.warning(self, self._t("Vlm", "Custom_Dialog_Title"),
                                 self._t("Vlm", "Custom_Validation_Required"))
@@ -204,6 +315,17 @@ class CustomConnectionDialog(QDialog):
 
     def result_connection(self) -> dict | None:
         return self._result
+
+    def closeEvent(self, event) -> None:
+        thread = self._model_thread
+        if thread is not None and thread.isRunning():
+            try:
+                self._model_worker.finished.disconnect(thread.quit)
+            except (RuntimeError, TypeError):
+                pass
+            thread.quit()
+            thread.wait(30000)
+        super().closeEvent(event)
 
 
 def _combo(pairs) -> QComboBox:

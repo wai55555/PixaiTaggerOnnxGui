@@ -318,7 +318,7 @@ def test_custom_connection_persists_routes_and_executes(monkeypatch):
     dialog.protocol_combo.setCurrentIndex(
         dialog.protocol_combo.findData("openai_chat_completions"))
     dialog.base_url_edit.setText("http://127.0.0.1:1234/v1")
-    dialog.model_edit.setText("local-gemma-vision")
+    dialog.model_edit.setCurrentText("local-gemma-vision")
     dialog.auth_type_combo.setCurrentIndex(dialog.auth_type_combo.findData("bearer"))
     dialog.api_key_edit.setText("LOCALKEY")
     dialog._on_save()
@@ -372,6 +372,24 @@ def test_custom_connection_persists_routes_and_executes(monkeypatch):
     assert seen["request"].json_body["model"] == "local-gemma-vision"
     assert isinstance(seen["request"].json_body["messages"][1]["content"], list)
     print("  custom connection: dialog -> JSON reload -> local route -> executor: OK")
+
+
+def test_custom_connection_model_list_keeps_only_vlm_models():
+    from custom_connection_dialog import CustomConnectionDialog
+    from vlm_model_list import ModelCatalogEntry
+
+    dialog = CustomConnectionDialog(lambda sec, key, **kw: key)
+    try:
+        dialog.model_edit.setCurrentText("old-model")
+        dialog._on_model_list("custom-model-list", [
+            ModelCatalogEntry("local-text", False, True, "test"),
+            ModelCatalogEntry("local-vlm", True, True, "test"),
+        ])
+        assert [dialog.model_edit.itemText(i) for i in range(dialog.model_edit.count())] == ["local-vlm"]
+        assert dialog.model_edit.currentText() == "local-vlm"
+    finally:
+        dialog.close()
+    print("  custom connection model list filters non-VLM entries: OK")
 
 
 def test_lightweight_confirmation_is_persisted_for_next_dialog():

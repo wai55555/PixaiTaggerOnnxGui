@@ -137,13 +137,27 @@ def _extract_catalog(body, provider_id: str) -> list[ModelCatalogEntry]:
     """プロバイダー別レスポンスを能力付きの共通行へ変換する。"""
     rows = body.get("data") if isinstance(body, dict) else body
     if isinstance(rows, list) and any(isinstance(row, dict) and "id" in row for row in rows):
+        # llama.cpp は OpenAI 形式の data[].id と、能力情報を含む互換形式の
+        # models[].model/capabilities を併せて返す。IDをキーに能力情報を補う。
+        extras = {}
+        model_rows = body.get("models") if isinstance(body, dict) else None
+        if isinstance(model_rows, list):
+            for extra in model_rows:
+                if not isinstance(extra, dict):
+                    continue
+                extra_id = str(extra.get("id") or extra.get("model") or extra.get("name") or "").strip()
+                if extra_id:
+                    extras[extra_id] = extra
         out = []
         for row in rows:
             if not isinstance(row, dict) or not row.get("id"):
                 continue
             mid = str(row["id"]).strip()
             if mid:
-                out.append(_entry_from_row(provider_id, mid, row))
+                metadata = dict(row)
+                for key, value in extras.get(mid, {}).items():
+                    metadata.setdefault(key, value)
+                out.append(_entry_from_row(provider_id, mid, metadata))
         return out
 
     # Cloudflare Workers AI: {"result": [{"name": "@cf/...", "task": ...}]}

@@ -582,6 +582,17 @@ def test_model_list_fetch():
         assert [e.model_id for e in ML.filter_vlm_catalog(catalog)] == ["vendor/vision"]
         assert catalog[0].capability_source == "model list input/output modalities"
 
+        # llama.cpp returns the OpenAI data[].id beside a models[] row carrying
+        # capabilities=multimodal; the parser must merge them before filtering.
+        llama_id = "C:\\LLM\\models\\Gemma4-12B-QAT-Uncensored-HauhauCS-Balanced\\model.gguf"
+        llama_catalog = ML._extract_catalog({
+            "data": [{"id": llama_id}],
+            "models": [{"model": llama_id, "capabilities": ["completion", "multimodal"]}],
+        }, "")
+        assert len(ML.filter_vlm_catalog(llama_catalog)) == 1
+        assert llama_catalog[0].supports_image_input is True
+        assert "capability metadata" in llama_catalog[0].capability_source
+
         cf_catalog = ML._extract_catalog({"result": [
             {"name": "@cf/meta/llama-vision", "task": {"name": "Image-to-Text"}},
             {"name": "@cf/baai/bge-m3", "task": {"name": "Text Embeddings"}},
