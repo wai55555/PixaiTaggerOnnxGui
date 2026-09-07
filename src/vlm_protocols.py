@@ -10,11 +10,13 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from vlm_errors import VlmAttemptError, VlmErrorReason, reason_from_http_status
-from vlm_image import PreparedImage
 from vlm_profiles import GenerationProfile
+
+if TYPE_CHECKING:
+    from vlm_image import PreparedImage
 
 _PLACEHOLDER_KEYS = (
     "model", "system_prompt", "user_prompt",
@@ -147,6 +149,9 @@ class OpenAIChatCompletionsProtocol(VlmProtocol):
 
     name = "openai_chat_completions"
     default_text_path = "choices[0].message.content"
+    system_prompt_field = "messages[0].content"
+    user_prompt_field = "messages[1].content"
+    max_tokens_field = "max_tokens"
 
     def build_request(self, base_url: str, api_key: str | None, spec: VlmCallSpec) -> VlmHttpRequest:
         url = base_url.rstrip("/") + "/chat/completions"
@@ -203,6 +208,9 @@ class OpenAIResponsesProtocol(VlmProtocol):
 
     name = "openai_responses"
     default_text_path = "output[0].content[0].text"
+    system_prompt_field = "instructions"
+    user_prompt_field = "input[0].content"
+    max_tokens_field = "max_output_tokens"
 
     def build_request(self, base_url: str, api_key: str | None, spec: VlmCallSpec) -> VlmHttpRequest:
         url = base_url.rstrip("/") + "/responses"
@@ -254,6 +262,9 @@ class AnthropicMessagesProtocol(VlmProtocol):
 
     name = "anthropic_messages"
     default_text_path = "content[0].text"
+    system_prompt_field = "system"
+    user_prompt_field = "messages[0].content"
+    max_tokens_field = "max_tokens"
 
     def build_request(self, base_url: str, api_key: str | None, spec: VlmCallSpec) -> VlmHttpRequest:
         url = base_url.rstrip("/") + "/messages"
@@ -301,6 +312,9 @@ class GeminiGenerateContentProtocol(VlmProtocol):
 
     name = "gemini_generate_content"
     default_text_path = "candidates[0].content.parts[0].text"
+    system_prompt_field = "systemInstruction.parts[0].text"
+    user_prompt_field = "contents[0].parts"
+    max_tokens_field = "generationConfig.maxOutputTokens"
 
     def build_request(self, base_url: str, api_key: str | None, spec: VlmCallSpec) -> VlmHttpRequest:
         root = base_url.rstrip("/") if base_url else "https://generativelanguage.googleapis.com/v1beta"

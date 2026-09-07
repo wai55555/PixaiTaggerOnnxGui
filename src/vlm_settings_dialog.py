@@ -5,7 +5,7 @@
   - 実行モード（内蔵の厳格フォールバック / カスタム接続単独）
   - フォールバック経路（内蔵3接続の有効・APIキー・診断）
   - 接続経路とプロバイダー側の料金注意
-  - 詳細な出力設定（詳細度・文数・キャラクター名・Markdown・最大トークン）
+  - 詳細な出力設定（プロンプトモード・詳細度・文数・キャラクター名・Markdown・最大トークン）
   - カスタム接続の追加・編集・削除
 """
 from __future__ import annotations
@@ -21,14 +21,17 @@ from PySide6.QtWidgets import (
 
 import vlm_config
 import vlm_models
+import vlm_profiles
 import vlm_secrets
 from app_settings import save_config
 from custom_connection_dialog import CustomConnectionDialog
-from vlm_connections import ConnectionKind
+from vlm_connections import ConnectionKind, VlmConnection
 from vlm_diagnostics import DiagStatus
 from vlm_model_list import (
     ModelCatalogEntry, catalog_entry_from_id, filter_vlm_catalog,
 )
+from vlm_prompt_preview import PromptPreviewRoute, build_prompt_preview
+from vlm_prompt_preview_dialog import VlmPromptPreviewDialog
 from vlm_worker import VlmDiagnosticsWorker, VlmModelListWorker
 
 GetString = Callable[..., str]
@@ -42,6 +45,7 @@ _DETAIL_KEYS = ["standard", "detailed", "maximum_detail"]
 _SENTENCE_KEYS = ["automatic_long_detailed", "1", "2", "3", "4", "5"]
 _CHARNAME_KEYS = ["do_not_identify", "explicit_only", "allow_guessing"]
 _MARKDOWN_KEYS = ["disabled", "allowed"]
+_PROMPT_MODE_KEYS = ["standard", "dataset_long", "short_tags"]
 
 # フォールバック経路グリッドの列。up/down は1セルに横並びで入れる。
 (_ROUTE_COL_UPDOWN, _ROUTE_COL_ENABLED, _ROUTE_COL_NAME, _ROUTE_COL_MODEL,
@@ -206,6 +210,8 @@ class VlmSettingsDialog(QDialog):
 
         det = QGroupBox(self._t("Vlm", "Settings_Detail"))
         dfrm = QFormLayout(det)
+        self.prompt_mode_combo = _combo(self._opts("Opt_PromptMode", _PROMPT_MODE_KEYS))
+        self.prompt_mode_combo.setToolTip(self._t("Vlm", "Settings_PromptMode_Tooltip"))
         self.detail_combo = _combo(self._opts("Opt_Detail", _DETAIL_KEYS))
         self.sentence_combo = _combo(self._opts("Opt_Sentence", _SENTENCE_KEYS))
         self.charname_combo = _combo(self._opts("Opt_CharName", _CHARNAME_KEYS))
@@ -216,13 +222,19 @@ class VlmSettingsDialog(QDialog):
         self.language_combo.setToolTip(self._t("Vlm", "Settings_Language_Fixed_Tooltip"))
         self.max_tokens = QSpinBox()
         self.max_tokens.setRange(16, 32768)
+        dfrm.addRow(self._t("Vlm", "Settings_PromptMode"), self.prompt_mode_combo)
         dfrm.addRow(self._t("Vlm", "Settings_Language"), self.language_combo)
         dfrm.addRow(self._t("Vlm", "Settings_DetailLevel"), self.detail_combo)
         dfrm.addRow(self._t("Vlm", "Settings_SentenceMode"), self.sentence_combo)
         dfrm.addRow(self._t("Vlm", "Settings_CharName"), self.charname_combo)
         dfrm.addRow(self._t("Vlm", "Settings_Markdown"), self.markdown_combo)
         dfrm.addRow(self._t("Vlm", "Settings_MaxTokens"), self.max_tokens)
+        self.prompt_preview_btn = QPushButton(self._t("Vlm", "PromptPreview_Button"))
+        self.prompt_preview_btn.setToolTip(self._t("Vlm", "PromptPreview_Button_Tooltip"))
+        self.prompt_preview_btn.clicked.connect(self._open_prompt_preview)
+        dfrm.addRow("", self.prompt_preview_btn)
         root.addWidget(det)
+        self.prompt_mode_combo.currentIndexChanged.connect(self._on_prompt_mode_changed)
 
         cust = QGroupBox(self._t("Vlm", "Settings_Custom"))
         cvv = QVBoxLayout(cust)
@@ -580,13 +592,73 @@ class VlmSettingsDialog(QDialog):
 
         self.strict_check.setChecked(bool(getattr(self._vlm, "strict_identity", False)))
 
+        _select(self.prompt_mode_combo, getattr(self._vlm, "prompt_mode", "standard"))
         _select(self.detail_combo, self._vlm.detail_level)
         _select(self.sentence_combo, self._vlm.sentence_mode)
         _select(self.charname_combo, self._vlm.character_name_mode)
         _select(self.markdown_combo, self._vlm.markdown)
         _select(self.language_combo, self._vlm.language or "en")
         self.max_tokens.setValue(int(self._vlm.max_output_tokens))
+        self._on_prompt_mode_changed()
         # 経路行の有効状態は _rebuild_routes -> _apply_route_states で反映済み。
+
+    def _current_generation_profile(self) -> vlm_profiles.GenerationProfile:
+        """Build a preview profile from current widgets, including unsaved values."""
+        return vlm_profiles.GenerationProfile.from_mapping({
+            "profile_id": self._vlm.generation_profile_id,
+            "language": self.language_combo.currentData() or "en",
+            "detail_level": self.detail_combo.currentData(),
+            "sentence_mode": self.sentence_combo.currentData(),
+            "character_name_mode": self.charname_combo.currentData(),
+            "markdown": self.markdown_combo.currentData(),
+            "prompt_mode": self.prompt_mode_combo.currentData(),
+            "max_output_tokens": self.max_tokens.value(),
+            "custom_system_prompt": getattr(self._vlm, "custom_system_prompt", ""),
+            "temperature": getattr(self._vlm, "temperature", None),
+            "top_p": getattr(self._vlm, "top_p", None),
+            "image_max_long_edge": getattr(self._vlm, "image_max_long_edge", 1536),
+            "image_format": getattr(self._vlm, "image_format", "auto"),
+            "image_jpeg_quality": getattr(self._vlm, "image_jpeg_quality", 90),
+        })
+
+    def _prompt_preview_routes(self) -> list[PromptPreviewRoute]:
+        """Collect only visible route metadata; never read or expose credentials."""
+        routes: list[PromptPreviewRoute] = []
+        if self.mode_custom.isChecked():
+            connection_id = self.custom_select.currentData()
+            raw = next((c for c in self._custom_connections
+                        if c.get("connection_id") == connection_id), None)
+            try:
+                conn = VlmConnection.from_mapping(raw) if raw is not None else None
+            except (KeyError, ValueError, TypeError):
+                conn = None
+            if conn is not None:
+                routes.append(PromptPreviewRoute(
+                    conn.display_name, conn.model_id, conn.protocol))
+            return routes
+
+        for cid in self._route_order:
+            row = self._route_rows[cid]
+            if not row["enabled"].isChecked():
+                continue
+            routes.append(PromptPreviewRoute(
+                row["name"].text(),
+                row["model_edit"].currentText().strip() or row["conn"].model_id,
+                row["conn"].protocol,
+            ))
+        return routes
+
+    def _open_prompt_preview(self) -> None:
+        preview = build_prompt_preview(
+            self._current_generation_profile(), routes=self._prompt_preview_routes())
+        VlmPromptPreviewDialog(preview, self._t, self).exec()
+
+    def _on_prompt_mode_changed(self) -> None:
+        """Only standard mode consumes the fine-grained prompt clauses."""
+        standard = self.prompt_mode_combo.currentData() == "standard"
+        for widget in (self.detail_combo, self.sentence_combo,
+                       self.charname_combo, self.markdown_combo):
+            widget.setEnabled(standard)
 
     def _refresh_route_status(self, cid: str) -> None:
         r = self._route_rows[cid]
@@ -823,6 +895,7 @@ class VlmSettingsDialog(QDialog):
             (self.custom_select.currentData() or "")
             if self.mode_custom.isChecked() else v.selected_connection_id)
         v.strict_identity = self.strict_check.isChecked()
+        v.prompt_mode = self.prompt_mode_combo.currentData() or "standard"
         v.detail_level = self.detail_combo.currentData()
         v.sentence_mode = self.sentence_combo.currentData()
         v.character_name_mode = self.charname_combo.currentData()

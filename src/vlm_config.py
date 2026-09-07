@@ -233,8 +233,14 @@ def build_generation_profile(vlm_settings) -> GenerationProfile:
         "sentence_mode": vlm_settings.sentence_mode,
         "character_name_mode": vlm_settings.character_name_mode,
         "markdown": vlm_settings.markdown,
+        "prompt_mode": getattr(vlm_settings, "prompt_mode", "standard"),
         "max_output_tokens": vlm_settings.max_output_tokens,
         "image_max_long_edge": vlm_settings.image_max_long_edge,
+        "custom_system_prompt": getattr(vlm_settings, "custom_system_prompt", ""),
+        "temperature": getattr(vlm_settings, "temperature", None),
+        "top_p": getattr(vlm_settings, "top_p", None),
+        "image_format": getattr(vlm_settings, "image_format", "auto"),
+        "image_jpeg_quality": getattr(vlm_settings, "image_jpeg_quality", 90),
     })
 
 

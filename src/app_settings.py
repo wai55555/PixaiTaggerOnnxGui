@@ -159,7 +159,7 @@ class Vlm:
     この項目を持たない旧 config.ini でも enabled=False の未設定状態として動く。
     """
     # True のとき、選択中のローカルモデルの代わりにネットワーク VLM で生成する。
-    # 出力の形式（タグ列 / 自然文 など）は VLM プロンプト次第（既定は詳細キャプション）。
+    # 出力の形式（標準文 / モデル学習用長文 / 短いタグ）は VLM プロンプトモードで選ぶ。
     enabled: bool = False
     model_profile_id: str = DEFAULT_VLM_MODEL_PROFILE_ID
     generation_profile_id: str = "default-caption-en"
@@ -177,6 +177,8 @@ class Vlm:
     sentence_mode: str = "automatic_long_detailed"
     character_name_mode: str = "explicit_only"
     markdown: str = "disabled"
+    # standard / dataset_long / short_tags
+    prompt_mode: str = "standard"
     max_output_tokens: int = 3072
     image_max_long_edge: int = 1536
     # 接続確認済みの binding。`<profile_id>:<provider_id>` をカンマ区切りで保持する。
@@ -243,7 +245,8 @@ def get_default_config() -> configparser.ConfigParser:
             'anthropic_workspace_id': '',
             'language': 'en', 'detail_level': 'maximum_detail',
             'sentence_mode': 'automatic_long_detailed', 'character_name_mode': 'explicit_only',
-            'markdown': 'disabled', 'max_output_tokens': '3072', 'image_max_long_edge': '1536',
+            'markdown': 'disabled', 'prompt_mode': 'standard',
+            'max_output_tokens': '3072', 'image_max_long_edge': '1536',
             'verified_bindings': '', 'strict_identity': 'False', 'model_id_overrides': '',
         },
         'Debug': {'debug_log': 'False'},
@@ -379,6 +382,7 @@ def _load_vlm(config: configparser.ConfigParser) -> Vlm:
         sentence_mode=g('sentence_mode', d.sentence_mode),
         character_name_mode=g('character_name_mode', d.character_name_mode),
         markdown=g('markdown', d.markdown),
+        prompt_mode=g('prompt_mode', d.prompt_mode),
         max_output_tokens=gi('max_output_tokens', d.max_output_tokens),
         image_max_long_edge=gi('image_max_long_edge', d.image_max_long_edge),
         verified_bindings=g('verified_bindings', d.verified_bindings),

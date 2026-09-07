@@ -35,6 +35,14 @@ class MarkdownMode(str, Enum):
     ALLOWED = "allowed"
 
 
+class PromptMode(str, Enum):
+    """Captioning prompt family selected by the user."""
+
+    STANDARD = "standard"
+    DATASET_LONG = "dataset_long"
+    SHORT_TAGS = "short_tags"
+
+
 def _parse_enum(enum_cls, raw: object, default):
     try:
         return enum_cls(str(raw).strip().lower())
@@ -51,6 +59,7 @@ class GenerationProfile:
     sentence_mode: SentenceMode = SentenceMode.AUTOMATIC
     character_name_mode: CharacterNameMode = CharacterNameMode.EXPLICIT_ONLY
     markdown: MarkdownMode = MarkdownMode.DISABLED
+    prompt_mode: PromptMode = PromptMode.STANDARD
     # provider 既定に任せる場合は None。
     temperature: float | None = None
     top_p: float | None = None
@@ -77,6 +86,7 @@ class GenerationProfile:
             sentence_mode=_parse_enum(SentenceMode, data.get("sentence_mode"), base.sentence_mode),
             character_name_mode=_parse_enum(CharacterNameMode, data.get("character_name_mode"), base.character_name_mode),
             markdown=_parse_enum(MarkdownMode, data.get("markdown"), base.markdown),
+            prompt_mode=_parse_enum(PromptMode, data.get("prompt_mode"), base.prompt_mode),
             temperature=_opt_float(data.get("temperature")),
             top_p=_opt_float(data.get("top_p")),
             max_output_tokens=_clamp_int(data.get("max_output_tokens"), base.max_output_tokens, lo=16, hi=32768),
@@ -149,6 +159,36 @@ _MARKDOWN_DISABLED_CLAUSE = (
     "bullet lists, no numbered lists, no code fences, no bold or italic markers."
 )
 
+# These are intentionally separate prompt families rather than a single prompt
+# with a variable detail level.  The three families reflect three different
+# downstream uses: ordinary annotation, dense training captions, and compact
+# tag-like output.  Keep all three factual and image-grounded; the training
+# caption mode must not turn visible uncertainty into invented metadata.
+_DATASET_LONG_INSTRUCTION = (
+    "Write a dense English training caption for this image as one natural-language "
+    "paragraph.\n"
+    "Describe only what is visibly supported by the image, including the main "
+    "subject(s), count, appearance, hair, face, expression, clothing, pose, action, "
+    "composition, camera angle, framing, spatial relationships, background, notable "
+    "objects, colors, materials, lighting, atmosphere, and visible artistic medium or "
+    "style.\n"
+    "Transcribe readable text exactly when it is legible; if text, a name, identity, "
+    "location, event, or other detail is uncertain, do not guess it.\n"
+    "Do not add a trigger word, dataset metadata, an introductory explanation, a "
+    "trailing summary, or Markdown."
+)
+
+_SHORT_TAGS_INSTRUCTION = (
+    "Convert this image into a concise English list of comma-separated visual tags.\n"
+    "Prioritize the main subject(s), count, visible appearance, hair, clothing, pose, "
+    "action, setting, composition, colors, lighting, and clearly visible style or "
+    "medium.\n"
+    "Use short concrete lowercase phrases where natural. Include readable text only "
+    "when it is legible. Do not guess names, identities, franchises, locations, or "
+    "other unsupported details. Output only tags separated by commas, with no "
+    "explanation, sentence, Markdown, weights, or quality judgment."
+)
+
 
 def _sentence_clause(mode: SentenceMode) -> str:
     if mode is SentenceMode.AUTOMATIC:
@@ -163,6 +203,18 @@ def build_system_prompt(profile: GenerationProfile) -> str:
     if profile.custom_system_prompt.strip():
         return profile.custom_system_prompt.strip()
 
+    if profile.prompt_mode is PromptMode.DATASET_LONG:
+        parts = [_DATASET_LONG_INSTRUCTION]
+        if profile.language.lower() not in ("en", "english", ""):
+            parts.append(f"Write the caption in {profile.language}.")
+        return "\n".join(parts)
+
+    if profile.prompt_mode is PromptMode.SHORT_TAGS:
+        parts = [_SHORT_TAGS_INSTRUCTION]
+        if profile.language.lower() not in ("en", "english", ""):
+            parts.append(f"Write the tags in {profile.language}.")
+        return "\n".join(parts)
+
     parts = [_BASE_INSTRUCTION, _DETAIL_CLAUSE[profile.detail_level],
              _sentence_clause(profile.sentence_mode),
              _CHARACTER_CLAUSE[profile.character_name_mode]]
@@ -175,6 +227,10 @@ def build_system_prompt(profile: GenerationProfile) -> str:
 
 def build_user_prompt(profile: GenerationProfile) -> str:
     """画像に添える user メッセージ本文。短く固定でよい（詳細指示は system 側）。"""
+    if profile.prompt_mode is PromptMode.DATASET_LONG:
+        return "Create a training caption for this image."
+    if profile.prompt_mode is PromptMode.SHORT_TAGS:
+        return "Convert this image into concise comma-separated tags."
     return "Caption this image."
 
 

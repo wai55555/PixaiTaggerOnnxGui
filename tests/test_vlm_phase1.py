@@ -84,6 +84,26 @@ def test_prompt_building():
     print("  prompt building: OK")
 
 
+def test_prompt_modes_are_distinct_and_factual():
+    dataset = P.GenerationProfile(prompt_mode=P.PromptMode.DATASET_LONG)
+    dataset_system = P.build_system_prompt(dataset)
+    assert "training caption" in dataset_system
+    assert "Transcribe readable text exactly" in dataset_system
+    assert P.build_user_prompt(dataset) == "Create a training caption for this image."
+    assert "as many sentences as necessary" not in dataset_system
+
+    tags = P.GenerationProfile(prompt_mode=P.PromptMode.SHORT_TAGS)
+    tags_system = P.build_system_prompt(tags)
+    assert "comma-separated visual tags" in tags_system
+    assert "Output only tags separated by commas" in tags_system
+    assert P.build_user_prompt(tags) == "Convert this image into concise comma-separated tags."
+    assert "no explanation" in tags_system
+
+    mapped = P.GenerationProfile.from_mapping({"prompt_mode": "short_tags"})
+    assert mapped.prompt_mode is P.PromptMode.SHORT_TAGS
+    assert P.GenerationProfile.from_mapping({"prompt_mode": "invalid"}).prompt_mode is P.PromptMode.STANDARD
+
+
 def test_extract_by_path():
     obj = {"choices": [{"message": {"content": "hello"}, "finish_reason": "stop"}],
            "usage": {"prompt_tokens": 5}}
