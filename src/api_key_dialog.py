@@ -358,8 +358,11 @@ class ApiKeyDialog(QDialog):
     # --- lifecycle: 検証中の close は GUI を止めず、終了後に完了させる ---
     def _defer_done_until_check_finishes(self, result: int) -> bool:
         th = getattr(self, "_check_thread", None)
-        if th is None or not th.isRunning():
+        if th is None:
             return False
+        # The QThread can already report not-running while its queued finished handler
+        # is still waiting in the GUI event loop. Mark cancellation based on object
+        # existence so that handler cannot persist a key after Cancel was requested.
         self._cancel_requested = True
         if self._pending_done_result is None:
             self._pending_done_result = result
@@ -367,7 +370,8 @@ class ApiKeyDialog(QDialog):
             self._check_worker.report_ready.disconnect()
         except (RuntimeError, TypeError, AttributeError):
             pass
-        th.quit()
+        if th.isRunning():
+            th.quit()
         self.setEnabled(False)
         return True
 

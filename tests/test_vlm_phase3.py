@@ -380,13 +380,18 @@ def test_custom_connection_persists_routes_and_executes(monkeypatch):
     print("  custom connection: dialog -> JSON reload -> local route -> executor: OK")
 
 
-def test_external_http_with_auth_requires_confirmation(monkeypatch):
+def test_external_http_requires_confirmation_before_fetch_or_save(monkeypatch):
     from custom_connection_dialog import CustomConnectionDialog
     from PySide6.QtWidgets import QMessageBox
+    from vlm_connections import ConnectionKind
     import custom_connection_dialog as CCD
     import vlm_secrets
 
-    answers = [QMessageBox.StandardButton.No, QMessageBox.StandardButton.Yes]
+    answers = [
+        QMessageBox.StandardButton.No,
+        QMessageBox.StandardButton.Yes,
+        QMessageBox.StandardButton.No,
+    ]
     monkeypatch.setattr(CCD.QMessageBox, "warning", lambda *a, **k: answers.pop(0))
     stored = []
     monkeypatch.setattr(
@@ -401,13 +406,34 @@ def test_external_http_with_auth_requires_confirmation(monkeypatch):
     dialog.auth_type_combo.setCurrentIndex(dialog.auth_type_combo.findData("bearer"))
     dialog.api_key_edit.setText("SECRET")
 
-    dialog._on_save()
-    assert dialog.result_connection() is None
+    # editingFinished invokes model discovery before Save. Declining must happen
+    # before even resolving the entered/stored key or creating a worker thread.
+    key_lookups = []
+    monkeypatch.setattr(
+        dialog, "_model_list_key",
+        lambda: (key_lookups.append(True) or "SECRET"))
+    dialog._fetch_model_list()
+    assert dialog._model_thread is None
+    assert key_lookups == []
     assert stored == []
 
+    # Save asks through the same gate. Once accepted, the exact URL is remembered.
     dialog._on_save()
     assert dialog.result_connection() is not None
     assert stored and stored[0][1] == "SECRET"
+    assert dialog._confirm_external_http(
+        "http://example.com/v1", ConnectionKind.CUSTOM_EXTERNAL) is True
+
+    # Images are sensitive even when the endpoint requires no API key.
+    no_auth = CustomConnectionDialog(lambda sec, key, **kw: key)
+    no_auth.name_edit.setText("Unauthenticated external proxy")
+    no_auth.locality_combo.setCurrentIndex(no_auth.locality_combo.findData("external"))
+    no_auth.base_url_edit.setText("http://images.example.com/v1")
+    no_auth.model_edit.setCurrentText("vision-model")
+    assert no_auth.auth_type_combo.currentData() == "none"
+    no_auth._on_save()
+    assert no_auth.result_connection() is None
+    assert answers == []
 
 
 def test_settings_close_is_deferred_without_waiting_for_diagnostics():

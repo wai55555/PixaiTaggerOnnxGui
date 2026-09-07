@@ -51,6 +51,9 @@ class CustomConnectionDialog(QDialog):
         self._model_thread: QThread | None = None
         self._model_worker: VlmModelListWorker | None = None
         self._pending_done: int | None = None
+        # Consent is scoped to the exact external HTTP URL. Editing the URL requires
+        # a fresh confirmation before either model discovery or Save can use it.
+        self._confirmed_external_http_url = ""
         self.setWindowTitle(get_string("Vlm", "Custom_Dialog_Title"))
         self.setMinimumWidth(460)
         self._build()
@@ -211,11 +214,37 @@ class CustomConnectionDialog(QDialog):
         ref = auth.get("secret_ref", "") if isinstance(auth, dict) else ""
         return vlm_secrets.get_secret(ref) or None
 
+    def _confirm_external_http(self, base_url: str, kind: ConnectionKind) -> bool:
+        """Obtain consent before any cleartext request can leave this dialog."""
+        try:
+            scheme = urlparse(base_url).scheme.lower()
+        except ValueError:
+            scheme = ""
+        if kind is not ConnectionKind.CUSTOM_EXTERNAL or scheme != "http":
+            return True
+        if self._confirmed_external_http_url == base_url:
+            return True
+        answer = QMessageBox.warning(
+            self,
+            self._t("Vlm", "Custom_Insecure_Auth_Title"),
+            self._t("Vlm", "Custom_Insecure_Auth_Warning"),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return False
+        self._confirmed_external_http_url = base_url
+        return True
+
     def _fetch_model_list(self) -> None:
         if self._model_thread is not None:
             return
         conn = self._model_list_connection()
         if conn is None:
+            return
+        # editingFinished can trigger discovery before Save. Ask before resolving an
+        # entered/stored key or constructing the worker, so declining sends nothing.
+        if not self._confirm_external_http(conn.base_url, conn.kind):
             return
         self.model_status.setText(self._t("Vlm", "Settings_Route_FetchModels_Busy"))
         self.model_fetch_btn.setEnabled(False)
@@ -297,25 +326,10 @@ class CustomConnectionDialog(QDialog):
         secret_ref = self._existing.get("auth", {}).get("secret_ref") if isinstance(self._existing.get("auth"), dict) else ""
         secret_ref = secret_ref or (f"vlm/custom/{cid}" if atype != "none" else "")
 
-        # Do not silently send credentials and source images over cleartext to an
-        # Internet host.  This is deliberately a confirmation rather than a blanket
-        # runtime ban: advanced users may explicitly operate a trusted private proxy,
-        # and CUSTOM_LOCAL remains usable over HTTP without this prompt.
-        try:
-            scheme = urlparse(base_url).scheme.lower()
-        except ValueError:
-            scheme = ""
-        if (kind is ConnectionKind.CUSTOM_EXTERNAL and atype != "none"
-                and scheme == "http"):
-            answer = QMessageBox.warning(
-                self,
-                self._t("Vlm", "Custom_Insecure_Auth_Title"),
-                self._t("Vlm", "Custom_Insecure_Auth_Warning"),
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                QMessageBox.StandardButton.No,
-            )
-            if answer != QMessageBox.StandardButton.Yes:
-                return
+        # Reuse model-discovery consent. This is deliberately a confirmation rather
+        # than a blanket runtime ban; explicitly trusted external HTTP remains usable.
+        if not self._confirm_external_http(base_url, kind):
+            return
 
         if atype != "none":
             key = self.api_key_edit.text().strip()

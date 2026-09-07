@@ -495,6 +495,32 @@ def test_api_key_dialog_close_is_deferred_without_blocking(monkeypatch):
     assert dialog._pending_done_result is None
     assert dialog._check_thread is None
 
+    # Race: QThread has stopped, but its queued finished handler has not run yet.
+    # Cancel must still win and must prevent the completion path from saving a key.
+    dialog2 = ApiKeyDialog(
+        lambda sec, key, **kw: key, display_name="Test",
+        secret_ref="vlm/test/key", conn=conn, key_url="", login_url="",
+        instructions="")
+    worker2 = Worker()
+    thread2 = Thread()
+    thread2.running = False
+    dialog2._check_worker = worker2
+    dialog2._check_thread = thread2
+    dialog2._pending_key = "MUST_NOT_BE_SAVED"
+    dialog2._pending_key_is_new = True
+    saved = []
+    monkeypatch.setattr(
+        vlm_secrets, "set_secret",
+        lambda *args, **kwargs: (saved.append(args) or True))
+
+    dialog2.reject()
+    assert dialog2._cancel_requested is True
+    assert dialog2._pending_done_result == dialog2.DialogCode.Rejected
+    assert worker2.report_ready.disconnected
+    dialog2._on_check_thread_done()
+    assert saved == []
+    assert dialog2.saved() is False
+
 
 def test_dotenv_loading():
     """A .env next to the app feeds the enabled provider keys via the env-var tier,
