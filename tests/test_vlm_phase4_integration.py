@@ -11,7 +11,7 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 # isolate config.ini so MainWindow.closeEvent's save doesn't pollute the real one
 import app_settings as _A

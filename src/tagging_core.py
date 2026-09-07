@@ -12,6 +12,8 @@ from enum import Enum, IntEnum, auto
 from typing import Mapping, Sequence, Any, Callable, TYPE_CHECKING
 from time import perf_counter
 
+from constants import BASE_DIR
+
 if TYPE_CHECKING:
     import numpy as np
     from numpy.typing import NDArray
@@ -29,7 +31,6 @@ else:
         Image = None
         ort = None
 
-BASE_DIR = Path(sys.executable).parent if getattr(sys, 'frozen', False) else Path(__file__).parent
 LOG_FILE_PATH = BASE_DIR / "debug_log.txt"
 CONFIG_PATH = BASE_DIR / "config.ini"
 

@@ -476,7 +476,7 @@ def diagnose(conn: VlmConnection, api_key: str | None, *,
             auth_item.status = DiagStatus.PASS
             auth_item.detail = f"accepted (server responded {raw.status})"
 
-    ext_status, ext_detail = _classify_extraction(raw, protocol)
+    ext_status, ext_detail = _classify_extraction(raw, protocol, conn.text_path)
     rep.add("Caption extraction", ext_status, ext_detail)
 
     # 10. Rate-limit headers（情報表示のみ。無くても正常＝多くの API は付けない。
@@ -488,7 +488,7 @@ def diagnose(conn: VlmConnection, api_key: str | None, *,
     return rep
 
 
-def _classify_extraction(raw: RawHttpResponse, protocol) -> tuple[DiagStatus, str]:
+def _classify_extraction(raw: RawHttpResponse, protocol, configured_path: str = "") -> tuple[DiagStatus, str]:
     """live レスポンスからテキストが取り出せるかを判定する。
 
     診断は出力トークンを絞るので、テキストが出る前に打ち切られること（finishReason=
@@ -509,9 +509,12 @@ def _classify_extraction(raw: RawHttpResponse, protocol) -> tuple[DiagStatus, st
         or extract_by_path(raw.json_body, "stop_reason") or ""
     ).upper()
     if finish_reason in ("MAX_TOKENS", "MAX_OUTPUT_TOKENS", "LENGTH"):
-        return DiagStatus.WARN, "response truncated at the diagnostic token cap (endpoint reachable)"
+        return DiagStatus.WARN, (
+            "response truncated at diagnostic max_output_tokens=128; endpoint is reachable, "
+            "but this VLM may need a larger generation budget")
     preview = (raw.text_body or "")[:200].replace("\n", " ")
-    detail = "200 OK but the response text path did not match"
+    path = configured_path or getattr(protocol, "default_text_path", "") or "(protocol default)"
+    detail = f"200 OK but response text path {path!r} did not match; verify protocol/path settings"
     if preview:
         detail += f" — body starts: {preview}"
     return DiagStatus.FAIL, detail

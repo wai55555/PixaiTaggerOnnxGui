@@ -54,7 +54,10 @@ class GenerationProfile:
     # provider 既定に任せる場合は None。
     temperature: float | None = None
     top_p: float | None = None
-    max_output_tokens: int = 1024
+    # Reasoning VLMs can consume a substantial part of the completion budget before
+    # emitting the final caption. 3072 leaves room for that while fitting a 4096-context
+    # local server after the usual image prompt overhead.
+    max_output_tokens: int = 3072
     # 上級者向け: これが空でなければ system プロンプトを完全に置き換える（spec 4.6節）。
     custom_system_prompt: str = ""
     # 画像前処理の設定（vlm_image.ImagePreprocessConfig をそのまま持たせず、値だけ）。

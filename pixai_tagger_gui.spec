@@ -5,13 +5,16 @@ import glob
 import os
 import re
 
+_project_root = os.path.dirname(os.path.abspath(__file__))
+_source_dir = os.path.join(_project_root, 'src')
+
 # Ship every model's hand-authored model_config.json (NOT the multi-GB model.onnx files,
 # which the app downloads at runtime) plus PixAI's curated tag-translation CSVs, keeping
 # the models/<model_id>/ directory structure. constants._seed_bundled_model_files() copies
 # them out of _internal/ into the user-visible models/ folder on first launch.
 _model_datas = [
     (p, os.path.dirname(p))
-    for p in glob.glob('models/*/model_config.json')
+    for p in glob.glob(os.path.join(_project_root, 'models', '*', 'model_config.json'))
 ]
 
 
@@ -20,7 +23,7 @@ def _translation_suffixes():
     language never silently misses the build. Falls back to the current list."""
     fallback = ["jp", "fr", "de", "es", "ru", "zh_CN", "zh_TW", "ko"]
     try:
-        src = open('tag_utils.py', encoding='utf-8').read()
+        src = open(os.path.join(_source_dir, 'tag_utils.py'), encoding='utf-8').read()
         match = re.search(r'_TRANSLATION_LANGUAGE_SUFFIXES\s*=\s*(\[[^\]]*\])', src)
         return ast.literal_eval(match.group(1)) if match else fallback
     except Exception:
@@ -30,7 +33,7 @@ def _translation_suffixes():
 # Only the 8 hand-curated translation CSVs. A bare `selected_tags*.csv` glob would also
 # sweep up selected_tags.csv (downloaded at runtime) and selected_tags_en.csv (redundant),
 # both gitignored - that would make the build depend on the developer's local downloads.
-_pixai_dir = 'models/pixai-tagger-v0.9'
+_pixai_dir = os.path.join(_project_root, 'models', 'pixai-tagger-v0.9')
 _model_datas += [
     (os.path.join(_pixai_dir, f'selected_tags_{suffix}.csv'), _pixai_dir)
     for suffix in _translation_suffixes()
@@ -39,10 +42,11 @@ _model_datas += [
 
 
 a = Analysis(
-    ['pixai_tagger_gui.py'],
-    pathex=[],
+    [os.path.join(_source_dir, 'pixai_tagger_gui.py')],
+    pathex=[_source_dir],
     binaries=[],
-    datas=[('icons', 'icons'), ('lang', 'lang')] + _model_datas,
+    datas=[(os.path.join(_project_root, 'icons'), 'icons'),
+           (os.path.join(_project_root, 'lang'), 'lang')] + _model_datas,
     hiddenimports=[
         'PySide6.QtCore', 'PySide6.QtGui', 'PySide6.QtWidgets',
         # keyring はバックエンドを entry point 経由で探すため、凍結ビルドでは
@@ -78,7 +82,7 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=['icons\\app_icon.ico'],
+    icon=[os.path.join(_project_root, 'icons', 'app_icon.ico')],
 )
 coll = COLLECT(
     exe,

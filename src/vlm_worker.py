@@ -24,8 +24,19 @@ import vlm_persistence
 import vlm_secrets
 from vlm_image import ImagePreprocessConfig, prepare_image
 from vlm_profiles import build_system_prompt, build_user_prompt
-from vlm_router import ExecutionMode, select_candidates
+from vlm_router import ExecutionMode, explain_rejected_reason, select_candidates
 from vlm_transport import VlmExecutor
+
+
+def _error_reason_for_log(error) -> str:
+    """ログへ出すエラー名に、設定確認に必要な詳細を付ける。"""
+    if error is None:
+        return "unknown"
+    reason = getattr(getattr(error, "reason", None), "value", "unknown")
+    detail = " ".join(str(getattr(error, "message", "") or "").split())
+    if not detail:
+        return reason
+    return f"{reason}: {detail[:600]}"
 
 
 class VlmDiagnosticsWorker(QObject):
@@ -188,7 +199,8 @@ class VlmCaptionWorker(QObject):
                 return
             if not rt["candidates"].has_candidates:
                 self.log_message.emit(self.get_string("Vlm", "Error_No_Candidate",
-                                                      reason=rt["candidates"].rejected_reason), "red")
+                                                      reason=explain_rejected_reason(
+                                                          rt["candidates"].rejected_reason)), "red")
                 return
             image_path = self._selected_file_path
             if image_path is None or not Path(image_path).is_file():
@@ -254,7 +266,8 @@ class VlmCaptionWorker(QObject):
             candidates = rt["candidates"]
             if not candidates.has_candidates:
                 self.log_message.emit(self.get_string("Vlm", "Error_No_Candidate",
-                                                      reason=candidates.rejected_reason), "red")
+                                                      reason=explain_rejected_reason(
+                                                          candidates.rejected_reason)), "red")
                 for cid, why in candidates.excluded.items():
                     write_debug_log(f"vlm: candidate excluded {cid}: {why}")
                 return
@@ -314,13 +327,13 @@ class VlmCaptionWorker(QObject):
                     self.log_message.emit(self.get_string("Vlm", "Stopped_By_User"), "orange")
                     break
                 if result.stop_job:
-                    reason = result.error.reason.value if result.error else "prompt_format_error"
+                    reason = _error_reason_for_log(result.error) if result.error else "prompt_format_error"
                     self.log_message.emit(self.get_string("Vlm", "Job_Stopped", reason=reason), "red")
                     break
                 if not result.ok:
                     n_errors += 1
                     failed.append(image_path)
-                    reason = result.error.reason.value if result.error else "unknown"
+                    reason = _error_reason_for_log(result.error)
                     self.log_message.emit(self.get_string("Vlm", "Image_Failed",
                                                           name=image_path.name, reason=reason), "red")
                     continue
@@ -410,5 +423,5 @@ class VlmCaptionWorker(QObject):
         elif result.stopped:
             self.log_message.emit(self.get_string("Vlm", "Stopped_By_User"), "orange")
         else:
-            reason = result.error.reason.value if result.error else "unknown"
+            reason = _error_reason_for_log(result.error)
             self.log_message.emit(self.get_string("Vlm", "Test_Failed", reason=reason), "red")

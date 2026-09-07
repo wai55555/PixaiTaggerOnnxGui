@@ -27,6 +27,7 @@ class VlmErrorReason(str, Enum):
     PROMPT_FORMAT_ERROR = "prompt_format_error"
     CONTENT_POLICY = "content_policy"
     EMPTY_RESPONSE = "empty_response"
+    OUTPUT_LIMIT = "output_limit"
     BAD_RESPONSE = "bad_response"          # JSON 不正 / 抽出パス不一致
     NETWORK = "network"                    # DNS / TCP / TLS
     UNKNOWN = "unknown"
@@ -61,6 +62,9 @@ class VlmAttemptError:
             return VlmErrorClass.FAILOVER
         if r is VlmErrorReason.EMPTY_RESPONSE:
             return VlmErrorClass.RETRY_SAME if not already_retried_same else VlmErrorClass.FAILOVER
+        if r is VlmErrorReason.OUTPUT_LIMIT:
+            # 設定値を変えない限り同じ応答になるため、同一接続では無駄に再試行しない。
+            return VlmErrorClass.FAILOVER
         if r is VlmErrorReason.IMAGE_FORMAT_ERROR:
             # 呼び出し側が画像を作り直せたら retry、無理なら failover。ここでは failover を既定に。
             return VlmErrorClass.FAILOVER

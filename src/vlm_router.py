@@ -25,6 +25,23 @@ def parse_execution_mode(raw: object) -> ExecutionMode:
         return ExecutionMode.BUILTIN_FALLBACK
 
 
+_REJECTION_HINTS = {
+    "custom_connection_not_found": "selected custom connection was not found; check the saved connection and selected ID",
+    "selected_connection_is_not_custom": "selected route is not a custom connection; choose a custom route",
+    "custom_connection_disabled": "custom connection is disabled; enable it in custom connection settings",
+    "free_only_blocks_external_custom": "free-only mode blocks external custom APIs; use a local route or allow paid/external use",
+    "custom_connection_no_auth": "custom connection requires a credential; enter an API key or change auth type to None",
+    "no_verified_free_candidate": "no verified free VLM route is available; check model identity, API keys, and free-only policy",
+    "no_verified_candidate": "no eligible VLM route is available; check model IDs, API keys, identity, and enabled routes",
+}
+
+
+def explain_rejected_reason(reason: str) -> str:
+    """候補選択で停止した理由へ、確認すべき設定を付ける。"""
+    raw = str(reason or "unknown")
+    return f"{raw}: {_REJECTION_HINTS.get(raw, 'check VLM route settings and connection availability')}"
+
+
 @dataclass
 class RouterPolicy:
     execution_mode: ExecutionMode = ExecutionMode.BUILTIN_FALLBACK

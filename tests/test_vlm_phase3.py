@@ -8,7 +8,7 @@ import tempfile
 from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 # isolate config.ini: test_settings_dialog_roundtrip calls VlmSettingsDialog._on_save,
 # which persists via save_config(). Without this it overwrites the real config.ini.

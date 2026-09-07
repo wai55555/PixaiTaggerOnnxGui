@@ -182,7 +182,7 @@ class Vlm:
     sentence_mode: str = "automatic_long_detailed"
     character_name_mode: str = "explicit_only"
     markdown: str = "disabled"
-    max_output_tokens: int = 1024
+    max_output_tokens: int = 3072
     image_max_long_edge: int = 1536
     # 接続確認済みの binding。`<profile_id>:<provider_id>` をカンマ区切りで保持する。
     # キー登録時の軽量モデル一覧GET、接続診断のフルPASS、または1枚テスト成功で追記される。
@@ -249,7 +249,7 @@ def get_default_config() -> configparser.ConfigParser:
             'anthropic_workspace_id': '',
             'language': 'en', 'detail_level': 'maximum_detail',
             'sentence_mode': 'automatic_long_detailed', 'character_name_mode': 'explicit_only',
-            'markdown': 'disabled', 'max_output_tokens': '1024', 'image_max_long_edge': '1536',
+            'markdown': 'disabled', 'max_output_tokens': '3072', 'image_max_long_edge': '1536',
             'verified_bindings': '', 'strict_identity': 'False', 'model_id_overrides': '',
         },
         'Debug': {'debug_log': 'False'},

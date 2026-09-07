@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import json
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Callable
 
 import requests
@@ -33,6 +33,79 @@ class RawHttpResponse:
     headers: dict[str, str]
     json_body: Any
     text_body: str
+
+
+def _output_limit_reason(protocol_name: str, body: Any) -> str:
+    """空本文が生成上限到達によるものなら終了理由を返す。"""
+    if not isinstance(body, dict):
+        return ""
+    if protocol_name == "openai_chat_completions":
+        choices = body.get("choices")
+        if isinstance(choices, list) and choices and isinstance(choices[0], dict):
+            reason = str(choices[0].get("finish_reason") or "").strip().lower()
+            return reason if reason in ("length", "max_tokens") else ""
+    elif protocol_name == "openai_responses":
+        incomplete = body.get("incomplete_details")
+        reason = incomplete.get("reason") if isinstance(incomplete, dict) else ""
+        if str(reason).strip().lower() in ("max_output_tokens", "length"):
+            return str(reason).strip()
+        if str(body.get("status") or "").strip().lower() == "incomplete":
+            return "incomplete"
+    elif protocol_name == "anthropic_messages":
+        reason = str(body.get("stop_reason") or "").strip().lower()
+        if reason == "max_tokens":
+            return reason
+    elif protocol_name == "gemini_generate_content":
+        candidates = body.get("candidates")
+        if isinstance(candidates, list) and candidates and isinstance(candidates[0], dict):
+            reason = str(candidates[0].get("finishReason") or "").strip().upper()
+            if reason in ("MAX_TOKENS", "LENGTH"):
+                return reason
+    return ""
+
+
+def _enrich_parse_failure(parsed: VlmParseResult, *, protocol, body: Any,
+                          conn: VlmConnection, max_output_tokens: int) -> VlmParseResult:
+    """失敗理由へ設定確認に必要な情報を付ける。
+
+    UI側が ``reason.value`` だけを表示しても原因が分かるよう、レスポンス終了理由、
+    使用中の上限、抽出パス、接続設定の確認先を message に集約する。
+    """
+    error = parsed.error
+    if error is None:
+        return parsed
+    path = conn.text_path or getattr(protocol, "default_text_path", "") or "(protocol default)"
+    limit_reason = _output_limit_reason(protocol.name, body)
+    if error.reason is VlmErrorReason.EMPTY_RESPONSE and limit_reason:
+        return replace(parsed, error=VlmAttemptError(
+            VlmErrorReason.OUTPUT_LIMIT, error.http_status,
+            "output limit reached: max_output_tokens={} finish_reason={}; "
+            "the model returned no final text. Increase VLM max tokens to 3072 or higher "
+            "for reasoning VLMs.".format(max_output_tokens, limit_reason),
+            error.provider_code))
+
+    hints = {
+        VlmErrorReason.EMPTY_RESPONSE:
+            "no text at response path {!r}; verify API protocol and custom response extraction path".format(path),
+        VlmErrorReason.BAD_RESPONSE:
+            "verify API protocol, model ID, request format, and response path {!r}".format(path),
+        VlmErrorReason.AUTH_ERROR:
+            "verify API key, authentication type, header name, and query parameter",
+        VlmErrorReason.MODEL_UNSUPPORTED:
+            "verify the model ID and select a model supported by this endpoint",
+        VlmErrorReason.PROMPT_FORMAT_ERROR:
+            "verify API protocol and image/message format for this endpoint",
+        VlmErrorReason.TIMEOUT:
+            "verify the server is running and increase connect/read timeout if needed",
+        VlmErrorReason.NETWORK:
+            "verify base URL, host/port, TLS settings, and server availability",
+    }
+    hint = hints.get(error.reason)
+    if not hint:
+        return parsed
+    detail = (error.message or "").strip()
+    message = f"{detail}; {hint}" if detail else hint
+    return replace(parsed, error=replace(error, message=message[:800]))
 
 
 def execute_http(req, *, connect_timeout: float, read_timeout: float,
@@ -217,10 +290,15 @@ class VlmExecutor:
                                verify_tls=conn.verify_tls)
             if isinstance(raw, VlmAttemptError):
                 parsed = VlmParseResult(error=raw)
+                response_body = None
             else:
                 if raw.status == 429:
                     rt.rate_limit = update_from_429(rt.rate_limit or RateLimitState(conn.connection_id), raw.headers)
                 parsed = protocol.parse_response(raw.status, raw.json_body, raw.text_body)
+                response_body = raw.json_body
+            parsed = _enrich_parse_failure(
+                parsed, protocol=protocol, body=response_body, conn=conn,
+                max_output_tokens=profile.max_output_tokens)
 
             if parsed.ok:
                 rt.consecutive_timeouts = 0

@@ -610,6 +610,10 @@ class MainWindow(QMainWindow):
         self._tagger_worker.binding_verified.connect(self._on_vlm_binding_verified)
         self._tagger_worker.batch_completed.connect(self._on_batch_completed)
         self._tagger_worker.finished.connect(self._on_tagger_finished)
+        # worker.finished はメインスレッドの後処理だけでなく、実行スレッド自身も
+        # 終了させる。後処理側の cleanup だけに任せると、正常終了でも「残存スレッド
+        # の終了を待っています...」が通常ログへ残る。
+        self._tagger_worker.finished.connect(self._tagger_thread.quit)
         self._tagger_thread.started.connect(self._tagger_worker.run_captioning)
         self._tagger_thread.start()
 
@@ -1301,6 +1305,8 @@ class MainWindow(QMainWindow):
         self._tagger_worker.progress_update.connect(self._on_tagging_progress)
         self._tagger_worker.model_status_changed.connect(self._check_model_status_and_update_ui)
         self._tagger_worker.finished.connect(self._on_tagger_finished)
+        # 正常終了時は worker の finished シグナルから QThread も終了させる。
+        self._tagger_worker.finished.connect(self._tagger_thread.quit)
 
         self._tagger_thread.start()
 
@@ -1365,10 +1371,17 @@ class MainWindow(QMainWindow):
         """Safely cleans up the existing tagger thread and worker."""
         if self._tagger_thread:
             if self._tagger_thread.isRunning():
-                # This should not happen if called from _start_tagging_thread, but as a safeguard:
+                # 通常は worker.finished -> thread.quit で既に終了処理へ入っている。
+                # ここに到達するのは停止や異常経路だけなので、ユーザー向けの通常ログ
+                # へ「残存スレッド」を出さず、詳細はデバッグログへ残す。
+                write_debug_log("tagger thread still running during cleanup; waiting")
                 self._tagger_thread.quit()
-                self.update_log(self.locale_manager.get_string("MainWindow", "Waiting_For_Thread_To_Finish"), "orange")
-                self._tagger_thread.wait(1000) # Wait a bit
+                if not self._tagger_thread.wait(5000):
+                    write_debug_log("tagger thread did not finish within cleanup timeout")
+                    self.update_log(self.locale_manager.get_string(
+                        "MainWindow", "Thread_Shutdown_Failed"), "red")
+                    self._tagger_thread.terminate()
+                    self._tagger_thread.wait(1000)
             self._tagger_thread.deleteLater()
             self._tagger_thread = None
         if self._tagger_worker:

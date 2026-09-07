@@ -9,7 +9,7 @@ import tempfile
 import time
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from PIL import Image
 
@@ -173,7 +173,7 @@ def test_protocol_build_request():
     assert req.json_body["model"] == "m"
     assert req.json_body["messages"][1]["content"][1]["image_url"]["url"].startswith("data:image/jpeg;base64,")
     assert req.json_body["temperature"] == 0.4
-    assert req.json_body["max_tokens"] == 1024
+    assert req.json_body["max_tokens"] == 3072
 
     gm = PROTO.GeminiGenerateContentProtocol()
     greq = gm.build_request("https://x/v1beta", "GKEY", spec)

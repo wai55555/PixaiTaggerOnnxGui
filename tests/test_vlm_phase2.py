@@ -6,7 +6,7 @@ import sys
 import types
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 import vlm_transport as T
 from vlm_transport import RawHttpResponse, VlmExecutor
@@ -66,6 +66,46 @@ def test_success_first_connection():
     finally:
         T.execute_http = old
     print("  success on first connection: OK")
+
+
+def test_output_limit_explains_generation_setting_and_skips_same_retry():
+    conn = _conn("a")
+    body = {"choices": [{
+        "message": {"content": "", "reasoning_content": "long internal reasoning"},
+        "finish_reason": "length",
+    }], "usage": {"completion_tokens": 1024}}
+    responder = _Responder({"x/v1": [RawHttpResponse(200, {}, body, "")]})
+    old = _patch(responder)
+    try:
+        ex = VlmExecutor({"a": conn}, lambda ref: None)
+        spec = _spec()
+        spec["profile"] = GenerationProfile(max_output_tokens=1024)
+        res = ex.caption_one(spec, ["a"])
+        assert not res.ok
+        assert res.error.reason is VlmErrorReason.OUTPUT_LIMIT
+        assert "max_output_tokens=1024" in res.error.message
+        assert "3072" in res.error.message
+        assert len(res.attempts) == 1, "output-limit failure must not retry unchanged settings"
+    finally:
+        T.execute_http = old
+    print("  output-limit failure explains max tokens and avoids duplicate retry: OK")
+
+
+def test_empty_response_explains_custom_response_path():
+    conn = _conn("a")
+    conn.text_path = "wrong.path"
+    responder = _Responder({"x/v1": [RawHttpResponse(200, {}, _ok_body("caption"), "")]})
+    old = _patch(responder)
+    try:
+        ex = VlmExecutor({"a": conn}, lambda ref: None)
+        res = ex.caption_one(_spec(), ["a"])
+        assert not res.ok
+        assert res.error.reason is VlmErrorReason.EMPTY_RESPONSE
+        assert "wrong.path" in res.error.message
+        assert "response extraction path" in res.error.message
+    finally:
+        T.execute_http = old
+    print("  empty response explains custom response path: OK")
 
 
 def test_429_failover():

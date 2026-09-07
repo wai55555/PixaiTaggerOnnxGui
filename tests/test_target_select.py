@@ -5,7 +5,7 @@ Offline only - no network, no GUI. Run:  rtk pytest tests/test_target_select.py 
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from tagging_core import TargetMode, filter_target_images, parse_target_mode
 
