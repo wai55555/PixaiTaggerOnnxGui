@@ -241,7 +241,11 @@ class OpenAIResponsesProtocol(VlmProtocol):
         if status != 200 or not isinstance(body, dict):
             code = str((extract_by_path(body, "error.code") if isinstance(body, dict) else "") or "")
             err = self._error_from_status(status or 0, text_body, code)
-            if code in ("content_filter", "content_policy"):
+            # openai_chat_completions と同じ判定にそろえる: 明示コードが無くても
+            # 4xx 本文がポリシー拒否を示すなら AUTH_ERROR ではなく CONTENT_POLICY。
+            is_policy = code in ("content_filter", "content_policy") or \
+                (400 <= status < 500 and _looks_like_content_policy(text_body))
+            if is_policy:
                 err = VlmAttemptError(VlmErrorReason.CONTENT_POLICY, status or None, err.message, code)
             return VlmParseResult(error=err)
         text = _openai_responses_text(body, self.default_text_path)

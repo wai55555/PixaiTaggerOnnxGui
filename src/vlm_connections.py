@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import ipaddress
+import math
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
@@ -88,11 +89,11 @@ class RetryPolicy:
         d = data or {}
         base = cls()
         return cls(
-            connect_timeout_s=_f(d.get("connect_timeout_s"), base.connect_timeout_s),
-            read_timeout_s=_f(d.get("read_timeout_s"), base.read_timeout_s),
+            connect_timeout_s=_timeout(d.get("connect_timeout_s"), base.connect_timeout_s),
+            read_timeout_s=_timeout(d.get("read_timeout_s"), base.read_timeout_s),
             retry_same_max=_i(d.get("retry_same_max"), base.retry_same_max),
-            retry_5xx=bool(d.get("retry_5xx", base.retry_5xx)),
-            use_retry_after_on_429=bool(d.get("use_retry_after_on_429", base.use_retry_after_on_429)),
+            retry_5xx=_b(d.get("retry_5xx"), base.retry_5xx),
+            use_retry_after_on_429=_b(d.get("use_retry_after_on_429"), base.use_retry_after_on_429),
         )
 
 
@@ -172,10 +173,10 @@ class VlmConnection:
             base_url=str(data.get("base_url", "")),
             model_id=str(data.get("model_id", "")),
             provider_id=str(data.get("provider_id", "")),
-            enabled=bool(data.get("enabled", True)),
+            enabled=_b(data.get("enabled"), True),
             auth=AuthSpec.from_mapping(raw_auth if isinstance(raw_auth, dict) else None),
             retry=RetryPolicy.from_mapping(raw_retry if isinstance(raw_retry, dict) else None),
-            verify_tls=bool(data.get("verify_tls", True)),
+            verify_tls=_b(data.get("verify_tls"), True),
             concurrency=max(1, _i(data.get("concurrency"), 1)),
             text_path=str(raw_response.get("text_path", "") if isinstance(raw_response, dict) else data.get("text_path", "")),
             error_path=str(raw_response.get("error_path", "") if isinstance(raw_response, dict) else data.get("error_path", "")),
@@ -195,11 +196,41 @@ def _f(v, default: float) -> float:
         return default
 
 
+def _timeout(v, default: float) -> float:
+    """接続タイムアウト秒。非有限・非正値は requests が ValueError を投げ、
+    execute_http のハンドラ外で落ちるため、ここで安全な範囲へ丸める。"""
+    try:
+        n = float(v)
+    except (TypeError, ValueError):
+        return default
+    if not math.isfinite(n) or n <= 0.0:
+        return default
+    return min(n, 900.0)
+
+
 def _i(v, default: int) -> int:
     try:
         return int(v)
     except (TypeError, ValueError):
         return default
+
+
+def _b(v, default: bool) -> bool:
+    """JSON 由来の真偽値。実際の bool はそのまま、文字列は明示的な語のみ解釈し、
+    それ以外（"false" を True と誤認する bool() の挙動含む）は既定値へ倒す。"""
+    if isinstance(v, bool):
+        return v
+    if v is None:
+        return default
+    if isinstance(v, (int, float)) and not isinstance(v, bool):
+        return bool(v)
+    if isinstance(v, str):
+        s = v.strip().lower()
+        if s in ("true", "1", "yes", "on"):
+            return True
+        if s in ("false", "0", "no", "off", ""):
+            return False
+    return default
 
 
 # --- 初期内蔵接続（spec.md 3.1・3.2節） ------------------------------------------------

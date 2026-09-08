@@ -5,6 +5,7 @@
 """
 from __future__ import annotations
 
+import math
 import time
 from dataclasses import dataclass
 from email.utils import parsedate_to_datetime
@@ -78,6 +79,11 @@ def update_from_429(state: RateLimitState, headers: dict, now: float | None = No
         try:
             val = float(raw)
         except (TypeError, ValueError):
+            continue
+        # NaN / inf / 負値は「ヘッダーで明示されたリセット」として扱わない。
+        # 過去・非数のデッドラインは in_cooldown() を常に False にし、レート制限中の
+        # 接続へ即再試行してしまうため、推測クールダウンへフォールバックさせる。
+        if not math.isfinite(val) or val < 0:
             continue
         # 大きい値は epoch 秒、小さい値は「あと N 秒」とみなす。
         reset_epoch = val if val > 1e6 else now + val

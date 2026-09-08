@@ -79,8 +79,5 @@ def test_parse_invalid_returns_all():
     print("  parse invalid=ALL: OK")
 
 
-if __name__ == "__main__":
-    tests = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
-    for t in tests:
-        t()
-    print(f"\nALL {len(tests)} TARGET SELECT TESTS PASSED")
+# pytest 専用（ほとんどのテストが tmp_path フィクスチャを取るため、素の実行はできない）。
+# 実行: rtk pytest tests/test_target_select.py -q

@@ -2,7 +2,13 @@
 from __future__ import annotations
 
 import inspect
+import sys
+from pathlib import Path
 from types import SimpleNamespace
+
+# pytest.ini は pytest 実行時のみ src を sys.path へ足す。素の実行でも import できるよう
+# ここでも足しておく（末尾の __main__ ランナー用。他テストと同じ方式）。
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from vlm_config import build_generation_profile
 from vlm_profiles import GenerationProfile, PromptMode

@@ -118,14 +118,12 @@ class CustomConnectionDialog(QDialog):
         self.connect_timeout = _spin(1, 120, 10)
         self.read_timeout = _spin(5, 900, 120)
         self.retry_same = _spin(0, 5, 1)
-        self.concurrency = _spin(1, 16, 1)
         self.text_path_edit = QLineEdit()
         self.text_path_edit.setPlaceholderText("choices[0].message.content")
         self.max_edge = _spin(256, 8192, 1536)
         gf.addRow(self._t("Vlm", "Custom_Field_ConnectTimeout"), self.connect_timeout)
         gf.addRow(self._t("Vlm", "Custom_Field_ReadTimeout"), self.read_timeout)
         gf.addRow(self._t("Vlm", "Custom_Field_RetrySame"), self.retry_same)
-        gf.addRow(self._t("Vlm", "Custom_Field_Concurrency"), self.concurrency)
         gf.addRow(self._t("Vlm", "Custom_Field_TextPath"), self.text_path_edit)
         gf.addRow(self._t("Vlm", "Custom_Field_MaxEdge"), self.max_edge)
         root.addWidget(adv)
@@ -146,7 +144,9 @@ class CustomConnectionDialog(QDialog):
 
     def _sync_auth_rows(self) -> None:
         atype = self.auth_type_combo.currentData()
-        self.auth_header_edit.setEnabled(atype in ("bearer", "header_key"))
+        # bearer は常に Authorization ヘッダーを使い、header_name は実行時に無視される
+        # （apply_connection_auth が header_name を見るのは header_key のときだけ）。
+        self.auth_header_edit.setEnabled(atype == "header_key")
         self.auth_query_edit.setEnabled(atype == "query_key")
         self.api_key_edit.setEnabled(atype != "none")
         self.persist_key_check.setEnabled(atype != "none" and vlm_secrets.keyring_available())
@@ -165,7 +165,6 @@ class CustomConnectionDialog(QDialog):
         self.connect_timeout.setValue(_int(retry.get("connect_timeout_s"), 10))
         self.read_timeout.setValue(_int(retry.get("read_timeout_s"), 120))
         self.retry_same.setValue(_int(retry.get("retry_same_max"), 1))
-        self.concurrency.setValue(_int(data.get("concurrency"), 1))
         resp = data.get("response", {}) if isinstance(data.get("response"), dict) else {}
         self.text_path_edit.setText(str(resp.get("text_path", "") or data.get("text_path", "")))
         self.verify_tls_check.setChecked(bool(data.get("verify_tls", True)))
@@ -334,7 +333,13 @@ class CustomConnectionDialog(QDialog):
         if atype != "none":
             key = self.api_key_edit.text().strip()
             if key:
-                vlm_secrets.set_secret(secret_ref, key, persist=self.persist_key_check.isChecked())
+                persist_key = self.persist_key_check.isChecked()
+                # セッション限定に切り替えるときは、以前 keyring へ保存した値を先に
+                # 消す。残すと set_secret(persist=False) はセッション上書きを足すだけで、
+                # 再起動後に get_secret が古い keyring 値を返してしまう。
+                if not persist_key:
+                    vlm_secrets.delete_secret(secret_ref)
+                vlm_secrets.set_secret(secret_ref, key, persist=persist_key)
         else:
             # 認証なしに変更したら、以前保存した鍵は残さない。
             old_ref = self._existing.get("auth", {}).get("secret_ref") if isinstance(self._existing.get("auth"), dict) else ""
@@ -350,7 +355,6 @@ class CustomConnectionDialog(QDialog):
             "model_id": model_id,
             "enabled": bool(self._existing.get("enabled", True)),
             "verify_tls": self.verify_tls_check.isChecked(),
-            "concurrency": self.concurrency.value(),
             "auth": {
                 "type": atype,
                 "secret_ref": secret_ref,

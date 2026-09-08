@@ -92,7 +92,7 @@ class GenerationProfile:
             max_output_tokens=_clamp_int(data.get("max_output_tokens"), base.max_output_tokens, lo=16, hi=32768),
             custom_system_prompt=str(data.get("custom_system_prompt", "") or ""),
             image_max_long_edge=_clamp_int(data.get("image_max_long_edge"), base.image_max_long_edge, lo=256, hi=8192),
-            image_format=str(data.get("image_format", base.image_format) or base.image_format).lower(),
+            image_format=_norm_image_format(data.get("image_format", base.image_format)),
             image_jpeg_quality=_clamp_int(data.get("image_jpeg_quality"), base.image_jpeg_quality, lo=1, hi=100),
         )
 
@@ -112,6 +112,16 @@ def _clamp_int(raw: object, default: int, *, lo: int, hi: int) -> int:
     except (TypeError, ValueError):
         return default
     return max(lo, min(n, hi))
+
+
+_IMAGE_FORMATS = ("auto", "jpeg", "png")
+
+
+def _norm_image_format(raw: object) -> str:
+    """未対応の image_format（gif など）は auto へ寄せる。プレビュー表示と実際の
+    送信形式が食い違わないよう、ここで既定値へ正規化しておく。"""
+    v = str(raw or "auto").strip().lower()
+    return v if v in _IMAGE_FORMATS else "auto"
 
 
 # --- プロンプト組み立て（spec.md 5章） ----------------------------------------------

@@ -119,7 +119,8 @@ class VlmPromptPreviewDialog(QDialog):
         for placement in self.preview.placements:
             fallback = ""
             if placement.fallback_protocol:
-                fallback = self._t(
+                # 先頭に空白を入れて、直前の max-token 欄と続けて表示されないようにする。
+                fallback = " " + self._t(
                     "Vlm", "PromptPreview_Fallback",
                     protocol=placement.fallback_protocol,
                 )

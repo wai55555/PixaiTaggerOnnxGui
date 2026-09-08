@@ -414,7 +414,11 @@ class VlmSettingsDialog(QDialog):
         result = dlg.result_profile()
         users = [d for d in vlm_config.load_user_profiles() if d.get("profile_id") != result["profile_id"]]
         users.append(result)
-        vlm_config.save_user_profiles(users)
+        if not vlm_config.save_user_profiles(users):
+            # 書き込みに失敗したのに未保存のプロファイルを選択・永続化しない。
+            QMessageBox.critical(self, self._t("Vlm", "Settings_Title"),
+                                 self._t("Vlm", "Settings_Save_Failed"))
+            return
         self._vlm.model_profile_id = result["profile_id"]
         self._reload_profiles(result["profile_id"])
         self._rebuild_routes()

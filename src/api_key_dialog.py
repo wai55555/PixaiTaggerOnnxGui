@@ -180,7 +180,8 @@ class ApiKeyDialog(QDialog):
                 return
             self._pending_workspace_id = workspace_id
             headers = dict(getattr(self._conn, "request_headers", {}) or {})
-            headers.pop("anthropic-workspace-id", None)
+            # 入力欄が空でも、ANTHROPIC_WORKSPACE_ID 由来で接続に載っている
+            # workspace ヘッダーは残す（消すと複数 workspace のキーで確認が失敗する）。
             if workspace_id:
                 headers["anthropic-workspace-id"] = workspace_id
             check_conn = replace(self._conn, request_headers=headers)

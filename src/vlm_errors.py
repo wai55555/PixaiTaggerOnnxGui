@@ -89,10 +89,11 @@ class VlmAttemptError:
 
 def _looks_like_prompt_format(message: str, provider_code: str = "") -> bool:
     low = f"{provider_code} {message}".lower()
+    # "request body" のような汎用句は含めない。ペイロード過大など画像単位で解消する
+    # 400 まで PROMPT_FORMAT_ERROR (=STOP_JOB) 扱いになり、バッチ全体を止めてしまう。
     return any(marker in low for marker in (
         "messages[", "content must be", "content[", "image_url", "input_image",
         "inline_data", "inlineimage", "multimodal", "prompt format",
-        "request body",
     ))
 
 

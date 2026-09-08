@@ -854,6 +854,8 @@ class MainWindow(QMainWindow):
         if hasattr(self, "use_vlm_check"):
             self.use_vlm_check.setEnabled(enabled)
             self.vlm_settings_button.setEnabled(enabled)
+            # 走行中は1枚テストも押せないようにする（設定ボタンと同じ理由）。
+            self.vlm_single_test_button.setEnabled(enabled)
         # The worker rewrites the same .txt files, so every path that can also write them
         # has to be locked: the main caption box, the grid-view cells, and Undo/Redo.
         self.caption_text_edit.setEnabled(enabled)

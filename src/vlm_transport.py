@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import json
+import re
 import time
 from dataclasses import dataclass, field, replace
 from typing import Any, Callable
@@ -108,6 +109,26 @@ def _enrich_parse_failure(parsed: VlmParseResult, *, protocol, body: Any,
     return replace(parsed, error=replace(error, message=message[:800]))
 
 
+_FULL_URL_QUERY_RE = re.compile(r"(https?://[^\s'\"]+?)\?[^\s'\"]*")
+_SECRET_PARAM_RE = re.compile(
+    r"([?&](?:key|api[_-]?key|api[_-]?token|token|access[_-]?token|auth)=)[^\s&'\"]+",
+    re.IGNORECASE)
+
+
+def _scrub_exc(exc: Exception) -> str:
+    """requests 例外のテキストから資格情報を落とす。
+
+    query_key 認証では API キーが URL のクエリ文字列に載り、requests の例外文言
+    （"... with url: /v1/chat?key=SECRET ..." など。相対パスのこともある）へそのまま
+    現れる。ホスト名までは診断に役立つので残し、絶対 URL のクエリ全体と、
+    キー名で判別できる秘密パラメータを伏せる。
+    """
+    text = " ".join(str(exc).split())
+    text = _FULL_URL_QUERY_RE.sub(r"\1?<redacted>", text)
+    text = _SECRET_PARAM_RE.sub(r"\1<redacted>", text)
+    return text[:300]
+
+
 def execute_http(req, *, connect_timeout: float, read_timeout: float,
                  verify_tls: bool = True) -> RawHttpResponse | VlmAttemptError:
     """1回の HTTP リクエストを実行する。ネットワーク例外は VlmAttemptError にして返す。"""
@@ -123,11 +144,11 @@ def execute_http(req, *, connect_timeout: float, read_timeout: float,
     except requests.exceptions.Timeout:
         return VlmAttemptError(VlmErrorReason.TIMEOUT, None, "request timed out")
     except requests.exceptions.SSLError as e:
-        return VlmAttemptError(VlmErrorReason.NETWORK, None, f"TLS error: {e}")
+        return VlmAttemptError(VlmErrorReason.NETWORK, None, f"TLS error: {_scrub_exc(e)}")
     except requests.exceptions.ConnectionError as e:
-        return VlmAttemptError(VlmErrorReason.NETWORK, None, f"connection error: {e}")
+        return VlmAttemptError(VlmErrorReason.NETWORK, None, f"connection error: {_scrub_exc(e)}")
     except requests.exceptions.RequestException as e:
-        return VlmAttemptError(VlmErrorReason.UNKNOWN, None, f"request failed: {e}")
+        return VlmAttemptError(VlmErrorReason.UNKNOWN, None, f"request failed: {_scrub_exc(e)}")
 
     text_body = resp.text or ""
     body: Any = None

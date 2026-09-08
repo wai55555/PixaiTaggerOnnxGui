@@ -139,8 +139,10 @@ def delete_secret(secret_ref: str) -> None:
     if keyring is not None:
         try:
             keyring.delete_password(_SERVICE, secret_ref)
-        except Exception:
-            pass
+        except Exception as e:  # backend 無し / エントリ未登録など
+            # 削除できなかったこと自体はここで握りつぶすが、他の get/set 失敗と
+            # 同じく痕跡を残す（keyring に古い鍵が残る可能性を後から追えるように）。
+            write_debug_log(f"vlm_secrets: keyring delete failed for a ref: {type(e).__name__}")
     with _lock:
         _session_store.pop(secret_ref, None)
 

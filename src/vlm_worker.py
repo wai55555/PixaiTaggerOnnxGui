@@ -22,6 +22,7 @@ from tagging_core import (
 import vlm_config
 import vlm_persistence
 import vlm_secrets
+from vlm_errors import VlmAttemptError, VlmErrorReason
 from vlm_image import ImagePreprocessConfig, prepare_image
 from vlm_profiles import build_system_prompt, build_user_prompt
 from vlm_router import ExecutionMode, explain_candidate_failure, select_candidates
@@ -88,7 +89,10 @@ class VlmModelListWorker(QObject):
             self.result_ready.emit(self._conn.connection_id, res)
         except Exception as e:  # noqa: BLE001
             write_debug_log(f"vlm model-list worker error: {e}")
-            self.result_ready.emit(getattr(self._conn, "connection_id", ""), None)
+            # None を渡すと呼び出し側が "None" をそのまま表示してしまう。
+            # 失敗理由を持つ VlmAttemptError にして actionable な文言を残す。
+            err = VlmAttemptError(VlmErrorReason.UNKNOWN, None, f"{type(e).__name__}: {e}")
+            self.result_ready.emit(getattr(self._conn, "connection_id", ""), err)
         finally:
             self.finished.emit()
 
@@ -239,6 +243,10 @@ class VlmCaptionWorker(QObject):
             output_path = image_path.with_suffix(".txt")
             mode = parse_existing_file_mode(self._settings.behavior.existing_file_mode, self.get_string)
             will_write, decision = self._resolve_existing(output_path, mode)
+            # ASK ダイアログ表示中に停止された場合、その結果を書き出さない。
+            if self.is_stopped():
+                self.log_message.emit(self.get_string("Vlm", "Stopped_By_User"), "orange")
+                return
             if not will_write:
                 self.log_message.emit(self.get_string("Vlm", "Single_Test_Skipped_Existing",
                                                       name=output_path.name), "orange")

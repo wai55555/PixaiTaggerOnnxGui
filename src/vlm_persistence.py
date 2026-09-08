@@ -19,6 +19,9 @@ def _long_path_str(path: Path) -> str:
     p = os.path.abspath(path)
     if sys.platform != "win32":
         return p
+    if p.startswith("\\\\?\\"):
+        # すでに拡張長パス。重ねて接頭辞を付けると os.replace 等が無効パスで失敗する。
+        return p
     if p.startswith("\\\\"):
         return "\\\\?\\UNC" + p[1:]
     return "\\\\?\\" + p
@@ -94,7 +97,10 @@ def save_caption(output_path: Path, caption: str, placement: str) -> SaveOutcome
     fs_output_path = Path(_long_path_str(output_path))
     if fs_output_path.is_file():
         # 読めない既存ファイルは新規扱いにしない（undo での破壊防止。PR#16 と同方針）。
-        previous_content = fs_output_path.read_text(encoding="utf-8")
+        # newline="" で改行変換を抑止する。universal newlines で CRLF を LF に潰すと、
+        # 次の APPEND/PREPEND 時に既存キャプションと一致せず同じ内容を二重追記する。
+        with open(_long_path_str(output_path), "r", encoding="utf-8", newline="") as f:
+            previous_content = f.read()
 
     if placement in ("APPEND", "PREPEND") and previous_content is not None:
         if caption_already_present(previous_content, caption):

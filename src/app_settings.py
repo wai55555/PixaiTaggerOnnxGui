@@ -366,7 +366,14 @@ def _load_vlm(config: configparser.ConfigParser) -> Vlm:
     """[Vlm] セクションを読み込む。欠けているキーは Vlm の既定値へフォールバック。"""
     d = Vlm()
     g = lambda k, fb: config.get('Vlm', k, fallback=fb)  # noqa: E731
-    gb = lambda k, fb: config.getboolean('Vlm', k, fallback=fb)  # noqa: E731
+
+    def gb(k: str, fb: bool) -> bool:
+        # 手書き config.ini の [Vlm] enabled / strict_identity が bool として
+        # 解釈できない値でも、gi と同様に既定値へ倒して起動を止めない。
+        try:
+            return config.getboolean('Vlm', k, fallback=fb)
+        except (TypeError, ValueError):
+            return fb
 
     def gi(k: str, fb: int) -> int:
         try:

@@ -19,8 +19,12 @@ class ExecutionMode(str, Enum):
 
 
 def parse_execution_mode(raw: object) -> ExecutionMode:
+    if isinstance(raw, ExecutionMode):
+        return raw
     try:
-        return ExecutionMode(str(raw).strip().lower())
+        # str, Enum のメンバーでも str(member) は "ExecutionMode.X" になり得るため
+        # .value を先に取る。文字列・その他はそのまま正規化して照合する。
+        return ExecutionMode(str(getattr(raw, "value", raw)).strip().lower())
     except (ValueError, AttributeError):
         return ExecutionMode.BUILTIN_FALLBACK
 
