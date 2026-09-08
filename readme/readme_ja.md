@@ -1,7 +1,7 @@
 # PixAI Tagger ONNX GUI
 ## [English](readme/readme_en.md) [简体中文](readme/readme_zh_CN.md) [繁體中文](readme/readme_zh_TW.md) [Русский](readme/readme_ru.md)
 
-ローカル環境にある大量の画像に対して、高速かつ正確なタグを自動で付与するためのGUIツールです。直感的な操作で、データセットの整理や管理を劇的に効率化します。
+ローカル環境にある大量の画像に対して、高速かつ正確なタグやキャプションを自動生成するGUIツールです。直感的な操作で、データセットの整理や管理を劇的に効率化します。複数のローカルtagger／captionerモデルに加え、Gemini・OpenAI・Claude・Groq・ローカルVLMなどに対応しています。
 
 |![](https://raw.githubusercontent.com/wai55555/PixaiTaggerOnnxGui/refs/heads/main/sample/main_window_01.png)|![](https://raw.githubusercontent.com/wai55555/PixaiTaggerOnnxGui/refs/heads/main/sample/main_window_02.jpg)|
 |:-:|:-:|
@@ -10,7 +10,7 @@
 
 ## 概要 (Overview)
 
-**PixAI Tagger ONNX GUI** は、[PixAI](https://pixai.art/) が開発した画像タグ付けモデルの[ONNX版](https://huggingface.co/deepghs/pixai-tagger-v0.9-onnx)を利用し、ローカル環境の画像にタグを付与します。
+**PixAI Tagger ONNX GUI** は、[PixAI](https://pixai.art/) が開発した画像タグ付けモデルの[ONNX版](https://huggingface.co/deepghs/pixai-tagger-v0.9-onnx)をはじめとする複数のローカルモデルと、任意のネットワークVLMを利用し、画像にタグやキャプションを付与します。
 
 PixAI Taggerは13,000以上の豊富なタグに対応しており、一般的なタグ付けモデル（例：wd-taggerの約10,000タグ）と比較して有利です。このツールはその性能を最大限に引き出し、あなたの画像管理をサポートするために開発されました。
 
@@ -45,7 +45,7 @@ PixAI Taggerは13,000以上の豊富なタグに対応しており、一般的�
 
 ### 2. パワフルな自動タグ付け
 - **高速なONNX Runtime**: CPUでも軽快に動作するONNXモデルを採用。大量の画像もストレスなく処理します。
-- **モデル自動ダウンロード**: 初回起動時にボタン一つで、Hugging FaceからPixAI Taggerのモデルとタグファイルを自動でダウンロード。面倒な手作業は不要です。
+- **モデル自動ダウンロード**: 選択したモデルと必要なメタデータを、設定された配布元からボタン一つでダウンロードできます。面倒な手作業は不要です。
 
 ### 3. 柔軟で高度なタグ編集
 - **個別編集**:
@@ -59,22 +59,22 @@ PixAI Taggerは13,000以上の豊富なタグに対応しており、一般的�
     - `3x3`ボタンからグリッドビューに移行。複数の画像を一度に俯瞰しながら、タグの確認や編集ができます。
 
 ### 4. 細やかなカスタマイズ性
-- **タグ生成の調整**: `general` と `character` のカテゴリごとに、タグを生成する**しきい値**や**最大タグ数**をスライダーで直感的に調整できます。
+- **タグ生成の調整**: モデルが対応するカテゴリごとに、タグを生成する**しきい値**や**最大タグ数**を直感的に調整できます。
 - **設定の自動保存**: ウィンドウサイズや各設定値は、アプリ終了時に`config.ini`へ自動保存。次回も同じ環境で作業を再開できます。
-- **多言語対応**: 日本語と英語をサポート。OSの言語設定に応じてUIが自動で切り替わります。
+- **多言語対応**: 日本語、英語、フランス語、ドイツ語、スペイン語、ロシア語、簡体字中国語、繁体字中国語、韓国語をサポート。OSの言語設定に応じてUIが自動で切り替わります。
 
 ### 5. VLMキャプション（任意）
 - **ネットワークVLMによる自然言語キャプション**: モデル選択欄の隣にある「VLM接続を使う」チェックを入れると、生成をローカルモデルからVLM（Vision-Language Model）へ切り替え、各画像に詳細な英語キャプションを付けます。学習用データセットの説明文に向いています。既定はOFFで、通常のタグ付けには影響しません。
-- **内蔵サービスと同一モデルフォールバック**: Gemini API・OpenRouter・Cloudflare Workers AI を内蔵（ほかに Groq・NVIDIA NIM）。あるサービスが拒否・レート制限された場合、*同じ*モデルを提供する次のサービスへ自動で切り替えます。別モデルへ勝手に乗り換えることはありません。<!-- Mistral/Pixtral はキャプション品質が現状低いためコメントアウト中。 -->
+- **内蔵サービスと同一モデルフォールバック**: Gemini API・OpenRouter・Cloudflare・Groq・NVIDIA NIM・Hugging Face・Vercel AI Gateway・OpenAI・Anthropicを利用できます。あるサービスが拒否・レート制限された場合、*同じ*モデルを提供する次のサービスへ自動で切り替えます。別モデルへ勝手に乗り換えることはありません。<!-- Mistral/Pixtral はキャプション品質が現状低いためコメントアウト中。 -->
 - **カスタム接続**: Ollama・LM Studio・llama.cpp・vLLM などローカルサーバーを含む、OpenAI 互換エンドポイントを追加できます。
 - **キーは `config.ini` に置きません**: VLM設定ダイアログでAPIキーを登録すると、実リクエスト1回で検証し、OSのキーリング（または `.env` ファイル / 環境変数）に保存します。
-- **選択した経路を使用**: 有効化して並べた認証済み経路だけを順に試します。料金・従量課金は各サービスの条件に従い、アプリはどの経路も無料とは判定しません。詳細度・文数・キャラクター名の扱い・Markdown を調整でき、生成キャプションは既存 `.txt` と組み合わせられます（前に追加／後に追加／上書き。タグ出力と同じ）。
-
+- **選択した経路を使用**: 有効化して並べた認証済み経路だけを順に試します。API料金・無料枠・レート制限は各サービスの条件に従い、アプリはどの経路も無料とは判定しません。詳細度・文数・キャラクター名の扱い・Markdownを調整でき、生成キャプションは既存`.txt`と組み合わせられます（前に追加／後に追加／上書き。タグ出力と同じ）。
 
 
 ## ~~実装予定 (To Be Released)~~
+- GPU利用、onnxruntime-directml
 - ~~GPU利用を `config.ini` で切り替えられるようにして高速化~~
-CUDA tool kit、NVIDIA Developer Programへのユーザー登録必須なcuDNNが必要と判明
+onnxruntime-gpuにCUDA tool kit、NVIDIA Developer Programへのユーザー登録必須なcuDNNが必要と判明。venv環境構築までやれば自動DLに導入も実用的だが...　考慮中
 - ~~バッチ処理対応による高速化~~
 ONNX Runtimeではオーバーヘッドが発生してバッチ処理による高速化はできなかった
 

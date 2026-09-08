@@ -1,5 +1,5 @@
 # PixAI Tagger ONNX GUI
-此应用程序是一个GUI工具，用于在本地环境中对大量图像自动分配快速准确的标签。通过直观的操作，它极大地简化了数据集的组织和管理。
+此应用程序是一个GUI工具，用于为本地的大量图像自动生成快速准确的标签和描述文本。通过直观的操作，它极大地简化了数据集的组织和管理。除了多种本地标签和描述模型外，还支持 Gemini、OpenAI、Claude、Groq、本地 VLM 以及其他兼容服务。
 
 |![](https://raw.githubusercontent.com/wai55555/PixaiTaggerOnnxGui/refs/heads/main/sample/main_window_01.png)|![](https://raw.githubusercontent.com/wai55555/PixaiTaggerOnnxGui/refs/heads/main/sample/main_window_02.jpg)|
 |:-:|:-:|
@@ -8,7 +8,7 @@
 
 ## 概述 (Overview)
 
-**PixAI Tagger ONNX GUI** 利用 [PixAI](https://pixai.art/) 开发的图像标注模型的 [ONNX 版本](https://huggingface.co/deepghs/pixai-tagger-v0.9-onnx) 为本地图像分配标签。
+**PixAI Tagger ONNX GUI** 使用多种本地模型（包括 [PixAI](https://pixai.art/) 开发的图像标注模型的 [ONNX 版本](https://huggingface.co/deepghs/pixai-tagger-v0.9-onnx)）以及可选的网络 VLM，为图像生成标签和描述文本。
 
 原始的 PixAI Tagger 支持超过 13,000 个丰富的标签，与常见的标注模型（例如 wd-tagger 的约 10,000 个标签）相比具有优势。此工具旨在最大限度地发挥其性能并支持您的图像管理。
 
@@ -43,7 +43,7 @@
 
 ### 2. 强大的自动标注
 -   **高速 ONNX Runtime**: 采用 ONNX 模型，即使在 CPU 上也能流畅运行。轻松处理大量图像。
--   **自动模型下载**: 首次启动时，只需单击一个按钮，即可从 Hugging Face 自动下载 PixAI Tagger 模型和标签文件。无需繁琐的手动操作。
+-   **自动模型下载**: 只需单击一个按钮，即可从配置的来源下载所选模型及其必要的元数据。无需繁琐的手动设置。
 
 ### 3. 灵活高级的标签编辑
 -   **单独编辑**:
@@ -57,9 +57,16 @@
     -   从 `3x3` 按钮切换到网格视图。同时查看多张图像，确认和编辑标签。
 
 ### 4. 详细自定义
--   **标签生成调整**: 使用滑块直观地调整 `general` 和 `character` 类别的标签生成**阈值**和**最大标签数**。
+-   **标签生成调整**: 可针对模型支持的各个类别直观调整标签生成**阈值**和**最大标签数**。
 -   **自动设置保存**: 窗口大小和所有设置在应用程序退出时自动保存到 `config.ini`。下次在相同的环境中继续工作。
--   **多语言支持**: 支持日语和英语。用户界面根据操作系统语言设置自动切换。
+-   **多语言支持**: 支持英语、日语、法语、德语、西班牙语、俄语、简体中文、繁体中文和韩语。用户界面根据操作系统语言设置自动切换。
+
+### 5. VLM 图像描述（可选）
+-   **通过网络 VLM 生成自然语言描述**: 启用模型选择框旁的“使用 VLM 连接”后，将使用视觉语言模型为每张图像生成详细的英文描述。默认关闭，不会影响本地标签功能。
+-   **内置服务与同模型故障转移**: 支持 Gemini API、OpenRouter、Cloudflare、Groq、NVIDIA NIM、Hugging Face、Vercel AI Gateway、OpenAI 和 Anthropic。服务拒绝请求或受到速率限制时，只会尝试提供*同一模型*的下一条连接，不会静默切换到其他模型。
+-   **自定义连接**: 可以添加任何兼容 OpenAI API 的端点，包括 Ollama、LM Studio、llama.cpp 和 vLLM 等本地服务器。
+-   **API 密钥不会写入 `config.ini`**: 密钥会通过真实请求进行检查，并保存到操作系统密钥环，或从 `.env` 文件／环境变量读取。
+-   **仅使用您选择的连接**: 只会依次尝试已启用并完成认证的连接。API 费用、免费额度和速率限制以各服务商的条款为准；本应用不会将任何连接判定为免费。可调整详细程度、句数、角色名称和 Markdown，并可将生成内容添加到现有 `.txt` 的前面、后面或直接覆盖。
 
 ## 许可证 (License)
 

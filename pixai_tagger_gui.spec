@@ -5,7 +5,7 @@ import glob
 import os
 import re
 
-_project_root = os.path.dirname(os.path.abspath(__file__))
+_project_root = os.path.abspath(SPECPATH)
 _source_dir = os.path.join(_project_root, 'src')
 
 # Ship every model's hand-authored model_config.json (NOT the multi-GB model.onnx files,

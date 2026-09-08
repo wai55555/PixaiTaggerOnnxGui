@@ -1,5 +1,5 @@
 # PixAI Tagger ONNX GUI
-This application is a GUI tool for automatically assigning fast and accurate tags to a large number of images in a local environment. It dramatically streamlines dataset organization and management with intuitive operations.
+This application is a GUI tool for automatically generating fast and accurate tags and captions for large collections of local images. It streamlines dataset organization and management with intuitive controls. In addition to multiple local tagger and captioner models, it supports Gemini, OpenAI, Claude, Groq, local VLMs, and other compatible services.
 
 |![](https://raw.githubusercontent.com/wai55555/PixaiTaggerOnnxGui/refs/heads/main/sample/main_window_01.png)|![](https://raw.githubusercontent.com/wai55555/PixaiTaggerOnnxGui/refs/heads/main/sample/main_window_02.jpg)|
 |:-:|:-:|
@@ -8,7 +8,7 @@ This application is a GUI tool for automatically assigning fast and accurate tag
 
 ## Overview
 
-**PixAI Tagger ONNX GUI** utilizes the [ONNX version](https://huggingface.co/deepghs/pixai-tagger-v0.9-onnx) of the image tagging model developed by [PixAI](https://pixai.art/) to assign tags to local images.
+**PixAI Tagger ONNX GUI** uses multiple local models—including the [ONNX version](https://huggingface.co/deepghs/pixai-tagger-v0.9-onnx) of the image tagging model developed by [PixAI](https://pixai.art/)—and optional network VLMs to generate tags and captions for images.
 
 The original PixAI Tagger supports over 13,000 rich tags, offering an advantage compared to common tagging models (e.g., wd-tagger's ~10,000 tags). This tool was developed to maximize its performance and support your image management.
 
@@ -43,7 +43,7 @@ Double-clicking, wheel, and dragging are also effective when displaying 3x3. Ctr
 
 ### 2. Powerful Automatic Tagging
 -   **High-speed ONNX Runtime**: Employs an ONNX model that operates smoothly even on CPUs. Processes large volumes of images without stress.
--   **Automatic Model Download**: With a single button click on first launch, the PixAI Tagger model and tag files are automatically downloaded from Hugging Face. No tedious manual work required.
+-   **Automatic Model Download**: Download the selected model and its required metadata from the configured source with one click. No tedious manual setup is required.
 
 ### 3. Flexible and Advanced Tag Editing
 -   **Individual Editing**:
@@ -57,13 +57,13 @@ Double-clicking, wheel, and dragging are also effective when displaying 3x3. Ctr
     -   Transition to grid view from the `3x3` button. Confirm and edit tags while viewing multiple images at once.
 
 ### 4. Detailed Customization
--   **Tag Generation Adjustment**: Intuitively adjust **thresholds** and **maximum tag counts** for `general` and `character` categories using sliders.
+-   **Tag Generation Adjustment**: Intuitively adjust model-specific **thresholds** and **maximum tag counts** for supported categories.
 -   **Automatic Settings Save**: Window size and all settings are automatically saved to `config.ini` upon app exit. Resume work in the same environment next time.
--   **Multi-language Support**: Supports Japanese and English. The UI automatically switches according to the OS language settings.
+-   **Multi-language Support**: Supports English, Japanese, French, German, Spanish, Russian, Simplified Chinese, Traditional Chinese, and Korean. The UI automatically switches according to the OS language settings.
 
 ### 5. VLM Captioning (Optional)
 -   **Natural-language captions via a networked VLM**: Next to the model selector, a "Use VLM connection" checkbox switches generation from the local model to a Vision-Language Model that writes a detailed English caption for each image - handy as training-dataset descriptions. Off by default; local tagging is unchanged.
--   **Built-in services with same-model fallback**: Gemini API, OpenRouter and Cloudflare Workers AI are built in (plus Groq and NVIDIA NIM). If one service refuses or is rate limited, the next service offering the *same* model is tried automatically - it never silently switches to a different model. <!-- Mistral/Pixtral is commented out because its caption quality is currently too limited. -->
+-   **Built-in services with same-model fallback**: Gemini API, OpenRouter, Cloudflare, Groq, NVIDIA NIM, Hugging Face, Vercel AI Gateway, OpenAI, and Anthropic are supported. If one service refuses or is rate limited, the next service offering the *same* model is tried automatically—it never silently switches to a different model. <!-- Mistral/Pixtral is commented out because its caption quality is currently too limited. -->
 -   **Custom connections**: Add any OpenAI-compatible endpoint, including local servers such as Ollama, LM Studio, llama.cpp or vLLM.
 -   **Keys stay out of `config.ini`**: Register an API key from the VLM settings dialog; it is checked with one real request and stored in the OS keyring (or read from a `.env` file / environment variable).
 -   **Routes follow your selection**: Only enabled, authenticated routes you ordered are tried; provider billing and metered usage follow each service's terms. No route is treated as free. Detail level, sentence count, character-name policy and Markdown are adjustable, and captions combine with an existing `.txt` (prepend / append / overwrite) just like tagging output.
