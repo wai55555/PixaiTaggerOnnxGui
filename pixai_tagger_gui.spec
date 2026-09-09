@@ -42,12 +42,18 @@ _model_datas += [
 ]
 
 
+# The runtime GPU-component manifest, if a release build has generated it
+# (tools/gen_gpu_components.py). Lands at _internal/gpu_components.json, which
+# constants.RESOURCE_DIR points at. Absent in dev/source builds -> no GPU prompt.
+_gpu_components = os.path.join(_project_root, 'gpu_components.json')
+_gpu_datas = [(_gpu_components, '.')] if os.path.isfile(_gpu_components) else []
+
 a = Analysis(
     [os.path.join(_source_dir, 'pixai_tagger_gui.py')],
     pathex=[_source_dir],
     binaries=[],
     datas=[(os.path.join(_project_root, 'icons'), 'icons'),
-           (os.path.join(_project_root, 'lang'), 'lang')] + _model_datas,
+           (os.path.join(_project_root, 'lang'), 'lang')] + _model_datas + _gpu_datas,
     hiddenimports=[
         'PySide6.QtCore', 'PySide6.QtGui', 'PySide6.QtWidgets',
         # keyring はバックエンドを entry point 経由で探すため、凍結ビルドでは
@@ -65,6 +71,13 @@ a = Analysis(
     noarchive=False,
     optimize=0,
 )
+# onnxruntime-gpu ships onnxruntime_providers_cuda.dll (~200MB+). GPU support is
+# opt-in: the app downloads that DLL plus the NVIDIA runtime DLLs at runtime into
+# gpu_runtime/ (docs/260910_gpu_acceleration_impl_plan.md). Strip it here so the
+# distributed zip stays small; onnxruntime_providers_shared.dll (tiny) is kept.
+a.binaries = [b for b in a.binaries
+              if os.path.basename(b[0]).lower() != 'onnxruntime_providers_cuda.dll']
+
 pyz = PYZ(a.pure)
 
 exe = EXE(
