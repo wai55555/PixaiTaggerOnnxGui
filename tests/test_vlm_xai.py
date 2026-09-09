@@ -101,6 +101,11 @@ def test_prompt_image_token_price_signals_vlm() -> None:
         "xai", "some-image-gen",
         {"prompt_image_token_price": 10, "output_modalities": ["image"]})
     assert off is False
+    # 明示的な capabilities.vision=false は画像単価より優先される。
+    neg, why = classify_model_capability(
+        "xai", "grok-textish",
+        {"prompt_image_token_price": 20000, "capabilities": {"vision": False}})
+    assert neg is False, why
     # 単価ゼロ／未指定は判定材料にしない（静的判定へ流れる）。
     none_price, _ = classify_model_capability(
         "xai", "mystery-model", {"prompt_image_token_price": 0})

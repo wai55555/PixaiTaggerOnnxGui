@@ -11,6 +11,7 @@ import re
 import time
 from dataclasses import dataclass, field, replace
 from typing import Any, Callable
+from urllib.parse import quote
 
 import requests
 
@@ -109,10 +110,10 @@ def _enrich_parse_failure(parsed: VlmParseResult, *, protocol, body: Any,
     return replace(parsed, error=replace(error, message=message[:800]))
 
 
-_FULL_URL_QUERY_RE = re.compile(r"(https?://[^\s'\"]+?)\?[^\s'\"]*")
+# どんな URL トークン（絶対 URL でも `url: /rel/path?...` の相対形でも）のクエリ文字列も丸ごと伏せる。
+_URL_QUERY_RE = re.compile(r"((?:https?://|/)[^\s'\"]*?)\?[^\s'\"]*")
 _SECRET_PARAM_RE = re.compile(
-    r"([?&](?:key|api[_-]?key|api[_-]?token|token|access[_-]?token|auth)=)[^\s&'\"]+",
-    re.IGNORECASE)
+    r"([?&][A-Za-z0-9_.\-]{1,40}=)[^\s&'\"]+")
 
 
 def _scrub_exc(exc: Exception, req: Any | None = None) -> str:
@@ -120,26 +121,31 @@ def _scrub_exc(exc: Exception, req: Any | None = None) -> str:
 
     query_key 認証では API キーが URL のクエリ文字列に載り、requests の例外文言
     （"... with url: /v1/chat?key=SECRET ..." など。相対パスのこともある）へそのまま
-    現れる。ホスト名までは診断に役立つので残し、絶対 URL のクエリ全体と、キー名で
-    判別できる秘密パラメータを伏せる。さらに `req` があれば、その params / headers に
-    実際に載っている値（カスタムのクエリキー名でも確実に対象になる）を直接置換する。
+    現れる。ホスト名・パスまでは診断に役立つので残し、あらゆる URL のクエリ文字列全体
+    を伏せる。さらに `req` があれば params / headers に実際に載っている値を、素の形と
+    URL エンコード形の両方で直接置換する（カスタムのクエリキー名・短い鍵・予約文字を
+    含む鍵でも確実に対象になる）。
     """
     text = " ".join(str(exc).split())
     if req is not None:
-        secrets: list[str] = []
+        secrets: set[str] = set()
         for value in list(getattr(req, "params", {}).values()):
-            if isinstance(value, str) and len(value) >= 8:
-                secrets.append(value)
+            if isinstance(value, str) and value:
+                secrets.add(value)
         for name, value in list(getattr(req, "headers", {}).items()):
-            if not isinstance(value, str):
+            if not isinstance(value, str) or not value:
                 continue
-            if str(name).lower() in ("authorization", "x-api-key", "x-goog-api-key") \
-                    or "key" in str(name).lower() or "token" in str(name).lower():
-                secrets.append(value.split(" ", 1)[-1] if " " in value else value)
-        for secret in sorted(set(secrets), key=len, reverse=True):
-            if secret:
-                text = text.replace(secret, "<redacted>")
-    text = _FULL_URL_QUERY_RE.sub(r"\1?<redacted>", text)
+            lname = str(name).lower()
+            if lname in ("authorization", "x-api-key", "x-goog-api-key") \
+                    or "key" in lname or "token" in lname or "secret" in lname:
+                secrets.add(value.split(" ", 1)[-1] if " " in value else value)
+        variants: set[str] = set()
+        for secret in secrets:
+            variants.add(secret)
+            variants.add(quote(secret, safe=""))
+        for secret in sorted((s for s in variants if s), key=len, reverse=True):
+            text = text.replace(secret, "<redacted>")
+    text = _URL_QUERY_RE.sub(r"\1?<redacted>", text)
     text = _SECRET_PARAM_RE.sub(r"\1<redacted>", text)
     return text[:300]
 

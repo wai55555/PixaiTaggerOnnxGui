@@ -101,9 +101,11 @@ def save_caption(output_path: Path, caption: str, placement: str) -> SaveOutcome
     fs_output_path = Path(_long_path_str(output_path))
     if fs_output_path.is_file():
         # 読めない既存ファイルは新規扱いにしない（undo での破壊防止。PR#16 と同方針）。
-        # universal newlines で読み、combine_caption / 重複判定は LF 前提でそろえる
-        # （重複判定側でも改行正規化するので CRLF の既存 .txt でも取りこぼさない）。
-        previous_content = fs_output_path.read_text(encoding="utf-8")
+        # newline="" で生の内容を保持する（undo スナップショットが元ファイルと byte 一致
+        # になるように）。CRLF が残っても重複判定は caption_already_present 側で改行を
+        # 正規化して比較するので取りこぼさない。
+        with open(_long_path_str(output_path), "r", encoding="utf-8", newline="") as f:
+            previous_content = f.read()
 
     if placement in ("APPEND", "PREPEND") and previous_content is not None:
         if caption_already_present(previous_content, caption):

@@ -359,6 +359,9 @@ class CustomConnectionDialog(QDialog):
             "model_id": model_id,
             "enabled": bool(self._existing.get("enabled", True)),
             "verify_tls": self.verify_tls_check.isChecked(),
+            # UI からは編集させないが、保存済みの値は往復で失わないよう持ち越す
+            # （実行時に効果は無いが、編集のたびに 1 へ落ちるのを防ぐ）。
+            "concurrency": self._existing.get("concurrency", 1),
             "auth": {
                 "type": atype,
                 "secret_ref": secret_ref,
