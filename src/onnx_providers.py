@@ -11,8 +11,8 @@ docs/260910_gpu_acceleration_impl_plan.md を参照。
 - onnx_device="cpu"（既定の実効値）のときのセッション生成は、この機能が入る前の
   ``providers=["CPUExecutionProvider"]`` とバイト等価。
 
-Phase 1（このモジュール）はプラットフォーム非依存のロジックのみ。実際の DL は
-Phase 2（gpu_runtime_download）、preload_gpu_dlls の起動時呼び出しも Phase 2。
+このモジュールはプラットフォーム非依存のロジックのみ（実際のダウンロードは
+gpu_runtime.GpuRuntimeInstaller、起動時の preload 呼び出しは pixai_tagger_gui.main）。
 """
 
 from __future__ import annotations
@@ -93,8 +93,8 @@ def gpu_runtime_ready(base_dir: Path | None = None, *, ort_module: Any = _ORT_DE
 
     対応する形式:
       - {"files": [{"name": ..., "location": "gpu_runtime"|"capi", "sha256": ...}, ...]}
-        gpu_runtime_install が書き出す正式形式。location="capi" は onnxruntime の
-        capi/ ディレクトリ（provider DLL の設置先）を基準に解決する。
+        gpu_runtime.GpuRuntimeInstaller が書き出す正式形式。location="capi" は
+        onnxruntime の capi/ ディレクトリ（provider DLL の設置先）を基準に解決する。
       - {"required": ["a.dll", "b.dll", ...]}（旧形式・すべて gpu_runtime/ 直下）
     起動ごとに走るので SHA-256 は取り直さない（存在確認のみ。ハッシュは
     インストール時に検証済み）。

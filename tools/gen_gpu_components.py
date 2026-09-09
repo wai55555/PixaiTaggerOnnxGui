@@ -67,15 +67,17 @@ def _find_providers_dll() -> Path:
     return dll
 
 
-def _pypi_latest_win_wheel(package: str) -> str:
+def _pypi_latest_win_wheel(package: str) -> tuple[str, str]:
+    """(version, wheel_url) for the latest release's win_amd64 wheel."""
     url = f"https://pypi.org/pypi/{package}/json"
     with urllib.request.urlopen(url, timeout=30) as resp:  # noqa: S310 - trusted host
         meta = json.load(resp)
     version = meta["info"]["version"]
-    for f in meta["releases"].get(version, []):
-        name = f["filename"]
-        if name.endswith("-win_amd64.whl") and f["packagetype"] == "bdist_wheel":
-            return f["url"]
+    # meta["urls"] is the file list for that latest version (no dependence on the
+    # deprecated top-level "releases" map).
+    for f in meta.get("urls", []):
+        if f.get("packagetype") == "bdist_wheel" and f.get("filename", "").endswith("-win_amd64.whl"):
+            return version, f["url"]
     sys.exit(f"{package} {version} has no win_amd64 wheel on PyPI.")
 
 
@@ -105,8 +107,8 @@ def main() -> None:
 
     wheels = []
     for pkg in NVIDIA_PACKAGES:
-        wheel_url = _pypi_latest_win_wheel(pkg)
-        print(f"  {pkg}: {wheel_url}")
+        pkg_version, wheel_url = _pypi_latest_win_wheel(pkg)
+        print(f"  {pkg} {pkg_version}: {wheel_url}")
         with urllib.request.urlopen(wheel_url, timeout=120) as resp:  # noqa: S310
             whl_bytes = resp.read()
         members = _wheel_members(whl_bytes)

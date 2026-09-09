@@ -102,6 +102,13 @@ def test_cuda_requested_but_provider_absent_falls_back_with_warning(tmp_path, ca
     assert any("onnx_device=cuda" in m for m in caplog_dbg)
 
 
+def test_cuda_prefer_happy_path_no_warning(tmp_path, caplog_dbg):
+    _make_gpu_runtime(tmp_path)
+    ort = _FakeOrt(available=("CUDAExecutionProvider", "CPUExecutionProvider"))
+    assert OP.resolve_providers("cuda", ort_module=ort, base_dir=tmp_path) == OP.CUDA_THEN_CPU
+    assert not any("onnx_device=cuda" in m for m in caplog_dbg)
+
+
 def test_invalid_prefer_is_auto(tmp_path):
     _make_gpu_runtime(tmp_path)
     ort = _FakeOrt(available=("CUDAExecutionProvider", "CPUExecutionProvider"))

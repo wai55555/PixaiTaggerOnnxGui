@@ -5,6 +5,8 @@
 # path (onnx_providers.resolve_providers) resolves to CPUExecutionProvider here
 # because CUDAExecutionProvider is not offered by this build, so behaviour is
 # unchanged. The frozen release build must use requirements.txt (onnxruntime-gpu).
+#
+# Keep the non-onnxruntime lines below in sync with requirements.txt.
 numpy==1.26.4
 pillow==12.0.0
 onnxruntime==1.23.1

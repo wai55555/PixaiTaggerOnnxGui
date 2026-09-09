@@ -131,6 +131,27 @@ def test_spec_valid(tmp_path):
     assert spec is not None and spec["ort_version"] == "1.23.1"
 
 
+def test_spec_direct_missing_url(tmp_path):
+    bad = _spec()
+    del bad["direct"][0]["url"]
+    (tmp_path / GR.COMPONENT_SPEC_NAME).write_text(json.dumps(bad), encoding="utf-8")
+    assert GR.load_component_spec(tmp_path) is None
+
+
+def test_spec_wheel_missing_members(tmp_path):
+    bad = _spec()
+    bad["wheels"][0]["members"] = []
+    (tmp_path / GR.COMPONENT_SPEC_NAME).write_text(json.dumps(bad), encoding="utf-8")
+    assert GR.load_component_spec(tmp_path) is None
+
+
+def test_spec_unpinned_sha_rejected(tmp_path):
+    for bad_sha in ("TODO_FILL_ON_WINDOWS", "deadbeef", "", "z" * 64):
+        bad = _spec(prov_sha=bad_sha)
+        (tmp_path / GR.COMPONENT_SPEC_NAME).write_text(json.dumps(bad), encoding="utf-8")
+        assert GR.load_component_spec(tmp_path) is None, bad_sha
+
+
 def test_spec_total_bytes_tolerates_garbage():
     spec = {"direct": [{"bytes": 10}, {"bytes": "x"}, {}], "wheels": [{"bytes": 5}]}
     assert GR.spec_total_bytes(spec) == 15
@@ -185,6 +206,37 @@ def test_install_stop_aborts(tmp_path):
         return calls["n"] > 2
 
     ok = _installer(tmp_path).install(_spec(), stop_cb=stop)
+    assert ok is False
+    _assert_not_ready(tmp_path)
+
+
+def test_install_stop_logs_warn_not_error(tmp_path):
+    logs: list[tuple[str, str]] = []
+    calls = {"n": 0}
+
+    def stop():
+        calls["n"] += 1
+        return calls["n"] > 2
+
+    _installer(tmp_path).install(_spec(), stop_cb=stop,
+                                 log_cb=lambda m, lv="info": logs.append((m, lv)))
+    assert not any(lv == "error" for _, lv in logs)
+    assert any(lv == "warn" for _, lv in logs)
+
+
+def test_install_unsafe_member_name_aborts(tmp_path):
+    spec = _spec()
+    spec["wheels"][0]["members"] = [
+        {"arcname": "nvidia/cudnn/bin/cudnn64_9.dll", "name": "../evil.dll"}]
+    ok = _installer(tmp_path).install(spec)
+    assert ok is False
+    _assert_not_ready(tmp_path)
+
+
+def test_install_unsafe_direct_name_aborts(tmp_path):
+    spec = _spec()
+    spec["direct"][0]["name"] = "../../evil.dll"
+    ok = _installer(tmp_path).install(spec)
     assert ok is False
     _assert_not_ready(tmp_path)
 

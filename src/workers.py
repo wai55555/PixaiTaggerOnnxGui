@@ -424,13 +424,22 @@ class GpuRuntimeDownloadWorker(QObject):
 
     @Slot()
     def run_download(self):
+        # download_finished は必ず 1 回発火させる（_run 内で何が起きても）。でないと
+        # MainWindow 側の進捗ダイアログとスレッドが後始末されずに残る。
+        ok = False
+        try:
+            ok = self._run()
+        except Exception as exc:  # noqa: BLE001 - last-resort guard
+            write_debug_log(f"GpuRuntimeDownloadWorker: fatal {exc!r}")
+        self.download_finished.emit(ok)
+
+    def _run(self) -> bool:
         import gpu_runtime
 
         spec = gpu_runtime.load_component_spec()
         if spec is None:
             self._on_log(self.get_string("Gpu", "Worker_NoSpec"), "error")
-            self.download_finished.emit(False)
-            return
+            return False
         installer = gpu_runtime.GpuRuntimeInstaller()
         try:
             ok = installer.install(spec, progress_cb=self._on_progress,
@@ -444,7 +453,7 @@ class GpuRuntimeDownloadWorker(QObject):
             self._on_log(self.get_string("Gpu", "Worker_Stopped"), "warn")
         else:
             self._on_log(self.get_string("Gpu", "Worker_Failed"), "error")
-        self.download_finished.emit(ok)
+        return ok
 
 
 class TaggerThreadWorker(QObject):

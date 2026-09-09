@@ -14,7 +14,6 @@ workers.GpuRuntimeDownloadWorker が薄く包んで呼ぶ。
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import shutil
@@ -24,7 +23,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from utils import calculate_sha256, log_dbg
-from onnx_providers import GPU_RUNTIME_DIRNAME, capi_dir, gpu_runtime_dir
+from onnx_providers import capi_dir, gpu_runtime_dir
 
 SCHEMA = 1
 COMPONENT_SPEC_NAME = "gpu_components.json"
@@ -42,6 +41,10 @@ class GpuRuntimeError(RuntimeError):
     """インストール処理の想定内の失敗（ネットワーク・ハッシュ不一致・書き込み不可 等）。"""
 
 
+class _Stopped(GpuRuntimeError):
+    """stop_cb が True を返した（利用者がキャンセル）。失敗ではないので扱いを分ける。"""
+
+
 # --- component spec --------------------------------------------------------
 
 def component_spec_path(resource_dir: Path | None = None) -> Path:
@@ -52,8 +55,26 @@ def component_spec_path(resource_dir: Path | None = None) -> Path:
     return Path(resource_dir) / COMPONENT_SPEC_NAME
 
 
+def _is_pinned_sha256(value: Any) -> bool:
+    """64 桁 hex の SHA-256 か。プレースホルダ（"TODO..."）や欠落は False。
+
+    このモジュールは DL した DLL を onnxruntime の capi/ に置いてプロセスにロードする。
+    ハッシュ未確定の spec を配布物として受け入れると、MITM に対して丸腰になる。
+    そのため load_component_spec は全エントリが pin 済みでなければ spec ごと拒否する
+    （インストーラ側は防御多重化として TODO を許容し警告ログのみ）。
+    """
+    if not isinstance(value, str) or len(value) != 64:
+        return False
+    try:
+        int(value, 16)
+    except ValueError:
+        return False
+    return True
+
+
 def load_component_spec(resource_dir: Path | None = None) -> dict | None:
-    """同梱 gpu_components.json を読む。存在しない/壊れている/スキーマ不一致は None。"""
+    """同梱 gpu_components.json を読む。存在しない/壊れている/スキーマ不一致/
+    ハッシュ未確定は None（＝ GPU プロンプトを出さない）。"""
     path = component_spec_path(resource_dir)
     try:
         if not path.is_file():
@@ -63,9 +84,16 @@ def load_component_spec(resource_dir: Path | None = None) -> dict | None:
         return None
     if not isinstance(data, dict) or data.get("schema") != SCHEMA:
         return None
-    if not isinstance(data.get("direct", []), list) or not isinstance(data.get("wheels", []), list):
+    direct = data.get("direct", [])
+    wheels = data.get("wheels", [])
+    if not isinstance(direct, list) or not isinstance(wheels, list) or not (direct or wheels):
         return None
-    if not (data.get("direct") or data.get("wheels")):
+    if not all(isinstance(e, dict) and e.get("name") and e.get("url") and _is_pinned_sha256(e.get("sha256"))
+               for e in direct):
+        return None
+    if not all(isinstance(e, dict) and e.get("url") and _is_pinned_sha256(e.get("sha256"))
+               and isinstance(e.get("members"), list) and e["members"]
+               for e in wheels):
         return None
     return data
 
@@ -96,7 +124,6 @@ class _Planned:
 @dataclass
 class GpuRuntimeInstaller:
     base_dir: Path | None = None
-    resource_dir: Path | None = None
     ort_module: Any = field(default=None, repr=False)
     http_get: Callable[..., Any] | None = field(default=None, repr=False)
 
@@ -131,12 +158,12 @@ class GpuRuntimeInstaller:
 
             for item in spec.get("direct", []):
                 if stop():
-                    raise GpuRuntimeError("stopped")
+                    raise _Stopped("stopped")
                 planned.append(self._fetch_direct(item, log, stop, bump))
 
             for item in spec.get("wheels", []):
                 if stop():
-                    raise GpuRuntimeError("stopped")
+                    raise _Stopped("stopped")
                 planned.extend(self._fetch_wheel(item, log, stop, bump))
 
             if not planned:
@@ -146,6 +173,9 @@ class GpuRuntimeInstaller:
             self._write_manifest(spec, planned)
             log("GPU components installed; restart to enable GPU inference")
             return True
+        except _Stopped:
+            log("download cancelled", "warn")
+            return False
         except GpuRuntimeError as exc:
             log(f"install aborted: {exc}", "error")
             return False
@@ -188,6 +218,8 @@ class GpuRuntimeInstaller:
         url = item.get("url")
         if not name or not url:
             raise GpuRuntimeError("'direct' entry needs name and url")
+        if "/" in name or "\\" in name or name in ("", ".", ".."):
+            raise GpuRuntimeError(f"unsafe direct name {name!r}")
         location = item.get("location", "gpu_runtime")
         if location not in ("gpu_runtime", "capi"):
             raise GpuRuntimeError(f"unknown location {location!r}")
@@ -215,13 +247,15 @@ class GpuRuntimeInstaller:
             names = set(zf.namelist())
             for member in members:
                 if stop():
-                    raise GpuRuntimeError("stopped")
+                    raise _Stopped("stopped")
                 if not isinstance(member, dict):
                     raise GpuRuntimeError("invalid wheel member")
                 arcname = member.get("arcname")
                 out_name = member.get("name") or (_basename(arcname) if arcname else None)
                 if not arcname or not out_name:
                     raise GpuRuntimeError("wheel member needs arcname")
+                if "/" in out_name or "\\" in out_name or out_name in ("", ".", ".."):
+                    raise GpuRuntimeError(f"unsafe member name {out_name!r}")
                 if arcname not in names:
                     raise GpuRuntimeError(f"{whl.name} has no member {arcname}")
                 staged = self._staging / out_name
@@ -241,7 +275,7 @@ class GpuRuntimeInstaller:
             with open(part, "wb") as f:
                 for chunk in resp.iter_content(chunk_size=1024 * 256):
                     if stop():
-                        raise GpuRuntimeError("stopped")
+                        raise _Stopped("stopped")
                     if not chunk:
                         continue
                     f.write(chunk)
@@ -257,6 +291,8 @@ class GpuRuntimeInstaller:
         if isinstance(expected, str) and expected and not expected.upper().startswith(SHA_PLACEHOLDER_PREFIX):
             if actual.lower() != expected.lower():
                 raise GpuRuntimeError(f"SHA-256 mismatch for {label}")
+        else:
+            log_dbg(f"gpu_runtime: {label} has no pinned SHA-256; skipping integrity check")
         return actual
 
     def _place(self, planned: list[_Planned], log: LogCb) -> None:
@@ -299,6 +335,6 @@ def _requests_get(url: str, *, headers: dict | None = None, stream: bool = True,
 
 
 __all__ = [
-    "COMPONENT_SPEC_NAME", "GPU_RUNTIME_DIRNAME", "GpuRuntimeError", "GpuRuntimeInstaller",
+    "COMPONENT_SPEC_NAME", "GpuRuntimeError", "GpuRuntimeInstaller",
     "component_spec_path", "load_component_spec", "spec_total_bytes",
 ]

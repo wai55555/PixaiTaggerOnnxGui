@@ -136,8 +136,11 @@ class Florence2Captioner:
         providers = resolve_providers(onnx_device)
         if providers != list(CPU_ONLY):
             try:
-                return [ort.InferenceSession(str(p), sess_options=sess_options, providers=providers)
-                        for p in paths]
+                sessions = [ort.InferenceSession(str(p), sess_options=sess_options, providers=providers)
+                            for p in paths]
+                active = sessions[0].get_providers()[0] if sessions else "?"
+                log_dbg(f"Florence2Captioner: 4 sessions on {active}")
+                return sessions
             except Exception as exc:  # noqa: BLE001 - ORT raises assorted types
                 log_dbg(f"Florence2Captioner: {providers} session load failed ({exc!r}); retrying all on CPU")
         return [ort.InferenceSession(str(p), sess_options=sess_options, providers=list(CPU_ONLY))

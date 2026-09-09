@@ -280,18 +280,18 @@ class MainWindow(QMainWindow):
         if self._gpu_dl_thread and self._gpu_dl_thread.isRunning():
             return
         try:
-            import onnxruntime as ort
+            import onnxruntime
             import onnx_providers
             import gpu_runtime
-            if ort is None or "CUDAExecutionProvider" not in ort.get_available_providers():
-                return
+            if "CUDAExecutionProvider" not in onnxruntime.get_available_providers():
+                return  # this build has no CUDA support -> nothing to offer
             if onnx_providers.gpu_runtime_ready():
-                return
+                return  # components already installed
             spec = gpu_runtime.load_component_spec()
         except Exception:
             return
         if spec is None:
-            return
+            return  # no (valid) gpu_components.json bundled -> dev build or unpinned
 
         gb = gpu_runtime.spec_total_bytes(spec) / (1024 ** 3)
         size_txt = (f"{gb:.1f} GB" if gb >= 0.05
@@ -327,6 +327,7 @@ class MainWindow(QMainWindow):
         progress.setAutoClose(False)
         progress.setAutoReset(False)
         progress.setMinimumDuration(0)
+        progress.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
         progress.canceled.connect(self._cancel_gpu_runtime_download)
         self._gpu_dl_progress = progress
 
@@ -358,19 +359,24 @@ class MainWindow(QMainWindow):
             self._gpu_dl_progress.setRange(0, 0)  # indeterminate
 
     def _on_gpu_runtime_finished(self, ok: bool):
+        if self._is_shutting_down:
+            return  # closeEvent stops/joins the thread itself
         if self._gpu_dl_progress:
-            self._gpu_dl_progress.close()
+            # close() counts as a cancel for QProgressDialog and would re-fire
+            # canceled -> _cancel_gpu_runtime_download; drop the connection first.
+            try:
+                self._gpu_dl_progress.canceled.disconnect(self._cancel_gpu_runtime_download)
+            except (RuntimeError, TypeError):
+                pass
+            self._gpu_dl_progress.close()  # WA_DeleteOnClose frees it
             self._gpu_dl_progress = None
         if self._gpu_dl_thread:
             self._gpu_dl_thread.quit()
             self._gpu_dl_thread.wait()
+            if self._gpu_dl_worker:
+                self._gpu_dl_worker.deleteLater()
             self._gpu_dl_thread.deleteLater()
-            self._gpu_dl_thread = None
-        if self._gpu_dl_worker:
-            self._gpu_dl_worker.deleteLater()
-            self._gpu_dl_worker = None
-        if self._is_shutting_down:
-            return
+            self._gpu_dl_thread = self._gpu_dl_worker = None
         title = self.locale_manager.get_string("Gpu", "Prompt_Title")
         if ok:
             QMessageBox.information(self, title,
