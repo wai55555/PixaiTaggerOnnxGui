@@ -78,7 +78,7 @@ def update_from_429(state: RateLimitState, headers: dict, now: float | None = No
             continue
         try:
             val = float(raw)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             continue
         # NaN / inf / 負値は「ヘッダーで明示されたリセット」として扱わない。
         # 過去・非数のデッドラインは in_cooldown() を常に False にし、レート制限中の
@@ -86,7 +86,11 @@ def update_from_429(state: RateLimitState, headers: dict, now: float | None = No
         if not math.isfinite(val) or val < 0:
             continue
         # 大きい値は epoch 秒、小さい値は「あと N 秒」とみなす。
-        reset_epoch = val if val > 1e6 else now + val
+        candidate = val if val > 1e6 else now + val
+        # 既に過ぎた（または現在時刻以前の）リセットは無効。推測クールダウンへ倒す。
+        if candidate <= now:
+            continue
+        reset_epoch = candidate
         break
 
     state.rpm = _first_int(headers or {}, ("x-ratelimit-limit-requests", "x-ratelimit-limit", "ratelimit-limit"))

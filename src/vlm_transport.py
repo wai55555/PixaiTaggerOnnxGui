@@ -115,15 +115,30 @@ _SECRET_PARAM_RE = re.compile(
     re.IGNORECASE)
 
 
-def _scrub_exc(exc: Exception) -> str:
+def _scrub_exc(exc: Exception, req: Any | None = None) -> str:
     """requests 例外のテキストから資格情報を落とす。
 
     query_key 認証では API キーが URL のクエリ文字列に載り、requests の例外文言
     （"... with url: /v1/chat?key=SECRET ..." など。相対パスのこともある）へそのまま
-    現れる。ホスト名までは診断に役立つので残し、絶対 URL のクエリ全体と、
-    キー名で判別できる秘密パラメータを伏せる。
+    現れる。ホスト名までは診断に役立つので残し、絶対 URL のクエリ全体と、キー名で
+    判別できる秘密パラメータを伏せる。さらに `req` があれば、その params / headers に
+    実際に載っている値（カスタムのクエリキー名でも確実に対象になる）を直接置換する。
     """
     text = " ".join(str(exc).split())
+    if req is not None:
+        secrets: list[str] = []
+        for value in list(getattr(req, "params", {}).values()):
+            if isinstance(value, str) and len(value) >= 8:
+                secrets.append(value)
+        for name, value in list(getattr(req, "headers", {}).items()):
+            if not isinstance(value, str):
+                continue
+            if str(name).lower() in ("authorization", "x-api-key", "x-goog-api-key") \
+                    or "key" in str(name).lower() or "token" in str(name).lower():
+                secrets.append(value.split(" ", 1)[-1] if " " in value else value)
+        for secret in sorted(set(secrets), key=len, reverse=True):
+            if secret:
+                text = text.replace(secret, "<redacted>")
     text = _FULL_URL_QUERY_RE.sub(r"\1?<redacted>", text)
     text = _SECRET_PARAM_RE.sub(r"\1<redacted>", text)
     return text[:300]
@@ -144,11 +159,11 @@ def execute_http(req, *, connect_timeout: float, read_timeout: float,
     except requests.exceptions.Timeout:
         return VlmAttemptError(VlmErrorReason.TIMEOUT, None, "request timed out")
     except requests.exceptions.SSLError as e:
-        return VlmAttemptError(VlmErrorReason.NETWORK, None, f"TLS error: {_scrub_exc(e)}")
+        return VlmAttemptError(VlmErrorReason.NETWORK, None, f"TLS error: {_scrub_exc(e, req)}")
     except requests.exceptions.ConnectionError as e:
-        return VlmAttemptError(VlmErrorReason.NETWORK, None, f"connection error: {_scrub_exc(e)}")
+        return VlmAttemptError(VlmErrorReason.NETWORK, None, f"connection error: {_scrub_exc(e, req)}")
     except requests.exceptions.RequestException as e:
-        return VlmAttemptError(VlmErrorReason.UNKNOWN, None, f"request failed: {_scrub_exc(e)}")
+        return VlmAttemptError(VlmErrorReason.UNKNOWN, None, f"request failed: {_scrub_exc(e, req)}")
 
     text_body = resp.text or ""
     body: Any = None

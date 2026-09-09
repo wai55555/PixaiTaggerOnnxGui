@@ -271,6 +271,10 @@ def test_newline_join_and_dedup():
     assert PERS.caption_already_present("a\nmy caption\nb", "my caption")
     assert PERS.caption_already_present("my caption", "my caption")
     assert not PERS.caption_already_present("a\nb", "my caption")
+    # 改行コードは正規化して判定する（CRLF の既存 .txt / CRLF のキャプション両方向）。
+    assert PERS.caption_already_present("a\r\nmy caption\r\nb", "my caption")   # CRLF file + LF caption
+    assert PERS.caption_already_present("a\nline1\nline2\nb", "line1\r\nline2")  # LF file + CRLF caption
+    assert PERS.caption_already_present("line1\r\nline2", "line1\nline2")        # whole-body, mixed
     print("  newline join + dedup: OK")
 
 
@@ -428,6 +432,22 @@ def test_ratelimit():
     st4 = RL.RateLimitState("c4")
     RL.update_from_429(st4, {"Retry-After": "99999"}, now=now)
     assert st4.cooldown_until_utc == now + RL.ESTIMATED_COOLDOWN_CAP_S  # capped
+
+    # 不正な x-ratelimit-reset（NaN / inf / 負値）は明示リセット扱いにせず、
+    # 推測クールダウンへ倒す。in_cooldown() が True になること。
+    for bad in ("nan", "inf", "-inf", "-100"):
+        st_bad = RL.RateLimitState("cb")
+        RL.update_from_429(st_bad, {"x-ratelimit-reset": bad}, now=now)
+        assert st_bad.source == "estimated", bad
+        assert st_bad.cooldown_until_utc == now + RL.ESTIMATED_COOLDOWN_DEFAULT_S, bad
+        assert st_bad.in_cooldown(now + 1), bad
+
+    # 既に過ぎた epoch のリセット値も無効。推測クールダウンへ倒す。
+    big_now = 2_000_000_000.0
+    st_exp = RL.RateLimitState("ce")
+    RL.update_from_429(st_exp, {"x-ratelimit-reset": str(big_now - 500)}, now=big_now)
+    assert st_exp.source == "estimated"
+    assert st_exp.in_cooldown(big_now + 1)
 
     assert st.in_cooldown(now + 10) and not st.in_cooldown(now + 31)
     RL.clear(st)

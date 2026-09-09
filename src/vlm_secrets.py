@@ -133,18 +133,28 @@ def set_secret(secret_ref: str, value: str, *, persist: bool) -> bool:
     return False
 
 
-def delete_secret(secret_ref: str) -> None:
+def delete_secret(secret_ref: str) -> bool:
+    """秘密値を削除する。keyring から実際に消えていれば True。
+
+    persist=False へ切り替えるときに、古い keyring 値が残っていないかを呼び出し側が
+    確認できるよう bool を返す（残っていると再起動後に get_secret がそれを拾う）。
+    """
     if not secret_ref:
-        return
+        return True
+    removed = True
     if keyring is not None:
         try:
             keyring.delete_password(_SERVICE, secret_ref)
         except Exception as e:  # backend 無し / エントリ未登録など
-            # 削除できなかったこと自体はここで握りつぶすが、他の get/set 失敗と
-            # 同じく痕跡を残す（keyring に古い鍵が残る可能性を後から追えるように）。
             write_debug_log(f"vlm_secrets: keyring delete failed for a ref: {type(e).__name__}")
+        # 実際に消えたかを確認する（未登録なら例外でも結果的に None で OK）。
+        try:
+            removed = not keyring.get_password(_SERVICE, secret_ref)
+        except Exception:
+            removed = False
     with _lock:
         _session_store.pop(secret_ref, None)
+    return removed
 
 
 def secret_status(secret_ref: str) -> str:

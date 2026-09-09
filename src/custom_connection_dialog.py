@@ -337,8 +337,12 @@ class CustomConnectionDialog(QDialog):
                 # セッション限定に切り替えるときは、以前 keyring へ保存した値を先に
                 # 消す。残すと set_secret(persist=False) はセッション上書きを足すだけで、
                 # 再起動後に get_secret が古い keyring 値を返してしまう。
-                if not persist_key:
-                    vlm_secrets.delete_secret(secret_ref)
+                if not persist_key and not vlm_secrets.delete_secret(secret_ref):
+                    # keyring から消せなかった。セッション上書きは効くが、再起動後は
+                    # 古い keyring 値が復活しうる旨を明示する（保存自体は続行）。
+                    QMessageBox.warning(
+                        self, self._t("Vlm", "Custom_Dialog_Title"),
+                        self._t("Vlm", "Custom_Key_Persist_Remove_Failed"))
                 vlm_secrets.set_secret(secret_ref, key, persist=persist_key)
         else:
             # 認証なしに変更したら、以前保存した鍵は残さない。

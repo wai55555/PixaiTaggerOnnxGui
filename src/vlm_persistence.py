@@ -57,9 +57,13 @@ def caption_already_present(existing: str, caption: str) -> bool:
 
     意味的・表現的な類似は判定しない（spec.md 11.3節）。複数行キャプションにも対応する
     よう、改行を境界とした contiguous な完全一致（先頭 / 末尾 / 中間 / 全体）を見る。
+    改行コードは正規化して比較する（CRLF の既存 .txt と LF のキャプション、その逆でも
+    同一とみなす。Windows でメモ帳編集した .txt などが対象）。
     """
-    target = caption.strip()
-    ex = existing.strip()
+    def _lf(s: str) -> str:
+        return s.replace("\r\n", "\n").replace("\r", "\n")
+    target = _lf(caption.strip())
+    ex = _lf(existing.strip())
     if not target:
         return True
     if ex == target:
@@ -97,10 +101,9 @@ def save_caption(output_path: Path, caption: str, placement: str) -> SaveOutcome
     fs_output_path = Path(_long_path_str(output_path))
     if fs_output_path.is_file():
         # 読めない既存ファイルは新規扱いにしない（undo での破壊防止。PR#16 と同方針）。
-        # newline="" で改行変換を抑止する。universal newlines で CRLF を LF に潰すと、
-        # 次の APPEND/PREPEND 時に既存キャプションと一致せず同じ内容を二重追記する。
-        with open(_long_path_str(output_path), "r", encoding="utf-8", newline="") as f:
-            previous_content = f.read()
+        # universal newlines で読み、combine_caption / 重複判定は LF 前提でそろえる
+        # （重複判定側でも改行正規化するので CRLF の既存 .txt でも取りこぼさない）。
+        previous_content = fs_output_path.read_text(encoding="utf-8")
 
     if placement in ("APPEND", "PREPEND") and previous_content is not None:
         if caption_already_present(previous_content, caption):

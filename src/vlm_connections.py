@@ -192,7 +192,7 @@ class VlmConnection:
 def _f(v, default: float) -> float:
     try:
         return float(v)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return default
 
 
@@ -201,7 +201,7 @@ def _timeout(v, default: float) -> float:
     execute_http のハンドラ外で落ちるため、ここで安全な範囲へ丸める。"""
     try:
         n = float(v)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return default
     if not math.isfinite(n) or n <= 0.0:
         return default
@@ -211,7 +211,7 @@ def _timeout(v, default: float) -> float:
 def _i(v, default: int) -> int:
     try:
         return int(v)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return default
 
 
