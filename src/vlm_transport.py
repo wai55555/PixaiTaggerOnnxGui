@@ -11,7 +11,6 @@ import re
 import time
 from dataclasses import dataclass, field, replace
 from typing import Any, Callable
-from urllib.parse import quote
 
 import requests
 
@@ -110,41 +109,24 @@ def _enrich_parse_failure(parsed: VlmParseResult, *, protocol, body: Any,
     return replace(parsed, error=replace(error, message=message[:800]))
 
 
-# どんな URL トークン（絶対 URL でも `url: /rel/path?...` の相対形でも）のクエリ文字列も丸ごと伏せる。
+# URL トークン（絶対 URL でも `url: /rel/path?...` の相対形でも）のクエリ文字列を丸ごと伏せる。
 _URL_QUERY_RE = re.compile(r"((?:https?://|/)[^\s'\"]*?)\?[^\s'\"]*")
-_SECRET_PARAM_RE = re.compile(
-    r"([?&][A-Za-z0-9_.\-]{1,40}=)[^\s&'\"]+")
+# URL の userinfo（http://user:pass@host）も伏せる。
+_URL_USERINFO_RE = re.compile(r"(https?://)[^/\s'\"@]+@")
+# `?foo=VALUE` / `&foo=VALUE` の値部分を伏せる（キー名は問わない。クエリ文脈のみ）。
+_SECRET_PARAM_RE = re.compile(r"([?&][A-Za-z0-9_.\-]{1,40}=)[^\s&'\"]+")
 
 
-def _scrub_exc(exc: Exception, req: Any | None = None) -> str:
+def _scrub_exc(exc: Exception) -> str:
     """requests 例外のテキストから資格情報を落とす。
 
     query_key 認証では API キーが URL のクエリ文字列に載り、requests の例外文言
     （"... with url: /v1/chat?key=SECRET ..." など。相対パスのこともある）へそのまま
-    現れる。ホスト名・パスまでは診断に役立つので残し、あらゆる URL のクエリ文字列全体
-    を伏せる。さらに `req` があれば params / headers に実際に載っている値を、素の形と
-    URL エンコード形の両方で直接置換する（カスタムのクエリキー名・短い鍵・予約文字を
-    含む鍵でも確実に対象になる）。
+    現れる。ホスト名・パスは診断に役立つので残し、クエリ文脈（`?`/`&` 以降）と URL の
+    userinfo だけを伏せる。任意部分文字列の置換はパス情報まで壊すので行わない。
     """
     text = " ".join(str(exc).split())
-    if req is not None:
-        secrets: set[str] = set()
-        for value in list(getattr(req, "params", {}).values()):
-            if isinstance(value, str) and value:
-                secrets.add(value)
-        for name, value in list(getattr(req, "headers", {}).items()):
-            if not isinstance(value, str) or not value:
-                continue
-            lname = str(name).lower()
-            if lname in ("authorization", "x-api-key", "x-goog-api-key") \
-                    or "key" in lname or "token" in lname or "secret" in lname:
-                secrets.add(value.split(" ", 1)[-1] if " " in value else value)
-        variants: set[str] = set()
-        for secret in secrets:
-            variants.add(secret)
-            variants.add(quote(secret, safe=""))
-        for secret in sorted((s for s in variants if s), key=len, reverse=True):
-            text = text.replace(secret, "<redacted>")
+    text = _URL_USERINFO_RE.sub(r"\1<redacted>@", text)
     text = _URL_QUERY_RE.sub(r"\1?<redacted>", text)
     text = _SECRET_PARAM_RE.sub(r"\1<redacted>", text)
     return text[:300]
@@ -165,11 +147,11 @@ def execute_http(req, *, connect_timeout: float, read_timeout: float,
     except requests.exceptions.Timeout:
         return VlmAttemptError(VlmErrorReason.TIMEOUT, None, "request timed out")
     except requests.exceptions.SSLError as e:
-        return VlmAttemptError(VlmErrorReason.NETWORK, None, f"TLS error: {_scrub_exc(e, req)}")
+        return VlmAttemptError(VlmErrorReason.NETWORK, None, f"TLS error: {_scrub_exc(e)}")
     except requests.exceptions.ConnectionError as e:
-        return VlmAttemptError(VlmErrorReason.NETWORK, None, f"connection error: {_scrub_exc(e, req)}")
+        return VlmAttemptError(VlmErrorReason.NETWORK, None, f"connection error: {_scrub_exc(e)}")
     except requests.exceptions.RequestException as e:
-        return VlmAttemptError(VlmErrorReason.UNKNOWN, None, f"request failed: {_scrub_exc(e, req)}")
+        return VlmAttemptError(VlmErrorReason.UNKNOWN, None, f"request failed: {_scrub_exc(e)}")
 
     text_body = resp.text or ""
     body: Any = None
