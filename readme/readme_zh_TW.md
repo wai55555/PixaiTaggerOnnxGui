@@ -63,7 +63,7 @@
 
 ### 5. VLM 圖像描述（可選）
 -   **透過網路 VLM 產生自然語言描述**: 啟用模型選擇框旁的「使用 VLM 連線」後，將使用視覺語言模型為每張圖像產生詳細的英文描述。預設關閉，不會影響本地標籤功能。
--   **內建服務與同模型故障轉移**: 支援 Gemini API、OpenRouter、Cloudflare、Groq、NVIDIA NIM、Hugging Face、Vercel AI Gateway、OpenAI 和 Anthropic。服務拒絕請求或受到速率限制時，只會嘗試提供*同一模型*的下一條連線，不會在未告知的情況下切換到其他模型。
+-   **內建服務與同模型故障轉移**: 支援 Gemini API、OpenRouter、Cloudflare、Groq、NVIDIA NIM、Hugging Face、Vercel AI Gateway、OpenAI、Anthropic 和 xAI Grok。服務拒絕請求或受到速率限制時，只會嘗試提供*同一模型*的下一條連線，不會在未告知的情況下切換到其他模型。
 -   **自訂連線**: 可以新增任何相容 OpenAI API 的端點，包括 Ollama、LM Studio、llama.cpp 和 vLLM 等本地伺服器。
 -   **API 金鑰不會寫入 `config.ini`**: 金鑰會透過真實請求進行檢查，並儲存到作業系統金鑰圈，或從 `.env` 檔案／環境變數讀取。
 -   **僅使用您選擇的連線**: 只會依序嘗試已啟用並完成驗證的連線。API 費用、免費額度和速率限制以各服務商的條款為準；本應用程式不會將任何連線判定為免費。可調整詳細程度、句數、角色名稱和 Markdown，並可將產生內容加入現有 `.txt` 的前面、後面或直接覆寫。
@@ -76,3 +76,4 @@
 
 - 此工具利用了 [PixAI](https://pixai.art/) 訓練的優秀標註模型。如果沒有 Pixai Tagger 的公開發布，此應用程式將無法誕生。衷心感謝。
 - 使用的 ONNX 模型由 [deepghs](https://huggingface.co/deepghs/pixai-tagger-v0.9-onnx) 在 Hugging Face 上公開。謝謝。
+- 同樣感謝公開了其他已支援模型及其 ONNX 版本的作者們 — [SmilingWolf](https://huggingface.co/SmilingWolf)（WD tagger 系列）、[Misaka41Z](https://huggingface.co/Misaka41Z/wd-eva02-tagger-2026-canary-onnx-v2)（wd-eva02 2026 Canary 的 ONNX）、[Camais03](https://huggingface.co/Camais03/camie-tagger-v2)（camie-tagger v2）、[cella110n](https://huggingface.co/cella110n/cl_tagger)（cl_tagger）、[Grio43](https://huggingface.co/Grio43/OppaiOracle)（OppaiOracle），以及公開 Florence-2（Microsoft）ONNX 全套檔案的 [onnx-community](https://huggingface.co/onnx-community/Florence-2-base-ft)。各模型均遵循其上游授權條款。

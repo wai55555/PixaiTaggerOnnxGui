@@ -1,7 +1,7 @@
 # PixAI Tagger ONNX GUI
 ## [English](readme/readme_en.md) [简体中文](readme/readme_zh_CN.md) [繁體中文](readme/readme_zh_TW.md) [Русский](readme/readme_ru.md)
 
-ローカル環境にある大量の画像に対して、高速かつ正確なタグやキャプションを自動生成するGUIツールです。直感的な操作で、データセットの整理や管理を劇的に効率化します。複数のローカルtagger／captionerモデルに加え、Gemini・OpenAI・Claude・Groq・ローカルVLMなどに対応しています。
+ローカル環境にある大量の画像に対して、高速かつ正確なタグやキャプションを自動生成するGUIツールです。直感的な操作で、データセットの整理や管理を劇的に効率化します。複数のローカルtagger／captionerモデルに加え、Gemini・OpenAI・Claude・Grok・ローカルVLMなどに対応しています。
 
 |![](https://raw.githubusercontent.com/wai55555/PixaiTaggerOnnxGui/refs/heads/main/sample/main_window_01.png)|![](https://raw.githubusercontent.com/wai55555/PixaiTaggerOnnxGui/refs/heads/main/sample/main_window_02.jpg)|
 |:-:|:-:|
@@ -65,7 +65,7 @@ PixAI Taggerは13,000以上の豊富なタグに対応しており、一般的�
 
 ### 5. VLMキャプション（任意）
 - **ネットワークVLMによる自然言語キャプション**: モデル選択欄の隣にある「VLM接続を使う」チェックを入れると、生成をローカルモデルからVLM（Vision-Language Model）へ切り替え、各画像に詳細な英語キャプションを付けます。学習用データセットの説明文に向いています。既定はOFFで、通常のタグ付けには影響しません。
-- **内蔵サービスと同一モデルフォールバック**: Gemini API・OpenRouter・Cloudflare・Groq・NVIDIA NIM・Hugging Face・Vercel AI Gateway・OpenAI・Anthropicを利用できます。あるサービスが拒否・レート制限された場合、*同じ*モデルを提供する次のサービスへ自動で切り替えます。別モデルへ勝手に乗り換えることはありません。<!-- Mistral/Pixtral はキャプション品質が現状低いためコメントアウト中。 -->
+- **内蔵サービスと同一モデルフォールバック**: Gemini API・OpenRouter・Cloudflare・Groq・NVIDIA NIM・Hugging Face・Vercel AI Gateway・OpenAI・Anthropic・xAI Grokを利用できます。あるサービスが拒否・レート制限された場合、*同じ*モデルを提供する次のサービスへ自動で切り替えます。別モデルへ勝手に乗り換えることはありません。<!-- Mistral/Pixtral はキャプション品質が現状低いためコメントアウト中。 -->
 - **カスタム接続**: Ollama・LM Studio・llama.cpp・vLLM などローカルサーバーを含む、OpenAI 互換エンドポイントを追加できます。
 - **キーは `config.ini` に置きません**: VLM設定ダイアログでAPIキーを登録すると、実リクエスト1回で検証し、OSのキーリング（または `.env` ファイル / 環境変数）に保存します。
 - **選択した経路を使用**: 有効化して並べた認証済み経路だけを順に試します。API料金・無料枠・レート制限は各サービスの条件に従い、アプリはどの経路も無料とは判定しません。詳細度・文数・キャラクター名の扱い・Markdownを調整でき、生成キャプションは既存`.txt`と組み合わせられます（前に追加／後に追加／上書き。タグ出力と同じ）。
@@ -85,4 +85,5 @@ ONNX Runtimeではオーバーヘッドが発生してバッチ処理による�
 ## 謝辞 (Acknowledgements)
 
 - このツールは [PixAI](https://pixai.art/) 様によってトレーニングされた素晴らしいタグ付けモデルを利用しています。Pixai Taggerが公開されていなければ、このアプリケーションは生まれませんでした。心から感謝申し上げます。
-- ONNXモデルは [deepghs](https://huggingface.co/deepghs/pixai-tagger-v0.9-onnx)様 によってHugging Faceで公開されているものを利用しています。大変ありがとうございます。
+- ONNXモデルは [deepghs](https://huggingface.co/deepghs/pixai-tagger-v0.9-onnx)様 によってHugging Faceで公開されているものを利用しています。ありがとうございます。
+- 追加対応しているモデルとその ONNX を公開してくださっている作者の皆さまにも感謝します。 [SmilingWolf](https://huggingface.co/SmilingWolf)（WD タガー系）、[Misaka41Z](https://huggingface.co/Misaka41Z/wd-eva02-tagger-2026-canary-onnx-v2)（wd-eva02 2026 Canary ONNX）、[Camais03](https://huggingface.co/Camais03/camie-tagger-v2)（camie-tagger v2）、[cella110n](https://huggingface.co/cella110n/cl_tagger)（cl_tagger）、[Grio43](https://huggingface.co/Grio43/OppaiOracle)（OppaiOracle）、および Florence-2（Microsoft）の ONNX 一式を公開する [onnx-community](https://huggingface.co/onnx-community/Florence-2-base-ft) の各氏。各モデルのライセンスは配布元に従います。
