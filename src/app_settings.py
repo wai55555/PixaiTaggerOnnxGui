@@ -8,6 +8,11 @@ from utils import write_debug_log, GetString, default_get_string_fallback
 
 _get_string: GetString = default_get_string_fallback
 
+# VLM の既定値。新規設定だけでなく、欠落した [Vlm] キーのフォールバックにも
+# 同じ値を使う。既存ユーザーが明示的に選んだモデル／順序は上書きしない。
+DEFAULT_VLM_MODEL_PROFILE_ID = "gemma-4-31b-it"
+DEFAULT_VLM_CONNECTION_ORDER = "gemini,nvidia,openrouter,cloudflare,groq"
+
 def set_get_string_func(func: GetString):
     global _get_string
     _get_string = func
@@ -78,6 +83,9 @@ class Behavior:
     # 正の N を指定すると N に制限し、大量枚数のタグ付けでマシンが張り付くのを避けられる。
     # GUI には出さない隠し設定（config.ini を手で編集する人向け）。
     onnx_threads: int = 0
+    # 一括処理の対象選択。既定 ALL によりこのキーを持たない旧 config.ini でも
+    # 従来どおり全画像を処理する（260903_vlm-gap-fix.md todo 5）。
+    target_mode: str = "ALL"
 
 @dataclass
 class Window:
@@ -100,6 +108,19 @@ def parse_caption_placement(raw: str) -> str:
     """config.ini の文字列を検証する。不正値は OVERWRITE（従来動作）へフォールバック。"""
     value = str(raw).strip().upper()
     return value if value in CAPTION_PLACEMENTS else "OVERWRITE"
+
+
+# 一括処理の対象選択（すべて / 未生成のみ / 失敗のみ / 選択画像のみ）。
+# tagging_core.TargetMode と同じ4値。ワーカーは tagging_core.parse_target_mode()
+# で enum へ変換するため、ここでは文字列のまま保持・検証する。
+TARGET_MODES: tuple[str, ...] = ("ALL", "UNPROCESSED", "FAILED", "SELECTED")
+
+
+def parse_target_mode_setting(raw: str) -> str:
+    """[Behavior] target_mode を検証する。空文字・不正値は ALL（全画像＝この項目を
+    持たない旧 config.ini と同じ挙動）へフォールバックする。"""
+    value = str(raw).strip().upper()
+    return value if value in TARGET_MODES else "ALL"
 
 
 def _parse_onnx_threads(raw: str) -> int:
@@ -129,6 +150,65 @@ class Caption:
 class Debug:
     debug_log: bool
 
+
+@dataclass
+class Vlm:
+    """VLM 生成機能の基本設定（260901_VLM_spec.md 16章）。
+
+    複雑なカスタム接続定義は config.ini ではなく vlm_connections.json 側に持つ。
+    この項目を持たない旧 config.ini でも enabled=False の未設定状態として動く。
+    """
+    # True のとき、選択中のローカルモデルの代わりにネットワーク VLM で生成する。
+    # 出力の形式（標準文 / モデル学習用長文 / 短いタグ）は VLM プロンプトモードで選ぶ。
+    enabled: bool = False
+    model_profile_id: str = DEFAULT_VLM_MODEL_PROFILE_ID
+    generation_profile_id: str = "default-caption-en"
+    # builtin_fallback / custom_single
+    execution_mode: str = "builtin_fallback"
+    selected_connection_id: str = ""
+    connection_order: str = DEFAULT_VLM_CONNECTION_ORDER
+    # Cloudflare Workers AI はアカウント ID を URL に含むため別途保持する。
+    cloudflare_account_id: str = ""
+    # 複数Workspace対象のAnthropic APIキーで必要。単一Workspaceキーなら空でよい。
+    anthropic_workspace_id: str = ""
+    # 生成プロファイルの内訳（フラットに保持。vlm_profiles.GenerationProfile へ写す）
+    language: str = "en"
+    detail_level: str = "maximum_detail"
+    sentence_mode: str = "automatic_long_detailed"
+    character_name_mode: str = "explicit_only"
+    markdown: str = "disabled"
+    # standard / dataset_long / short_tags
+    prompt_mode: str = "standard"
+    max_output_tokens: int = 3072
+    image_max_long_edge: int = 1536
+    # 接続確認済みの binding。`<profile_id>:<provider_id>` をカンマ区切りで保持する。
+    # キー登録時の軽量モデル一覧GET、接続診断のフルPASS、または1枚テスト成功で追記される。
+    # UNKNOWN 出荷でもここに載れば VERIFIED 扱いになり、「厳格」モードでも候補に残る。
+    verified_bindings: str = ""
+    # True のとき、内蔵フォールバックは VERIFIED（実証済み or verified_bindings 収録）
+    # の接続だけを候補にする。既定 False（同一と宣言されていれば未実証でも使う）。
+    strict_identity: bool = False
+    # 内蔵経路のモデル ID 上書き。`<profile_id>:<provider_id>=<model_id>` をカンマ区切り。
+    # 出荷時の推定 ID が実サービスと違うとき、接続診断で確認しつつここで直せる。
+    model_id_overrides: str = ""
+
+    def order_list(self) -> list[str]:
+        return [p.strip() for p in self.connection_order.split(",") if p.strip()]
+
+    def verified_set(self) -> set[str]:
+        return {t.strip() for t in self.verified_bindings.split(",") if t.strip()}
+
+    def model_id_override_map(self) -> dict[str, str]:
+        out: dict[str, str] = {}
+        for tok in self.model_id_overrides.split(","):
+            tok = tok.strip()
+            if "=" in tok:
+                k, _, v = tok.partition("=")
+                if k.strip() and v.strip():
+                    out[k.strip()] = v.strip()
+        return out
+
+
 @dataclass
 class AppSettings:
     paths: Paths
@@ -138,6 +218,7 @@ class AppSettings:
     window: Window
     model: Model
     caption: Caption
+    vlm: Vlm
     debug: Debug
     language_code: str
 
@@ -151,10 +232,23 @@ def get_default_config() -> configparser.ConfigParser:
         'Paths': {'input_dir': str(BASE_DIR / "inputs"), 'model_dir': MODEL_DIR_NAME, 'model_filename': 'model.onnx'},
         'Thresholds': {'general': '0.40', 'character': '0.65', 'rating': '0.50', 'copyright': '0.50', 'artist': '0.50', 'meta': '0.50', 'model': '0.50', 'quality': '0.50', 'year': '0.50', 'touched': ''},
         'Limits': {'general': '55', 'character': '1', 'rating': '0', 'copyright': '0', 'artist': '0', 'meta': '0', 'model': '0', 'quality': '0', 'year': '0', 'touched': ''},
-        'Behavior': {'enable_solo_character_limit': 'True', 'convert_underscore_to_space': 'True', 'existing_file_mode': 'ASK', 'onnx_threads': '0'},
+        'Behavior': {'enable_solo_character_limit': 'True', 'convert_underscore_to_space': 'True', 'existing_file_mode': 'ASK', 'onnx_threads': '0', 'target_mode': 'ALL'},
         'Window': {'geometry': '986x976+50+50', 'tag_display_rows': '6', 'tag_display_cols': '5'},
         'Model': {'model_id': 'pixai-tagger-v0.9', 'verified_models': ''},
         'Caption': {'task': 'MORE_DETAILED_CAPTION', 'placement': 'OVERWRITE'},
+        'Vlm': {
+            'enabled': 'False',
+            'model_profile_id': DEFAULT_VLM_MODEL_PROFILE_ID, 'generation_profile_id': 'default-caption-en',
+            'execution_mode': 'builtin_fallback', 'selected_connection_id': '',
+            'connection_order': DEFAULT_VLM_CONNECTION_ORDER,
+            'cloudflare_account_id': '',
+            'anthropic_workspace_id': '',
+            'language': 'en', 'detail_level': 'maximum_detail',
+            'sentence_mode': 'automatic_long_detailed', 'character_name_mode': 'explicit_only',
+            'markdown': 'disabled', 'prompt_mode': 'standard',
+            'max_output_tokens': '3072', 'image_max_long_edge': '1536',
+            'verified_bindings': '', 'strict_identity': 'False', 'model_id_overrides': '',
+        },
         'Debug': {'debug_log': 'False'},
         'General': {'language_code': ''}
     }
@@ -245,7 +339,8 @@ def load_settings(config: configparser.ConfigParser) -> AppSettings:
             enable_solo_character_limit=config.getboolean('Behavior', 'enable_solo_character_limit', fallback=True),
             convert_underscore_to_space=config.getboolean('Behavior', 'convert_underscore_to_space', fallback=True),
             existing_file_mode=config.get('Behavior', 'existing_file_mode', fallback='ASK'),
-            onnx_threads=_parse_onnx_threads(config.get('Behavior', 'onnx_threads', fallback='0'))
+            onnx_threads=_parse_onnx_threads(config.get('Behavior', 'onnx_threads', fallback='0')),
+            target_mode=parse_target_mode_setting(config.get('Behavior', 'target_mode', fallback='ALL'))
         ),
         window=Window(
             geometry=config.get('Window', 'geometry', fallback='986x976+50+50'),
@@ -260,14 +355,61 @@ def load_settings(config: configparser.ConfigParser) -> AppSettings:
             task=config.get('Caption', 'task', fallback='MORE_DETAILED_CAPTION'),
             placement=parse_caption_placement(config.get('Caption', 'placement', fallback='OVERWRITE'))
         ),
+        vlm=_load_vlm(config),
         debug=Debug(
             debug_log=config.getboolean('Debug', 'debug_log', fallback=False) # Default is False for debug_log
         ),
         language_code=config.get('General', 'language_code', fallback="")
     )
 
-def save_config(settings: AppSettings):
-    """Saves the AppSettings object to the config.ini file."""
+def _load_vlm(config: configparser.ConfigParser) -> Vlm:
+    """[Vlm] セクションを読み込む。欠けているキーは Vlm の既定値へフォールバック。"""
+    d = Vlm()
+    g = lambda k, fb: config.get('Vlm', k, fallback=fb)  # noqa: E731
+
+    def gb(k: str, fb: bool) -> bool:
+        # 手書き config.ini の [Vlm] enabled / strict_identity が bool として
+        # 解釈できない値でも、gi と同様に既定値へ倒して起動を止めない。
+        try:
+            return config.getboolean('Vlm', k, fallback=fb)
+        except (TypeError, ValueError):
+            return fb
+
+    def gi(k: str, fb: int) -> int:
+        try:
+            return config.getint('Vlm', k, fallback=fb)
+        except (TypeError, ValueError):
+            return fb
+
+    return Vlm(
+        enabled=gb('enabled', d.enabled),
+        model_profile_id=g('model_profile_id', d.model_profile_id),
+        generation_profile_id=g('generation_profile_id', d.generation_profile_id),
+        execution_mode=g('execution_mode', d.execution_mode).strip().lower() or d.execution_mode,
+        selected_connection_id=g('selected_connection_id', d.selected_connection_id),
+        connection_order=g('connection_order', d.connection_order),
+        cloudflare_account_id=g('cloudflare_account_id', d.cloudflare_account_id).strip(),
+        anthropic_workspace_id=g('anthropic_workspace_id', d.anthropic_workspace_id).strip(),
+        language=g('language', d.language),
+        detail_level=g('detail_level', d.detail_level),
+        sentence_mode=g('sentence_mode', d.sentence_mode),
+        character_name_mode=g('character_name_mode', d.character_name_mode),
+        markdown=g('markdown', d.markdown),
+        prompt_mode=g('prompt_mode', d.prompt_mode),
+        max_output_tokens=gi('max_output_tokens', d.max_output_tokens),
+        image_max_long_edge=gi('image_max_long_edge', d.image_max_long_edge),
+        verified_bindings=g('verified_bindings', d.verified_bindings),
+        strict_identity=gb('strict_identity', d.strict_identity),
+        model_id_overrides=g('model_id_overrides', d.model_id_overrides),
+    )
+
+
+def save_config(settings: AppSettings) -> bool:
+    """Saves the AppSettings object to the config.ini file.
+
+    Return the persistence result so dialogs can keep unsaved changes open when the
+    configuration file cannot be written.
+    """
     write_debug_log(_get_string("ConfigUtils", "Settings_Save_Start"), _get_string)
     config = configparser.ConfigParser()
 
@@ -314,8 +456,10 @@ def save_config(settings: AppSettings):
         with open(CONFIG_PATH, 'w', encoding='utf-8') as f:
             config.write(f)
         write_debug_log(_get_string("ConfigUtils", "Config_File_Save_Success", CONFIG_PATH=CONFIG_PATH), _get_string)
+        return True
     except Exception as e:
         write_debug_log(_get_string("ConfigUtils", "Config_File_Save_Failed", e=e), _get_string)
+        return False
 def update_model_verification_status(model_id: str, is_verified: bool, get_string: GetString):
     """
     Loads config, sets the verification status for a single model_id, and saves it.

@@ -113,6 +113,7 @@ def discover_models() -> list[ModelEntry]:
     sort last, by model_id).
     """
     entries: list[ModelEntry] = [_pixai_entry()]
+    seen_model_ids: set[str] = {_PIXAI_MODEL_ID}
 
     for config_dir in _iter_model_config_dirs():
         config_path = config_dir / "model_config.json"
@@ -135,6 +136,12 @@ def discover_models() -> list[ModelEntry]:
             write_debug_log(f"model_registry: {config_path} has an invalid model_id {model_id!r}; skipping.")
             continue
         model_id = model_id.strip()
+
+        # 同じ model_id が2つ以上あると get_model_entry() が先頭しか返さず、後発の
+        # モデルディレクトリを選択できなくなる。最初に見つかったものだけ採用する。
+        if model_id in seen_model_ids:
+            write_debug_log(f"model_registry: duplicate model_id '{model_id}' at {config_path}; skipping.")
+            continue
 
         model_type = cfg.get("model_type", "tagger")
         if model_type not in ("tagger", "captioner"):
@@ -165,6 +172,7 @@ def discover_models() -> list[ModelEntry]:
             model_dir=model_dir,
             config=cfg,
         ))
+        seen_model_ids.add(model_id)
 
     return _sort_by_display_order(entries)
 

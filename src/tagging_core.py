@@ -12,6 +12,8 @@ from enum import Enum, IntEnum, auto
 from typing import Mapping, Sequence, Any, Callable, TYPE_CHECKING
 from time import perf_counter
 
+from constants import BASE_DIR
+
 if TYPE_CHECKING:
     import numpy as np
     from numpy.typing import NDArray
@@ -29,7 +31,6 @@ else:
         Image = None
         ort = None
 
-BASE_DIR = Path(sys.executable).parent if getattr(sys, 'frozen', False) else Path(__file__).parent
 LOG_FILE_PATH = BASE_DIR / "debug_log.txt"
 CONFIG_PATH = BASE_DIR / "config.ini"
 
@@ -772,6 +773,7 @@ def process_image_loop(
     stop_checker: Callable[[], bool] | None,
     get_string: GetString | None,
     progress_cb: Callable[[int, int], None] | None = None,
+    failed_paths: list[Path] | None = None,
 ) -> list[FileChange]:
     """設定に従って画像へタグを付け、既存 .txt の扱いを EXISTING_FILE_MODE で分岐する。
 
@@ -802,11 +804,27 @@ def process_image_loop(
     n_skipped = 0
     n_errors = 0
     n_unchanged = 0
+    failed_seen = set(failed_paths or ())
     # progress_cb 自体もクロススレッドの queued signal なので、毎画像発行すると
     # シグナルのキュー投入コストが積み上がる（PR#16 レビュー指摘）。全体で ~200 回に
     # 間引く。最後の1枚は必ず発行して N/N（完了）に到達させる。
     # 天井除算にする: total//200 だと 201〜399 枚で step=1 になり間引きが効かない。
     progress_step = max(1, (total + 199) // 200)
+
+    def mark_failed(path: Path) -> None:
+        if failed_paths is not None and path not in failed_seen:
+            failed_seen.add(path)
+            failed_paths.append(path)
+
+    def mark_remaining_failed(start: int) -> None:
+        """Record unprocessed work without labelling SKIP outputs as failures."""
+        if failed_paths is None:
+            return
+        for pending in image_paths[start:]:
+            if (mode is ExistingFileMode.SKIP
+                    and pending.with_suffix(".txt").is_file()):
+                continue
+            mark_failed(pending)
 
     for i, image_path in enumerate(image_paths):
         if progress_cb and ((i + 1) % progress_step == 0 or i == total - 1):
@@ -814,6 +832,7 @@ def process_image_loop(
         if stop_checker and stop_checker():
             core_log_gui(_get_string_internal("TaggerCore", "Tagging_Process_Aborted_By_User"), "red")
             log_dbg(_get_string_internal("TaggerCore", "Tagging_Process_Aborted_By_User_Debug"))
+            mark_remaining_failed(i)
             break
 
         # First, check if the output file exists and should be skipped.
@@ -836,6 +855,7 @@ def process_image_loop(
                     continue
                 if stop_checker and stop_checker():
                     # ここで停止要求が来ていたら resolver（GUI 往復しうる）を呼ばずに抜ける
+                    mark_remaining_failed(i)
                     break
                 decision = decision_resolver(output_path)
                 if decision is OverwriteDecision.SKIP:
@@ -854,6 +874,7 @@ def process_image_loop(
                 image = Image.open(f).convert("RGB")
         except Exception as e:
             n_errors += 1
+            mark_failed(image_path)
             log_dbg(_get_string_internal("TaggerCore", "Image_Load_Failed", current_index_str=current_index_str, relative_path=str(relative_path), type_e_name=type(e).__name__, e=str(e)))
             core_log_gui(_get_string_internal("TaggerCore", "Image_Load_Failed_Short", current_index_str=current_index_str, relative_path_name=relative_path.name), "red")
             continue
@@ -866,12 +887,14 @@ def process_image_loop(
             )
         except Exception as e:
             n_errors += 1
+            mark_failed(image_path)
             log_dbg(_get_string_internal("TaggerCore", "Tag_Inference_Failed", current_index_str=current_index_str, relative_path=str(relative_path), type_e_name=type(e).__name__, e=str(e)))
             core_log_gui(_get_string_internal("TaggerCore", "Tag_Inference_Failed_Short", current_index_str=current_index_str, relative_path_name=relative_path.name), "red")
             continue
 
         if not results or not results[0].tags:
             n_errors += 1
+            mark_failed(image_path)
             log_dbg(_get_string_internal("TaggerCore", "Tag_Acquisition_Failed", current_index_str=current_index_str, relative_path=str(relative_path)))
             core_log_gui(_get_string_internal("TaggerCore", "Tag_Acquisition_Failed_Short", current_index_str=current_index_str, relative_path_name=relative_path.name), "orange")
             continue
@@ -894,6 +917,7 @@ def process_image_loop(
             except Exception as e:
                 # 既存内容が読めないファイルは触らずスキップする（spec.md 3.3節）
                 n_errors += 1
+                mark_failed(image_path)
                 log_dbg(f"append: 既存ファイルの読み込みに失敗したためスキップします {output_path.name}: {type(e).__name__}: {e}")
                 core_log_gui(_get_string_internal("TaggerCore", "Save_Failed_Short", current_index_str=current_index_str, output_path_name=output_path.name), "red")
                 continue
@@ -919,6 +943,7 @@ def process_image_loop(
                     # ファイルごと削除して原本を復元不能に破壊する（PR#16 レビュー指摘）。
                     # APPEND 分岐と同様、触らずスキップする。
                     n_errors += 1
+                    mark_failed(image_path)
                     log_dbg(f"overwrite: 既存ファイルの読み込みに失敗したためスキップします {output_path.name}: {type(e).__name__}: {e}")
                     core_log_gui(_get_string_internal("TaggerCore", "Save_Failed_Short", current_index_str=current_index_str, output_path_name=output_path.name), "red")
                     continue
@@ -945,6 +970,7 @@ def process_image_loop(
             log_dbg(_get_string_internal("TaggerCore", "Tagging_Result_Output", current_index_str=current_index_str, output_path_name=output_path.name))
         except Exception as e:
             n_errors += 1
+            mark_failed(image_path)
             log_dbg(_get_string_internal("TaggerCore", "Save_Failed", current_index_str=current_index_str, relative_path=str(relative_path), type_e_name=type(e).__name__, e=str(e)))
 
             core_log_gui(_get_string_internal("TaggerCore", "Save_Failed_Short", current_index_str=current_index_str, output_path_name=output_path.name), "red")
@@ -1042,3 +1068,54 @@ def main(decision_resolver: Callable[[Path], OverwriteDecision] | None = None, l
 
 if __name__ == "__main__":
     main()
+
+
+class TargetMode(Enum):
+    """タグ付け対象の選択方針。"""
+    ALL = auto()          # 全画像
+    UNPROCESSED = auto()  # .txt が存在しない画像のみ
+    FAILED = auto()       # 失敗リストとの積集合
+    SELECTED = auto()     # 選択中の1件のみ
+
+
+TARGET_MODE_MAP: dict[str, TargetMode] = {
+    "ALL": TargetMode.ALL,
+    "UNPROCESSED": TargetMode.UNPROCESSED,
+    "FAILED": TargetMode.FAILED,
+    "SELECTED": TargetMode.SELECTED,
+}
+
+
+def parse_target_mode(raw: str, get_string: GetString | None = None) -> TargetMode:
+    """文字列を TargetMode に変換する。不正値は ALL にフォールバックする。"""
+    mode = TARGET_MODE_MAP.get(str(raw).strip().upper())
+    if mode is None:
+        _get_string_internal = get_string if get_string else _get_string
+        log_dbg(_get_string_internal("TaggerCore", "Invalid_Target_Mode_Debug", raw=raw))
+        return TargetMode.ALL
+    return mode
+
+
+def filter_target_images(
+    paths: Sequence[Path],
+    mode: TargetMode,
+    failed_paths: Sequence[Path] = (),
+    selected: Path | None = None,
+) -> list[Path]:
+    """TargetMode に従って対象画像を絞り込む純粋関数。
+
+    - ALL: そのまま返す。
+    - UNPROCESSED: `.txt` が存在しないものだけ返す（空ファイルも処理済み扱い）。
+    - FAILED: failed_paths との積集合を入力順で返す。
+    - SELECTED: selected が入力内にあれば `[selected]`、なければ `[]`。
+    """
+    if mode is TargetMode.UNPROCESSED:
+        return [p for p in paths if not p.with_suffix(".txt").is_file()]
+    if mode is TargetMode.FAILED:
+        failed_set = set(failed_paths)
+        return [p for p in paths if p in failed_set]
+    if mode is TargetMode.SELECTED:
+        if selected is not None and selected in paths:
+            return [selected]
+        return []
+    return list(paths)

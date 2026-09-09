@@ -4,6 +4,18 @@ import sys
 from pathlib import Path
 from typing import Mapping
 
+
+def _project_root_for_source() -> Path:
+    """Return the repository/application root when source files live under ``src``.
+
+    Frozen builds continue to use the executable directory.  Keeping this resolution in
+    one place prevents moving Python modules into ``src`` from accidentally moving the
+    user's config, language files, and model directories with them.
+    """
+    source_dir = Path(__file__).resolve().parent
+    return source_dir.parent if source_dir.name.lower() == "src" else source_dir
+
+
 def get_resource_dir() -> Path:
     """
     Determines the resource directory, handling PyInstaller's _internal folder.
@@ -13,10 +25,10 @@ def get_resource_dir() -> Path:
         exe_dir = Path(sys.executable).parent
         internal_dir = exe_dir / "_internal"
         return internal_dir if internal_dir.is_dir() else exe_dir
-    return Path(__file__).parent.resolve()
+    return _project_root_for_source()
 
 # --- Path Constants ---
-BASE_DIR = Path(sys.executable).parent if getattr(sys, "frozen", False) else Path(__file__).parent.resolve()
+BASE_DIR = Path(sys.executable).parent if getattr(sys, "frozen", False) else _project_root_for_source()
 
 # RESOURCE_DIR is where bundled, non-user-editable resources are located.
 # This handles PyInstaller's `_internal` folder structure.

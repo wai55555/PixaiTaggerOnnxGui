@@ -107,40 +107,63 @@ class ModelModeController:
 
     def _apply_model_type_ui(self, entry: ModelEntry) -> None:
         """design.md 8.5節 / spec.md 8.3節: switch the tag-button grid <-> caption text editor,
-        and hide tag-only bulk-edit/Undo controls that make no sense for free-text captions."""
-        mw = self.mw
-        is_captioner = entry.model_type == "captioner"
+        and hide tag-only bulk-edit/Undo controls that make no sense for free-text captions.
 
-        mw.tag_grid_container.setVisible(not is_captioner)
-        mw.image_tag_prev_page_btn.setVisible(not is_captioner)
-        mw.image_tag_next_page_btn.setVisible(not is_captioner)
-        mw.add_single_tag_label.setVisible(not is_captioner)
-        mw.add_single_tag_line.setVisible(not is_captioner)
-        mw.add_single_tag_button.setVisible(not is_captioner)
-        mw.bulk_delete_group.setVisible(not is_captioner)
-        mw.bulk_add_group.setVisible(not is_captioner)
-        # Undo/Redo stays visible in caption mode - caption edits are undoable too
+        テキスト編集欄を出すのは「選択モデルが captioner」または「VLM接続を使う」のとき。
+        VLM の出力はプロンプト次第（タグ列 / 自然文）だが、任意テキストを安全に扱えるのは
+        テキスト編集欄なので、VLM ON のときはそちらを使う。"""
+        mw = self.mw
+        model_is_captioner = entry.model_type == "captioner"
+        use_vlm = bool(getattr(mw.settings.vlm, "enabled", False))
+        text_ui = model_is_captioner or use_vlm
+
+        # VLM 使用中はローカルモデルは働かないので、モデル欄をグレーアウトして
+        # 誤操作を防ぐ（チェックを外すと元に戻る）。処理中は _set_main_controls_enabled
+        # が別途ロックする（どちらも「VLM ON なら無効」で一致するので競合しない）。
+        if hasattr(mw, "model_combo"):
+            mw.model_combo.setEnabled(not use_vlm and mw._controls_enabled)
+            mw.model_combo.setToolTip(
+                mw.locale_manager.get_string("Vlm", "Model_Combo_Locked_Tooltip") if use_vlm
+                else mw.locale_manager.get_string("ModelDescriptions", entry.model_id))
+
+        mw.tag_grid_container.setVisible(not text_ui)
+        mw.image_tag_prev_page_btn.setVisible(not text_ui)
+        mw.image_tag_next_page_btn.setVisible(not text_ui)
+        mw.add_single_tag_label.setVisible(not text_ui)
+        mw.add_single_tag_line.setVisible(not text_ui)
+        mw.add_single_tag_button.setVisible(not text_ui)
+        mw.bulk_delete_group.setVisible(not text_ui)
+        mw.bulk_add_group.setVisible(not text_ui)
+        # Undo/Redo stays visible in text mode - text edits are undoable too
         # (2026-08-31 user decision).
         if hasattr(mw, "category_settings_button"):
-            mw.category_settings_button.setVisible(not is_captioner)
+            mw.category_settings_button.setVisible(not text_ui)
         if hasattr(mw, "grid_view_widget"):
-            mw.grid_view_widget.set_caption_mode(is_captioner)
+            mw.grid_view_widget.set_caption_mode(text_ui)
         # Grid-view (3x3 edit) tag search filter is a separate widget tree
         # (grid_view_widget.py) not yet retrofitted for caption mode - out of scope for
         # this pass (task.md follow-up item).
 
-        mw.caption_text_edit.setVisible(is_captioner)
-        mw.task_combo.setVisible(is_captioner)
-        # 生成キャプションの挿入位置（前に追加 / 後に追加 / 上書き）は captioner 専用。
+        mw.caption_text_edit.setVisible(text_ui)
+        # task_combo（Florence-2 の詳細度）はローカル captioner のときだけ（VLM では無関係）。
+        mw.task_combo.setVisible(model_is_captioner and not use_vlm)
+        # 生成テキストの挿入位置（前に追加 / 後に追加 / 上書き）はテキスト UI 共通。
         if hasattr(mw, "caption_placement_widget"):
-            mw.caption_placement_widget.setVisible(is_captioner)
+            mw.caption_placement_widget.setVisible(text_ui)
+        if hasattr(mw, "vlm_settings_button"):
+            mw.vlm_settings_button.setVisible(use_vlm)
+            mw.vlm_single_test_button.setVisible(use_vlm)
+        if hasattr(mw, "use_vlm_check") and mw.use_vlm_check.isChecked() != use_vlm:
+            mw.use_vlm_check.blockSignals(True)
+            mw.use_vlm_check.setChecked(use_vlm)
+            mw.use_vlm_check.blockSignals(False)
 
         # 既存ファイルの扱いは captioner でも4モードすべて選べる（existing_mode_combo の
         # APPEND 項目は ui_main_window.py で作成時から常に有効で、無効化している箇所は
         # どこにも無い）。「そのファイルに書くか」を決めるだけで、実際の組み合わせ方は
         # caption placement が担当するため（combine_caption）、特別扱いは不要。
 
-        if is_captioner:
+        if model_is_captioner:
             # Default to the model's verbose task (MORE_DETAILED_CAPTION) on every switch
             # to a captioner - the shorter caption levels are rarely what's wanted
             # (2026-08-31 user decision). The user can still pick another level per session.
@@ -151,10 +174,10 @@ class ModelModeController:
             idx = mw.task_combo.findData(default_task)
             if idx >= 0:
                 mw.task_combo.setCurrentIndex(idx)
-        else:
-            # reload_tags_only() early-returns in captioner mode, so _all_tags is empty for
-            # the whole captioner session. Repopulate it (and the grid tag cache) when
-            # coming back to a tagger, or the bulk-delete panel stays empty.
+        if not text_ui:
+            # reload_tags_only() early-returns in text mode, so _all_tags is empty for the
+            # whole text session. Repopulate it (and the grid tag cache) when the tag panel
+            # is showing again, or the bulk-delete panel stays empty.
             mw.reload_tags_only()
 
         # Reload whichever display (tag buttons or caption text) matches the new mode

@@ -5,8 +5,8 @@
   "license": "Apache-2.0",
   "network": {
     "files": {
-      "model.onnx": "https://huggingface.co/Nonene/cl_tagger/resolve/main/cl_tagger_1_02/model.onnx",
-      "tag_mapping.json": "https://huggingface.co/Nonene/cl_tagger/resolve/main/cl_tagger_1_02/tag_mapping.json"
+      "model.onnx": "https://huggingface.co/cella110n/cl_tagger/resolve/main/cl_tagger_1_02/model.onnx",
+      "tag_mapping.json": "https://huggingface.co/cella110n/cl_tagger/resolve/main/cl_tagger_1_02/tag_mapping.json"
     },
     "hash_verified_file": "model.onnx"
   },
