@@ -886,6 +886,14 @@ def classify_model_capability(provider_id: str, model_id: str,
             return False, "model list output_modalities excludes text"
         return True, "model list input/output modalities"
 
+    # xAI のカタログ（/v1/models・/v1/language-models）は画像入力トークンの課金単価を
+    # 持つ。input_modalities が無い応答でも、これが正なら画像入力対応とみなせる。
+    img_price = data.get("prompt_image_token_price")
+    if isinstance(img_price, (int, float)) and not isinstance(img_price, bool) and img_price > 0:
+        if outputs is not None and "text" not in outputs:
+            return False, "image priced but output_modalities excludes text"
+        return True, "model list prompt_image_token_price"
+
     capabilities = data.get("capabilities")
     if isinstance(capabilities, dict) and "vision" in capabilities:
         if not bool(capabilities.get("vision")):

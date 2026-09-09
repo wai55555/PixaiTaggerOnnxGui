@@ -121,7 +121,7 @@ _PROVIDER_KEY_INFO = {
         "instructions_key": "ApiKey_Steps_Anthropic",
     },
     "xai": {
-        "key_url": "https://console.x.ai/team/default/api-keys",
+        "key_url": "https://console.x.ai/welcome?path=%2Fapi-keys",
         "login_url": "https://console.x.ai/",
         "instructions_key": "ApiKey_Steps_Xai",
     },
