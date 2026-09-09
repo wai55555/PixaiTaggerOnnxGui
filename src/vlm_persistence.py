@@ -93,7 +93,9 @@ def save_caption(output_path: Path, caption: str, placement: str) -> SaveOutcome
       5. os.replace で設置する
     """
     placement = parse_placement(placement)
-    caption = caption.strip()
+    # 以降は改行を LF に統一して扱う。ファイルへ書くときだけ output_newline へ戻す
+    # （生成キャプションに \r\n が混じっていても検証不一致で失敗しないように）。
+    caption = caption.strip().replace("\r\n", "\n").replace("\r", "\n")
     if not caption:
         raise ValueError("empty caption")
 

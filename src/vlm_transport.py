@@ -116,7 +116,7 @@ _URL_USERINFO_RE = re.compile(r"(https?://)[^/\s'\"@]+@")
 # `?foo=VALUE` / `&foo=VALUE` の値部分を伏せる（キー名は問わない。クエリ文脈のみ）。
 _SECRET_PARAM_RE = re.compile(r"([?&][A-Za-z0-9_.\-]{1,40}=)[^\s&'\"]+")
 # `Bearer <token>` のトークン部を伏せる（この接頭辞がある文脈だけ。パスは壊さない）。
-_BEARER_RE = re.compile(r"([Bb]earer\s+)[^\s'\",;)}\]]+")
+_BEARER_RE = re.compile(r"(bearer\s+)[^\s'\",;)}\]]+", re.IGNORECASE)
 # 認証系ヘッダー名 ": value" / "= value" の値を伏せる（ヘッダー文脈だけ）。
 _AUTH_HEADER_RE = re.compile(
     r"(?i)\b(authorization|x-api-key|x-goog-api-key|api[-_]?key|api[-_]?token"

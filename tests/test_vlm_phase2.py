@@ -256,9 +256,11 @@ def test_scrub_exc_redacts_credentials_but_keeps_path():
     assert "sk-SECRET123" not in m
     assert "/openai/v1/chat/completions" in m  # path kept for diagnostics
 
-    # invalid / echoed bearer key in a generic RequestException message
+    # invalid / echoed bearer key in a generic RequestException message (any case)
     m2 = scrub(E("request failed: 401 for Authorization: Bearer xai-BADKEY-abcdef123"))
     assert "xai-BADKEY-abcdef123" not in m2
+    m2u = scrub(E("rejected: BEARER xai-UPPER-abcdef123 is invalid"))
+    assert "xai-UPPER-abcdef123" not in m2u
 
     # custom auth header value
     m3 = scrub(E("ConnectionError sending X-Api-Key: my-Sekret_Value.9 to host"))

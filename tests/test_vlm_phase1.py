@@ -317,6 +317,11 @@ def test_atomic_save():
     out5b = PERS.save_caption(p5, "a fresh natural caption", "APPEND")
     assert not out5b.written and out5b.skipped_reason == "duplicate"
 
+    # 生成キャプションに \r\n が混じっていても保存が失敗しない（LF に正規化して扱う）。
+    p6 = d / "img6.txt"
+    out6 = PERS.save_caption(p6, "first line\r\nsecond line\r\n", "OVERWRITE")
+    assert out6.written and p6.read_bytes() == b"first line\nsecond line"
+
     # no leftover temp files
     assert not list(d.glob("*.vlmtmp"))
 
