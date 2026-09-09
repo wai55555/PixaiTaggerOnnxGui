@@ -13,6 +13,7 @@ from tagging_core import (
     _normalize_np_chw, BASE_DIR, ExistingFileMode, FileChange, OverwriteDecision,
     make_cpu_session_options, parse_existing_file_mode,
 )
+from onnx_providers import CPU_ONLY, resolve_providers
 
 if TYPE_CHECKING:
     import numpy as np
@@ -101,7 +102,7 @@ class Florence2Captioner:
     """
 
     def __init__(self, config: CaptionerConfig, get_string: GetString | None = None,
-                 intra_op_num_threads: int = 0):
+                 intra_op_num_threads: int = 0, onnx_device: str = "auto"):
         self.get_string = get_string if get_string else _get_string
         self.config = config
 
@@ -109,19 +110,38 @@ class Florence2Captioner:
             raise ImportError(self.get_string("CaptionCore", "Required_Libraries_NotFound"))
 
         onnx_dir = config.model_dir / "onnx"
-        providers = ["CPUExecutionProvider"]
         # config.ini [Behavior] onnx_threads。0 なら None（ORT 既定 = 全コア）。
         so = make_cpu_session_options(intra_op_num_threads)
         if so is not None:
             log_dbg(f"Florence2Captioner: intra_op_num_threads capped at {so.intra_op_num_threads} ([Behavior] onnx_threads)")
         log_dbg(self.get_string("CaptionCore", "Info_Loading_Sessions", model_dir=str(config.model_dir)))
-        self.vision_encoder = ort.InferenceSession(str(onnx_dir / "vision_encoder_quantized.onnx"), sess_options=so, providers=providers)
-        self.embed_tokens = ort.InferenceSession(str(onnx_dir / "embed_tokens_quantized.onnx"), sess_options=so, providers=providers)
-        self.encoder_model = ort.InferenceSession(str(onnx_dir / "encoder_model_quantized.onnx"), sess_options=so, providers=providers)
-        self.decoder_model_merged = ort.InferenceSession(str(onnx_dir / "decoder_model_merged_quantized.onnx"), sess_options=so, providers=providers)
+
+        model_files = ("vision_encoder_quantized.onnx", "embed_tokens_quantized.onnx",
+                       "encoder_model_quantized.onnx", "decoder_model_merged_quantized.onnx")
+        (self.vision_encoder, self.embed_tokens,
+         self.encoder_model, self.decoder_model_merged) = self._load_sessions(
+            [onnx_dir / name for name in model_files], so, onnx_device)
         self._decoder_output_names = [o.name for o in self.decoder_model_merged.get_outputs()]
         self.tokenizer = Tokenizer.from_file(str(config.model_dir / "tokenizer.json"))
         log_dbg(self.get_string("CaptionCore", "Info_Sessions_Loaded"))
+
+    def _load_sessions(self, paths: list[Path], sess_options, onnx_device: str) -> list:
+        """4 つの ONNX セッションを全部同じ EP で開く。
+
+        デコード中はテンソルが 4 セッション間を流れるので、一部だけ GPU にすると
+        CPU<->GPU コピーが増えて逆に遅くなる。よって「CUDA を要求 → 1 つでも失敗 →
+        4 つとも CPU で開き直す」。onnx_device が CPU に解決される場合は最初から
+        CPU 4 本（この機能が入る前とバイト等価）。
+        """
+        providers = resolve_providers(onnx_device)
+        if providers != list(CPU_ONLY):
+            try:
+                return [ort.InferenceSession(str(p), sess_options=sess_options, providers=providers)
+                        for p in paths]
+            except Exception as exc:  # noqa: BLE001 - ORT raises assorted types
+                log_dbg(f"Florence2Captioner: {providers} session load failed ({exc!r}); retrying all on CPU")
+        return [ort.InferenceSession(str(p), sess_options=sess_options, providers=list(CPU_ONLY))
+                for p in paths]
 
     def _preprocess_image(self, image: "Image.Image") -> "NDArray[np.float32]":
         size = self.config.image_size
@@ -250,7 +270,8 @@ def setup_captioner_from_settings(app_settings: AppSettings, get_string: GetStri
             "CAPTION_PLACEMENT": app_settings.caption.placement,
         }
         captioner = Florence2Captioner(captioner_config, get_string=_get_string_internal,
-                                       intra_op_num_threads=app_settings.behavior.onnx_threads)
+                                       intra_op_num_threads=app_settings.behavior.onnx_threads,
+                                       onnx_device=app_settings.behavior.onnx_device)
         return captioner, settings_dict
     except Exception as e:
         log_dbg(f"Error during Captioner initialization: {type(e).__name__}: {e}")
