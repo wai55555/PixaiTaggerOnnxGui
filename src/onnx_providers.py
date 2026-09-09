@@ -52,6 +52,23 @@ def _resolve_ort(ort_module: Any):
     return ort if ort_module is _ORT_DEFAULT else ort_module
 
 
+def capi_dir(ort_module: Any = _ORT_DEFAULT) -> Path | None:
+    """onnxruntime パッケージの capi/ ディレクトリ（provider DLL の設置先）。
+
+    frozen ビルドでも `onnxruntime/__file__` は `_internal/onnxruntime/__init__.py` を
+    指すので、その隣の capi/ が得られる。onnxruntime が無い / 場所を特定できない
+    ときは None。
+    """
+    mod = _resolve_ort(ort_module)
+    path = getattr(mod, "__file__", None)
+    if not path:
+        return None
+    try:
+        return Path(path).resolve().parent / "capi"
+    except (OSError, ValueError):  # pragma: no cover - defensive
+        return None
+
+
 def _base_dir(base_dir: Path | None) -> Path:
     if base_dir is not None:
         return Path(base_dir)
@@ -67,12 +84,20 @@ def gpu_runtime_dir(base_dir: Path | None = None) -> Path:
     return _base_dir(base_dir) / GPU_RUNTIME_DIRNAME
 
 
-def gpu_runtime_ready(base_dir: Path | None = None) -> bool:
+def gpu_runtime_ready(base_dir: Path | None = None, *, ort_module: Any = _ORT_DEFAULT) -> bool:
     """gpu_runtime/ が「使える状態」か検証する。
 
-    gpu_runtime/manifest.json を読み、``required`` に挙がった各ファイル（gpu_runtime/
-    からの相対パス）が実在すれば True。JSON パース失敗・キー欠け・型違い・ファイル
-    欠けはすべて False（CLAUDE.md #2: is_file() だけで判断しない）。
+    gpu_runtime/manifest.json を読み、記載された各ファイルが実在すれば True。
+    JSON パース失敗・キー欠け・型違い・ファイル欠けはすべて False
+    （CLAUDE.md #2: is_file() だけで判断しない）。
+
+    対応する形式:
+      - {"files": [{"name": ..., "location": "gpu_runtime"|"capi", "sha256": ...}, ...]}
+        gpu_runtime_install が書き出す正式形式。location="capi" は onnxruntime の
+        capi/ ディレクトリ（provider DLL の設置先）を基準に解決する。
+      - {"required": ["a.dll", "b.dll", ...]}（旧形式・すべて gpu_runtime/ 直下）
+    起動ごとに走るので SHA-256 は取り直さない（存在確認のみ。ハッシュは
+    インストール時に検証済み）。
     """
     root = gpu_runtime_dir(base_dir)
     manifest = root / _MANIFEST_NAME
@@ -84,15 +109,38 @@ def gpu_runtime_ready(base_dir: Path | None = None) -> bool:
         return False
     if not isinstance(data, dict):
         return False
+
+    files = data.get("files")
+    if isinstance(files, list) and files:
+        capi = capi_dir(ort_module)
+        for entry in files:
+            if not isinstance(entry, dict):
+                return False
+            name = entry.get("name")
+            if not isinstance(name, str) or not name:
+                return False
+            location = entry.get("location", "gpu_runtime")
+            if location == "capi":
+                if capi is None:
+                    return False
+                target = capi / name
+            else:
+                target = root / name
+            try:
+                if not target.is_file():
+                    return False
+            except OSError:
+                return False
+        return True
+
     required = data.get("required")
     if not isinstance(required, list) or not required:
         return False
     for rel in required:
         if not isinstance(rel, str) or not rel:
             return False
-        target = root / rel
         try:
-            if not target.is_file():
+            if not (root / rel).is_file():
                 return False
         except OSError:
             return False
@@ -136,7 +184,7 @@ def resolve_providers(
     reasons: list[str] = []
     if "CUDAExecutionProvider" not in available:
         reasons.append("CUDAExecutionProvider not offered by this onnxruntime build")
-    if not gpu_runtime_ready(base_dir):
+    if not gpu_runtime_ready(base_dir, ort_module=ort_mod):
         reasons.append("gpu_runtime/ not present or incomplete")
 
     if not reasons:
@@ -192,10 +240,10 @@ def preload_gpu_dlls(base_dir: Path | None = None, ort_module: Any = _ORT_DEFAUL
     PATH 上の別バージョン cuDNN を掴む）。Phase 2 で startup から呼び出す。
     例外はすべて握って False（起動を止めない）。
     """
-    if not gpu_runtime_ready(base_dir):
+    ort_mod = _resolve_ort(ort_module)
+    if not gpu_runtime_ready(base_dir, ort_module=ort_mod):
         return False
     directory = str(gpu_runtime_dir(base_dir))
-    ort_mod = _resolve_ort(ort_module)
 
     ok = False
     add_dll_directory = getattr(os, "add_dll_directory", None)

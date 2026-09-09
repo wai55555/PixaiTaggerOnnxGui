@@ -13,7 +13,8 @@ from PySide6.QtWidgets import (
     QMainWindow, QWidget,
     QGridLayout, QLabel, QLineEdit, QPushButton,
     QSlider, QTextEdit, QFileDialog, QMessageBox, QDialog,
-    QStackedWidget, QApplication, QSplitter, QListWidgetItem, QComboBox, QButtonGroup
+    QStackedWidget, QApplication, QSplitter, QListWidgetItem, QComboBox, QButtonGroup,
+    QProgressDialog
 )
 from PySide6.QtGui import (
     QPixmap, QImage, QKeyEvent, QResizeEvent, QDragEnterEvent,
@@ -31,7 +32,7 @@ from tag_utils import load_tag_translation_map
 from tagging_core import ExistingFileMode, OverwriteDecision
 from custom_dialogs import ClickableLabel, ImageViewerDialog, CategoryTagSettingsDialog
 from grid_view_widget import GridViewWidget
-from workers import DownloaderWorker, TaggerThreadWorker, CaptionerThreadWorker, TagLoader, BulkTagWorker
+from workers import DownloaderWorker, TaggerThreadWorker, CaptionerThreadWorker, TagLoader, BulkTagWorker, GpuRuntimeDownloadWorker
 from vlm_worker import VlmCaptionWorker
 from locale_manager import LocaleManager
 from ui_main_window import Ui_MainWindow
@@ -175,6 +176,9 @@ class MainWindow(QMainWindow):
         self._vlm_settings_dialog = None
         self._download_thread: QThread | None = None
         self._downloader_worker: DownloaderWorker | None = None
+        self._gpu_dl_thread: QThread | None = None
+        self._gpu_dl_worker: GpuRuntimeDownloadWorker | None = None
+        self._gpu_dl_progress: QProgressDialog | None = None
         self._bulk_tag_thread: QThread | None = None
         self._bulk_tag_worker: BulkTagWorker | None = None
         self.tag_thread: QThread | None = None
@@ -261,6 +265,119 @@ class MainWindow(QMainWindow):
         # UI (no caption box / task selector), and the threshold sliders keep whatever
         # global value was last saved instead of the selected model's own defaults.
         self._model_mode.on_model_changed(self._current_model_entry())
+        self._maybe_prompt_gpu_setup()
+
+    def _maybe_prompt_gpu_setup(self):
+        """初回のみ、NVIDIA GPU が使えるビルドで GPU コンポーネント未整備なら、
+        「約1GB をダウンロードして GPU 推論を有効化しますか」を尋ねる。
+
+        3 択: ダウンロードする / 今はしない（次回また尋ねる）/ 使わない（次回から聞かない）。
+        後から気が変わった人は config.ini [Behavior] gpu_setup_prompt = ask で復活できる。
+        """
+        beh = self.settings.behavior
+        if beh.gpu_setup_prompt != "ask" or beh.onnx_device == "cpu":
+            return
+        if self._gpu_dl_thread and self._gpu_dl_thread.isRunning():
+            return
+        try:
+            import onnxruntime as ort
+            import onnx_providers
+            import gpu_runtime
+            if ort is None or "CUDAExecutionProvider" not in ort.get_available_providers():
+                return
+            if onnx_providers.gpu_runtime_ready():
+                return
+            spec = gpu_runtime.load_component_spec()
+        except Exception:
+            return
+        if spec is None:
+            return
+
+        gb = gpu_runtime.spec_total_bytes(spec) / (1024 ** 3)
+        size_txt = (f"{gb:.1f} GB" if gb >= 0.05
+                    else self.locale_manager.get_string("Gpu", "Prompt_Size_Unknown"))
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Question)
+        box.setWindowTitle(self.locale_manager.get_string("Gpu", "Prompt_Title"))
+        box.setText(self.locale_manager.get_string("Gpu", "Prompt_Body", size=size_txt))
+        dl_btn = box.addButton(self.locale_manager.get_string("Gpu", "Prompt_Download"),
+                               QMessageBox.ButtonRole.AcceptRole)
+        box.addButton(self.locale_manager.get_string("Gpu", "Prompt_Later"),
+                      QMessageBox.ButtonRole.RejectRole)
+        never_btn = box.addButton(self.locale_manager.get_string("Gpu", "Prompt_Never"),
+                                  QMessageBox.ButtonRole.DestructiveRole)
+        box.exec()
+        clicked = box.clickedButton()
+        if clicked is dl_btn:
+            self._start_gpu_runtime_download()
+        elif clicked is never_btn:
+            beh.gpu_setup_prompt = "dismissed"
+            self.save_current_config()
+
+    def _start_gpu_runtime_download(self):
+        if self._gpu_dl_thread and self._gpu_dl_thread.isRunning():
+            return
+        self.update_log(self.locale_manager.get_string("Gpu", "Download_Start"), "black")
+
+        progress = QProgressDialog(
+            self.locale_manager.get_string("Gpu", "Download_Progress_Label"),
+            self.locale_manager.get_string("Gpu", "Download_Cancel"), 0, 100, self)
+        progress.setWindowTitle(self.locale_manager.get_string("Gpu", "Prompt_Title"))
+        progress.setWindowModality(Qt.WindowModality.WindowModal)
+        progress.setAutoClose(False)
+        progress.setAutoReset(False)
+        progress.setMinimumDuration(0)
+        progress.canceled.connect(self._cancel_gpu_runtime_download)
+        self._gpu_dl_progress = progress
+
+        self._gpu_dl_thread = QThread()
+        self._gpu_dl_worker = GpuRuntimeDownloadWorker(self.locale_manager.get_string)
+        self._gpu_dl_worker.moveToThread(self._gpu_dl_thread)
+        self._gpu_dl_worker.log_message.connect(self.update_log)
+        self._gpu_dl_worker.progress_update.connect(self._on_gpu_runtime_progress)
+        self._gpu_dl_worker.download_finished.connect(self._on_gpu_runtime_finished)
+        self._gpu_dl_thread.started.connect(self._gpu_dl_worker.run_download)
+        self._gpu_dl_thread.start()
+        progress.show()
+
+    def _cancel_gpu_runtime_download(self):
+        if self._gpu_dl_worker:
+            self.update_log(self.locale_manager.get_string("Gpu", "Download_Cancelling"), "orange")
+            self._gpu_dl_worker.stop()
+
+    def _on_gpu_runtime_progress(self, percent: int, done_mb: float, total_mb: float):
+        if not self._gpu_dl_progress:
+            return
+        if total_mb > 0:
+            self._gpu_dl_progress.setRange(0, 100)
+            self._gpu_dl_progress.setValue(percent)
+            self._gpu_dl_progress.setLabelText(
+                self.locale_manager.get_string("Gpu", "Download_Progress_Detail",
+                                               done=f"{done_mb:.0f}", total=f"{total_mb:.0f}"))
+        else:
+            self._gpu_dl_progress.setRange(0, 0)  # indeterminate
+
+    def _on_gpu_runtime_finished(self, ok: bool):
+        if self._gpu_dl_progress:
+            self._gpu_dl_progress.close()
+            self._gpu_dl_progress = None
+        if self._gpu_dl_thread:
+            self._gpu_dl_thread.quit()
+            self._gpu_dl_thread.wait()
+            self._gpu_dl_thread.deleteLater()
+            self._gpu_dl_thread = None
+        if self._gpu_dl_worker:
+            self._gpu_dl_worker.deleteLater()
+            self._gpu_dl_worker = None
+        if self._is_shutting_down:
+            return
+        title = self.locale_manager.get_string("Gpu", "Prompt_Title")
+        if ok:
+            QMessageBox.information(self, title,
+                                   self.locale_manager.get_string("Gpu", "Download_Done_Restart"))
+        else:
+            QMessageBox.warning(self, title,
+                                self.locale_manager.get_string("Gpu", "Download_Failed"))
 
     def _apply_image_list_selection_style(self):
         """ダークモード時にファイルリストの選択色を見やすい色に上書きする。"""
@@ -911,6 +1028,7 @@ class MainWindow(QMainWindow):
 
         threads_to_stop: list[tuple[QThread | None, StoppableWorker | None]] = [ # type: ignore
             (self._download_thread, self._downloader_worker),
+            (self._gpu_dl_thread, self._gpu_dl_worker),
             (self._tagger_thread, self._tagger_worker),
             (self._bulk_tag_thread, self._bulk_tag_worker),
             (self.tag_thread, self.tag_worker)

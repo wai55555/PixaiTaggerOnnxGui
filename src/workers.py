@@ -389,6 +389,64 @@ class DownloaderWorker(QObject):
         self.download_finished.emit(all_success)
         write_debug_log(str(self.get_string("Workers", "DownloaderWorker_Download_Thread_Exit")), self.get_string)
 
+class GpuRuntimeDownloadWorker(QObject):
+    """任意ダウンロードの GPU コンポーネント（CUDA provider DLL ＋ NVIDIA ランタイム）を
+    取得する薄いワーカー。実処理は gpu_runtime.GpuRuntimeInstaller。"""
+
+    log_message = Signal(str, str)                 # message, color
+    progress_update = Signal(int, float, float)    # percent, done_mb, total_mb
+    download_finished = Signal(bool)               # success
+
+    _LEVEL_COLOR = {"info": "blue", "warn": "orange", "error": "red"}
+
+    def __init__(self, get_string: GetString | None = None):
+        super().__init__()
+        self.get_string: GetString = get_string if get_string else default_get_string_fallback
+        self._stop_event = threading.Event()
+
+    def stop(self):
+        write_debug_log(f"DEBUG: {type(self).__name__}.stop() called.")
+        self._stop_event.set()
+
+    def is_stopped(self) -> bool:
+        return self._stop_event.is_set()
+
+    def _on_progress(self, done: int, total: int) -> None:
+        if total > 0:
+            pct = max(0, min(100, int(done * 100 / total)))
+            self.progress_update.emit(pct, done / 1024 / 1024, total / 1024 / 1024)
+        else:
+            self.progress_update.emit(0, done / 1024 / 1024, 0.0)
+
+    def _on_log(self, message: str, level: str = "info") -> None:
+        write_debug_log(f"GpuRuntimeDownloadWorker: {message}")
+        self.log_message.emit(message, self._LEVEL_COLOR.get(level, "black"))
+
+    @Slot()
+    def run_download(self):
+        import gpu_runtime
+
+        spec = gpu_runtime.load_component_spec()
+        if spec is None:
+            self._on_log(self.get_string("Gpu", "Worker_NoSpec"), "error")
+            self.download_finished.emit(False)
+            return
+        installer = gpu_runtime.GpuRuntimeInstaller()
+        try:
+            ok = installer.install(spec, progress_cb=self._on_progress,
+                                   log_cb=self._on_log, stop_cb=self.is_stopped)
+        except Exception as exc:  # noqa: BLE001 - defensive; installer already guards
+            write_debug_log(f"GpuRuntimeDownloadWorker: unexpected {exc!r}")
+            ok = False
+        if ok:
+            self._on_log(self.get_string("Gpu", "Worker_Done"), "info")
+        elif self.is_stopped():
+            self._on_log(self.get_string("Gpu", "Worker_Stopped"), "warn")
+        else:
+            self._on_log(self.get_string("Gpu", "Worker_Failed"), "error")
+        self.download_finished.emit(ok)
+
+
 class TaggerThreadWorker(QObject):
     """Tagging Worker"""
     log_message = Signal(str, str)

@@ -84,6 +84,16 @@ def apply_dark_palette(app: QApplication) -> None:
 
 def main():
     """main entry point."""
+    # GPU コンポーネント（gpu_runtime/）が入っていれば、最初の InferenceSession より
+    # 前に CUDA/cuDNN DLL を明示ロードしておく（順序を誤るとシステム PATH 上の別
+    # バージョン cuDNN を掴む）。未整備なら無害な no-op。例外は内部で握られる。
+    try:
+        from onnx_providers import preload_gpu_dlls
+
+        preload_gpu_dlls()
+    except Exception:
+        pass
+
     app = QApplication(sys.argv)
 
     # colorScheme() が使えない環境向けのフォールバック判定は Fusion 適用前のプラット
