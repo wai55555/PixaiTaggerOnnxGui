@@ -28,7 +28,7 @@ GetString = Callable[..., str]
 _PROVIDERS = (
     "gemini", "openrouter", "cloudflare", "groq", "nvidia",
     # "mistral",  # Pixtralは内蔵キャプション経路として一時停止
-    "huggingface", "vercel", "openai", "anthropic",
+    "huggingface", "vercel", "openai", "anthropic", "xai",
     # "ovhcloud",  # 日本居住者環境で実機検証できるまで無効
 )
 _SECRET_REF = {
@@ -38,7 +38,7 @@ _SECRET_REF = {
     # "mistral": "vlm/mistral/api_key",  # 内蔵経路停止中
     "huggingface": "vlm/huggingface/api_token",
     "vercel": "vlm/vercel/api_key", "openai": "vlm/openai/api_key",
-    "anthropic": "vlm/anthropic/api_key",
+    "anthropic": "vlm/anthropic/api_key", "xai": "vlm/xai/api_key",
     # "ovhcloud": "vlm/ovhcloud/api_key",
 }
 

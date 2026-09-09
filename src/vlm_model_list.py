@@ -90,6 +90,10 @@ def _fetch_model_body(conn: VlmConnection, api_key: str | None,
     # Cloudflare Workers AI はモデル一覧が別パス（/ai/models/search）。
     if conn.provider_id == "cloudflare" and base.endswith("/ai/v1"):
         url = base[: -len("/v1")] + "/models/search"
+    elif conn.provider_id == "xai":
+        # xAI の /v1/models は OpenAI 互換の最小形。/v1/language-models なら
+        # input_modalities / output_modalities を返すので VLM 判定に使える。
+        url = f"{base}/language-models"
     else:
         url = f"{base}/models"
 
@@ -160,6 +164,21 @@ def _extract_catalog(body, provider_id: str) -> list[ModelCatalogEntry]:
                 out.append(_entry_from_row(provider_id, mid, metadata))
         return out
 
+    # xAI /v1/language-models: {"models": [{"id": "grok-4.6",
+    #   "input_modalities": ["text","image"], "output_modalities": ["text"], ...}]}
+    # （Gemini の models[].name とは別形式。id を持つ行だけをここで拾う。）
+    id_rows = body.get("models") if isinstance(body, dict) else None
+    if isinstance(id_rows, list) and any(
+            isinstance(row, dict) and str(row.get("id", "")).strip() for row in id_rows):
+        out = []
+        for row in id_rows:
+            if not isinstance(row, dict):
+                continue
+            mid = str(row.get("id", "")).strip()
+            if mid:
+                out.append(_entry_from_row(provider_id, mid, row))
+        return out
+
     # Cloudflare Workers AI: {"result": [{"name": "@cf/...", "task": ...}]}
     cf = body.get("result") if isinstance(body, dict) else None
     if isinstance(cf, list):
@@ -224,6 +243,12 @@ def _extract_ids(body) -> list[str]:
     rows = body.get("data") if isinstance(body, dict) else body
     if isinstance(rows, list) and any(isinstance(row, dict) and "id" in row for row in rows):
         return [str(r.get("id", "")).strip() for r in rows if r.get("id")]
+    # xAI /v1/language-models: {"models": [{"id": "grok-4.6", ...}]}
+    id_rows = body.get("models") if isinstance(body, dict) else None
+    if isinstance(id_rows, list) and any(
+            isinstance(r, dict) and str(r.get("id", "")).strip() for r in id_rows):
+        return [str(r.get("id", "")).strip() for r in id_rows
+                if isinstance(r, dict) and str(r.get("id", "")).strip()]
     # Cloudflare の非キャプションタスクを旧仕様どおり除外。
     cf = body.get("result") if isinstance(body, dict) else None
     if isinstance(cf, list) and cf and isinstance(cf[0], dict) and "name" in cf[0]:

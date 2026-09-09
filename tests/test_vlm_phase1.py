@@ -835,7 +835,7 @@ def test_user_defined_profiles():
     old = CFG.VLM_PROFILES_PATH
     CFG.VLM_PROFILES_PATH = Path(tempfile.mkdtemp()) / "vp.json"
     try:
-        assert len(CFG.all_profiles()) == 20 and not CFG.is_user_profile("x")
+        assert len(CFG.all_profiles()) == 22 and not CFG.is_user_profile("x")
 
         CFG.save_user_profiles([{
             "profile_id": "user-g3", "display_name": "My Gemma 3 27B",
@@ -887,7 +887,7 @@ def test_user_defined_profiles():
         ])
         aps = {p.profile_id: p for p in CFG.all_profiles()}
         assert aps["gemma-4-26b-a4b-it"].display_name == "Gemma (mine)"
-        assert len(CFG.all_profiles()) == 21  # 20 shipped (one overridden in place) + user-g3
+        assert len(CFG.all_profiles()) == 23  # 22 shipped (one overridden in place) + user-g3
     finally:
         CFG.VLM_PROFILES_PATH = old
     print("  user-defined profiles: json round-trip, merge, same-id override: OK")

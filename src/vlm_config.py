@@ -387,7 +387,7 @@ def mark_binding_verified(vlm_settings, provider_id: str, *, profile_id: str | N
 
 KNOWN_BUILTIN_PROVIDERS = (
     "gemini", "nvidia", "openrouter", "cloudflare", "groq",
-    "huggingface", "vercel", "openai", "anthropic",
+    "huggingface", "vercel", "openai", "anthropic", "xai",
     # "ovhcloud",  # 日本居住者環境で実機検証できるまで無効
 )
 

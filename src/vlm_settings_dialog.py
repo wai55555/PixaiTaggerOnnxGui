@@ -120,6 +120,11 @@ _PROVIDER_KEY_INFO = {
         "login_url": "https://console.anthropic.com/",
         "instructions_key": "ApiKey_Steps_Anthropic",
     },
+    "xai": {
+        "key_url": "https://console.x.ai/team/default/api-keys",
+        "login_url": "https://console.x.ai/",
+        "instructions_key": "ApiKey_Steps_Xai",
+    },
     # OVHcloud は日本居住者環境で実機検証できるまで無効。
     # "ovhcloud": {
     #     "key_url": "https://www.ovh.com/manager/#/public-cloud/",

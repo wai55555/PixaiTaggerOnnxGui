@@ -469,6 +469,31 @@ CLAUDE_HAIKU_4_5 = VlmModelProfile(
     },
 )
 
+def _grok_profile(profile_id: str, display_name: str, model_id: str, *,
+                  family: str) -> VlmModelProfile:
+    """xAI Grok の公式モデルIDを、xAI 直接APIの経路へ束ねる。
+
+    Grok は現在 xAI 直販のみを内蔵経路にする（OpenRouter 等の同一モデル ID は
+    利用者がプロファイルエディタで実在確認のうえ追加できる）。
+    """
+    return VlmModelProfile(
+        profile_id=profile_id,
+        display_name=display_name,
+        canonical_model_id=model_id,
+        family=family,
+        base_model=model_id,
+        revision="provider_managed",
+        quantization="provider_managed",
+        aliases=(profile_id, f"x-ai/{model_id}", f"xai/{model_id}"),
+        bindings={
+            "xai": ModelBinding("xai", model_id, ModelIdentityStatus.DECLARED),
+        },
+    )
+
+
+GROK_4_6 = _grok_profile("grok-4-6", "Grok 4.6", "grok-4.6", family="Grok 4.6")
+GROK_4_3 = _grok_profile("grok-4-3", "Grok 4.3", "grok-4.3", family="Grok 4.3")
+
 _ALL_PROFILES = [
     GEMMA_4_26B_A4B_IT, GEMMA_4_31B_IT, QWEN3_8_27B, QWEN3_6_27B,
     OPENAI_GPT_4O, OPENAI_GPT_4O_MINI,
@@ -476,6 +501,7 @@ _ALL_PROFILES = [
     CLAUDE_FABLE_5_1, CLAUDE_FABLE_5, CLAUDE_OPUS_5,
     CLAUDE_OPUS_4_8, CLAUDE_OPUS_4_7, CLAUDE_OPUS_4_6, CLAUDE_OPUS_4_5,
     CLAUDE_SONNET_5, CLAUDE_SONNET_4_6, CLAUDE_SONNET_4_5, CLAUDE_HAIKU_4_5,
+    GROK_4_6, GROK_4_3,
 ]
 
 
@@ -557,6 +583,15 @@ _KNOWN_NON_VISION_MODEL_IDS = {
         "compound-beta-mini",
         "groq/compound-beta",
         "groq/compound-beta-mini",
+    }),
+    # xAI: grok-3 / grok-2 の素体はテキスト専用。grok-build / grok-code は
+    # コーディング特化でキャプション経路には使わない。
+    "xai": frozenset({
+        "grok-3", "grok-3-latest", "grok-3-fast", "grok-3-fast-latest",
+        "grok-3-mini", "grok-3-mini-latest", "grok-3-mini-fast", "grok-3-mini-fast-latest",
+        "grok-2", "grok-2-latest", "grok-2-1212",
+        "grok-beta",
+        "grok-build-0.1", "grok-code-fast-1",
     }),
 }
 
@@ -658,6 +693,19 @@ _KNOWN_VISION_MODEL_IDS = {
         "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",
         "nvidia/neva-22b",
         "nvidia/vila",
+    }),
+    # xAI Grok。/v1/language-models の input_modalities が本来の判定材料で、
+    # ここはメタデータを取れないとき（旧 /v1/models、カスタム接続等）の保険。
+    "xai": frozenset({
+        "grok-4.6", "grok-4.5", "grok-4.3",
+        "grok-4.20-0309-reasoning", "grok-4.20-0309-non-reasoning",
+        "grok-4.20-multi-agent-0309",
+        "grok-4", "grok-4-latest", "grok-4-0709",
+        "grok-4-fast", "grok-4-fast-reasoning", "grok-4-fast-non-reasoning",
+        "grok-4-1-fast", "grok-4.1-fast",
+        "grok-2-vision", "grok-2-vision-latest", "grok-2-vision-1212",
+        "grok-vision-beta",
+        "latest",
     }),
     # Mistral/Pixtral: VLMは存在するが、内蔵キャプション経路としては一時停止。
     # "mistral": frozenset({
@@ -787,6 +835,14 @@ def _static_model_capability(provider_id: str, model_id: str) -> tuple[bool | No
         if low in {"meta-llama/llama-4-scout-17b-16e-instruct", "qwen/qwen3.6-27b",
                    "qwen/qwen3.8-27b"}:
             return True, "Groq vision documentation"
+    elif provider == "xai":
+        if "vision" in low:
+            return True, "xAI Grok vision model"
+        # grok-4 系（grok-4.6 / grok-4.3 / grok-4-fast など）は入力マルチモーダル。
+        # grok-3 / grok-2 素体、grok-build / grok-code はテキスト専用。
+        if re.match(r"grok-4(?:[.\-]|$)", low) and not any(
+                x in low for x in ("code", "build")):
+            return True, "xAI Grok 4 family documentation"
     return None, "capability not declared by provider"
 
 

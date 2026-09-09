@@ -346,6 +346,19 @@ BUILTIN_CONNECTION_TEMPLATES: list[dict] = [
         "auth": {"type": "header_key", "header_name": "x-api-key",
                  "secret_ref": "vlm/anthropic/api_key"},
     },
+    {
+        # xAI は 2026 時点で /v1/chat/completions を非推奨化し Responses API へ寄せている。
+        # OpenAI Responses と同形（instructions / input[].content の input_text・
+        # input_image(文字列 data URL) / max_output_tokens / output[0].content[0].text）。
+        "connection_id": "builtin-xai",
+        "display_name": "xAI Grok",
+        "kind": "builtin",
+        "provider_id": "xai",
+        "protocol": "openai_responses",
+        "base_url": "https://api.x.ai/v1",
+        "model_id": "",
+        "auth": {"type": "bearer", "secret_ref": "vlm/xai/api_key"},
+    },
     # OVHcloud は日本居住者によるアカウント作成・実機検証ができなかったため無効化。
     # 対応地域の利用者が接続確認できるまで、内蔵経路として UI へ公開しない。
     # {
