@@ -54,11 +54,23 @@ def test_use_vlm_toggle_surfaces_ui_and_hides_tag_grid():
     assert w.tag_grid_container.isHidden()
     assert w.task_combo.isHidden(), "Florence-2 task combo is irrelevant for VLM"
     assert not w.caption_placement_widget.isHidden()
+    # tagger-only bulk edit + threshold sliders collapse as one block; the shared
+    # run block (placement / modes / Run) stays.
+    assert w.tagger_config_block.isHidden()
+    assert not w.shared_run_block.isHidden()
+    assert not w.run_button.isHidden()
+    assert w._last_text_ui is True  # _rebalance_right_splitter ran for the switch
+    # the tag-panel bottom spacer is killed so caption_text_edit fills the panel
+    assert w._tag_panel_layout.stretch(w._tag_panel_bottom_spacer_index) == 0
 
     w.use_vlm_check.setChecked(False)
     _APP.processEvents()
     assert w.settings.vlm.enabled is False
     assert not w.tag_grid_container.isHidden()
+    assert not w.tagger_config_block.isHidden()
+    assert w._last_text_ui is False
+    # spacer active again -> tagger widgets top-packed
+    assert w._tag_panel_layout.stretch(w._tag_panel_bottom_spacer_index) == 1
     w.close()
     print("  Use-VLM toggle surfaces VLM UI, hides tag grid, restores on off: OK")
 

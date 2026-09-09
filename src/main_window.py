@@ -121,6 +121,9 @@ class MainWindow(QMainWindow):
     redo_button: QPushButton
     bulk_delete_group: QWidget
     bulk_add_group: QWidget
+    tagger_config_block: QWidget
+    shared_run_block: QWidget
+    category_settings_button: QPushButton
 
     # --- Signals ---
     request_overwrite_check = Signal(str, str)
@@ -218,6 +221,9 @@ class MainWindow(QMainWindow):
         # False while a download/tagging run holds the UI lock; consulted by
         # _update_undo_redo_buttons so a mid-run action push cannot re-enable Undo.
         self._controls_enabled: bool = True
+        # 直近に適用した text_ui（captioner / VLM）状態。None は未適用。
+        # _rebalance_right_splitter がモード切替時だけ縦割当を組み替えるための差分基準。
+        self._last_text_ui: bool | None = None
         self._category_settings_dialog: QDialog | None = None
         self._image_viewer_dialog: ImageViewerDialog | None = None
         
@@ -877,6 +883,25 @@ class MainWindow(QMainWindow):
         self.add_tag_button_append.setEnabled(enabled)
         self.add_tag_line.setEnabled(enabled)
         self.add_tag_line_append.setEnabled(enabled)
+
+    def _rebalance_right_splitter(self, text_ui: bool) -> None:
+        """モデル種別／VLM トグルで text_ui（captioner / VLM）が変わったときだけ、右パネルの
+        縦スプリッターの割当を組み替える。毎回呼んでも実際に切り替わったときしか動かないので、
+        利用者が手でドラッグしたサイズを踏み潰さない。サイズ定数は constants に集約
+        （ui_main_window の初期 setSizes と同じ出所）。"""
+        if text_ui == self._last_text_ui:
+            return
+        self._last_text_ui = text_ui
+        sp = getattr(self, "right_vertical_splitter", None)
+        if sp is None:
+            return
+        if text_ui:
+            # section[1] は shared_run_block の高さに固定し、伸縮は viewer(0) と log(2) が受ける。
+            sp.setStretchFactor(1, 0)
+            sp.setSizes(constants.RIGHT_SPLIT_TEXT)
+        else:
+            sp.setStretchFactor(1, 2)
+            sp.setSizes(constants.RIGHT_SPLIT_TAGGER)
 
     def closeEvent(self, event: QCloseEvent):
         """Handles the window closing event to save settings and stop threads gracefully."""
