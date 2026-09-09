@@ -115,6 +115,12 @@ _URL_QUERY_RE = re.compile(r"((?:https?://|/)[^\s'\"]*?)\?[^\s'\"]*")
 _URL_USERINFO_RE = re.compile(r"(https?://)[^/\s'\"@]+@")
 # `?foo=VALUE` / `&foo=VALUE` の値部分を伏せる（キー名は問わない。クエリ文脈のみ）。
 _SECRET_PARAM_RE = re.compile(r"([?&][A-Za-z0-9_.\-]{1,40}=)[^\s&'\"]+")
+# `Bearer <token>` のトークン部を伏せる（この接頭辞がある文脈だけ。パスは壊さない）。
+_BEARER_RE = re.compile(r"([Bb]earer\s+)[^\s'\",;)}\]]+")
+# 認証系ヘッダー名 ": value" / "= value" の値を伏せる（ヘッダー文脈だけ）。
+_AUTH_HEADER_RE = re.compile(
+    r"(?i)\b(authorization|x-api-key|x-goog-api-key|api[-_]?key|api[-_]?token"
+    r"|anthropic-workspace-id)(['\"]?\s*[:=]\s*['\"]?)([^\s'\",;)}\]]+)")
 
 
 def _scrub_exc(exc: Exception) -> str:
@@ -122,13 +128,16 @@ def _scrub_exc(exc: Exception) -> str:
 
     query_key 認証では API キーが URL のクエリ文字列に載り、requests の例外文言
     （"... with url: /v1/chat?key=SECRET ..." など。相対パスのこともある）へそのまま
-    現れる。ホスト名・パスは診断に役立つので残し、クエリ文脈（`?`/`&` 以降）と URL の
-    userinfo だけを伏せる。任意部分文字列の置換はパス情報まで壊すので行わない。
+    現れる。ホスト名・パスは診断に役立つので残し、クエリ文脈（`?`/`&` 以降）・URL の
+    userinfo・`Bearer <token>`・認証系ヘッダーの値だけを伏せる（いずれも文脈が明確な
+    箇所のみ。任意部分文字列の置換はパス情報まで壊すので行わない）。
     """
     text = " ".join(str(exc).split())
     text = _URL_USERINFO_RE.sub(r"\1<redacted>@", text)
     text = _URL_QUERY_RE.sub(r"\1?<redacted>", text)
     text = _SECRET_PARAM_RE.sub(r"\1<redacted>", text)
+    text = _BEARER_RE.sub(r"\1<redacted>", text)
+    text = _AUTH_HEADER_RE.sub(r"\1\2<redacted>", text)
     return text[:300]
 
 

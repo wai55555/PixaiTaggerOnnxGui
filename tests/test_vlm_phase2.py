@@ -244,6 +244,36 @@ def test_transport_applies_header_and_query_auth():
     print("  transport auth routing (header_key / query_key / bearer): OK")
 
 
+def test_scrub_exc_redacts_credentials_but_keeps_path():
+    scrub = T._scrub_exc
+
+    class E(Exception):
+        pass
+
+    # query-key credential in the URL (any param name), relative or absolute
+    m = scrub(E("HTTPSConnectionPool(host='api.x.com') Max retries exceeded with "
+                "url: /openai/v1/chat/completions?weirdkey=sk-SECRET123&x=1 (Caused by ...)"))
+    assert "sk-SECRET123" not in m
+    assert "/openai/v1/chat/completions" in m  # path kept for diagnostics
+
+    # invalid / echoed bearer key in a generic RequestException message
+    m2 = scrub(E("request failed: 401 for Authorization: Bearer xai-BADKEY-abcdef123"))
+    assert "xai-BADKEY-abcdef123" not in m2
+
+    # custom auth header value
+    m3 = scrub(E("ConnectionError sending X-Api-Key: my-Sekret_Value.9 to host"))
+    assert "my-Sekret_Value.9" not in m3
+
+    # URL userinfo
+    m4 = scrub(E("ProxyError: https://user:p%40ss@proxy.local:8080 unreachable"))
+    assert "p%40ss" not in m4 and "user:" not in m4
+
+    # nothing sensitive -> unchanged host/path text survives
+    m5 = scrub(E("could not resolve host api.groq.com"))
+    assert m5 == "could not resolve host api.groq.com"
+    print("  _scrub_exc redaction (query / bearer / header / userinfo): OK")
+
+
 def test_stop_job_on_prompt_format_error():
     conns = {"a": _conn("a"), "b": _conn("b")}
     # 400 with a prompt/format style error -> BAD_RESPONSE -> failover normally.

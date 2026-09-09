@@ -302,6 +302,21 @@ def test_atomic_save():
     out4 = PERS.save_caption(p3, "same", "OVERWRITE")
     assert not out4.written and out4.skipped_reason == "no_change"
 
+    # CRLF の既存 .txt は APPEND しても改行規約を保持する（黙って LF 化しない）。
+    # undo スナップショットは LF 正規化して返す。
+    p5 = d / "img5.txt"
+    p5.write_bytes(b"1girl, solo\r\ntag2\r\n")
+    out5 = PERS.save_caption(p5, "a fresh natural caption", "APPEND")
+    assert out5.written
+    disk = p5.read_bytes()
+    assert b"\r\n" in disk and b"\r\r\n" not in disk
+    assert disk == b"1girl, solo\r\ntag2\r\na fresh natural caption"
+    assert "\r" not in (out5.previous_content or "")  # LF snapshot for undo
+    assert "\r" not in out5.new_content
+    # 同じキャプションの再 APPEND は CRLF ファイルでも重複として弾く
+    out5b = PERS.save_caption(p5, "a fresh natural caption", "APPEND")
+    assert not out5b.written and out5b.skipped_reason == "duplicate"
+
     # no leftover temp files
     assert not list(d.glob("*.vlmtmp"))
 

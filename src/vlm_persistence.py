@@ -98,15 +98,17 @@ def save_caption(output_path: Path, caption: str, placement: str) -> SaveOutcome
         raise ValueError("empty caption")
 
     previous_content: str | None = None
+    # 既存ファイルの改行コード。書き出し時にこの規約へ戻し、CRLF の .txt が APPEND で
+    # 黙って LF 化されるのを防ぐ。undo スナップショット（previous_content / new_content）は
+    # LF 正規化して持ち、_FileSnapshotAction._write（newline=None）の書き戻し翻訳と整合させる。
+    output_newline = "\n"
     fs_output_path = Path(_long_path_str(output_path))
     if fs_output_path.is_file():
         # 読めない既存ファイルは新規扱いにしない（undo での破壊防止。PR#16 と同方針）。
-        # universal newlines で読む（LF スナップショット）。undo 復元は
-        # _FileSnapshotAction._write が newline=None で書くため、Windows では書き戻し時に
-        # \n→\r\n へ変換され CRLF の元ファイルへ byte 一致で戻る。生の CRLF を保持すると
-        # 復元時に \r\r\n へ二重変換されて壊れる。CRLF の重複判定は
-        # caption_already_present 側で改行を正規化して比較するので取りこぼさない。
-        previous_content = fs_output_path.read_text(encoding="utf-8")
+        with open(_long_path_str(output_path), "r", encoding="utf-8", newline="") as f:
+            raw_previous = f.read()
+        output_newline = "\r\n" if "\r\n" in raw_previous else "\n"
+        previous_content = raw_previous.replace("\r\n", "\n").replace("\r", "\n")
 
     if placement in ("APPEND", "PREPEND") and previous_content is not None:
         if caption_already_present(previous_content, caption):
@@ -118,24 +120,26 @@ def save_caption(output_path: Path, caption: str, placement: str) -> SaveOutcome
         return SaveOutcome(False, output_path, previous_content, previous_content,
                            skipped_reason="no_change")
 
-    _atomic_write(output_path, new_content)
+    _atomic_write(output_path, new_content, newline=output_newline)
     return SaveOutcome(True, output_path, previous_content, new_content)
 
 
-def _atomic_write(output_path: Path, content: str) -> None:
+def _atomic_write(output_path: Path, content: str, *, newline: str = "\n") -> None:
+    """`content`（LF 前提）を `newline` 規約で原子的に書く。検証は改行を正規化して比較する。"""
     os.makedirs(_long_path_str(output_path.parent), exist_ok=True)
     tmp = output_path.with_name(f"{output_path.stem}.{uuid.uuid4().hex}.vlmtmp")
     long_tmp = _long_path_str(tmp)
     try:
-        with open(long_tmp, "w", encoding="utf-8", newline="\n") as f:
+        with open(long_tmp, "w", encoding="utf-8", newline=newline) as f:
             f.write(content)
             f.flush()
             os.fsync(f.fileno())
-        # 検証: 書いた内容が読み直せて一致するか。newline="" で改行変換を無効化する
-        # （universal newlines だと content に \r\n が含まれる場合に誤って不一致になる）。
+        # 検証: 書いた内容が読み直せて一致するか。newline="" で生読みし、書き出し時の
+        # 改行変換ぶんを正規化してから比較する。
         with open(long_tmp, "r", encoding="utf-8", newline="") as f:
-            if f.read() != content:
-                raise OSError("verification mismatch after write")
+            written = f.read()
+        if written.replace("\r\n", "\n").replace("\r", "\n") != content:
+            raise OSError("verification mismatch after write")
         os.replace(_long_path_str(tmp), _long_path_str(output_path))
     finally:
         try:
