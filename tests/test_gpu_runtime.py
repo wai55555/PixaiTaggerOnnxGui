@@ -288,6 +288,27 @@ def test_ready_files_form_missing_capi_file(tmp_path):
     assert OP.gpu_runtime_ready(tmp_path, ort_module=_fake_ort(tmp_path)) is False
 
 
+def test_wheel_member_capi_location(tmp_path):
+    """A wheels entry may route a member to capi/ (used for onnxruntime_providers_cuda.dll)."""
+    spec = _spec()
+    spec["direct"] = []
+    spec["wheels"][0]["members"] = [
+        {"arcname": "nvidia/cudnn/bin/cudnn64_9.dll", "name": "onnxruntime_providers_cuda.dll",
+         "location": "capi"}]
+    assert _installer(tmp_path).install(spec) is True
+    assert (tmp_path / "onnxruntime" / "capi" / "onnxruntime_providers_cuda.dll").is_file()
+    m = json.loads((tmp_path / OP.GPU_RUNTIME_DIRNAME / "manifest.json").read_text())
+    assert m["files"][0]["location"] == "capi"
+    assert OP.gpu_runtime_ready(tmp_path, ort_module=_fake_ort(tmp_path)) is True
+
+
+def test_wheel_member_bad_location_aborts(tmp_path):
+    spec = _spec()
+    spec["wheels"][0]["members"][0]["location"] = "somewhere_else"
+    assert _installer(tmp_path).install(spec) is False
+    _assert_not_ready(tmp_path)
+
+
 def test_ready_files_form_all_present(tmp_path):
     root = tmp_path / OP.GPU_RUNTIME_DIRNAME
     root.mkdir(parents=True)

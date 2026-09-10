@@ -17,6 +17,7 @@ gpu_runtime.GpuRuntimeInstaller、起動時の preload 呼び出しは pixai_tag
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import sys
@@ -184,7 +185,12 @@ def resolve_providers(
     reasons: list[str] = []
     if "CUDAExecutionProvider" not in available:
         reasons.append("CUDAExecutionProvider not offered by this onnxruntime build")
-    if not gpu_runtime_ready(base_dir, ort_module=ort_mod):
+    # gpu_runtime_ready() は「凍結 exe が自前 DL した CUDA/cuDNN が揃っているか」。
+    # onnx_device="cuda" は利用者が自分で CUDA を用意した宣言（例: pip install
+    # onnxruntime-gpu + nvidia-*）なので、このゲートは課さず素直に CUDA を試す
+    # （駄目なら make_session が CPU へフォールバックし warning を残す）。
+    # "auto" は既定なので保守的に、DL 済みのときだけ opt-in する。
+    if device != "cuda" and not gpu_runtime_ready(base_dir, ort_module=ort_mod):
         reasons.append("gpu_runtime/ not present or incomplete")
 
     if not reasons:
@@ -234,34 +240,49 @@ def make_session(
 
 
 def preload_gpu_dlls(base_dir: Path | None = None, ort_module: Any = _ORT_DEFAULT) -> bool:
-    """gpu_runtime/ が揃っていれば CUDA/cuDNN の DLL を明示ロードする。
+    """CUDA/cuDNN の DLL を最初の InferenceSession より前にロードする。
 
     最初の InferenceSession 生成より前に一度だけ呼ぶこと（順序を誤るとシステム
-    PATH 上の別バージョン cuDNN を掴む）。Phase 2 で startup から呼び出す。
-    例外はすべて握って False（起動を止めない）。
+    PATH 上の別バージョン cuDNN を掴む）。`main()` の冒頭で呼ぶ。
+
+    - `gpu_runtime/` が揃っていれば（＝凍結 exe が自前 DL 済み）そこからロード。
+    - 揃っていなければ、pip で入れた `nvidia-*` wheel（ソース実行の開発者向け）を
+      `ort.preload_dlls()` 既定探索で拾う。凍結 exe で未 DL の場合はどちらも
+      no-op（`resolve_providers("auto")` が CPU を返すので実害なし）。
+    例外はすべて握って返り値で表現（起動は止めない）。
     """
     ort_mod = _resolve_ort(ort_module)
-    if not gpu_runtime_ready(base_dir, ort_module=ort_mod):
-        return False
-    directory = str(gpu_runtime_dir(base_dir))
-
-    ok = False
-    add_dll_directory = getattr(os, "add_dll_directory", None)
-    if callable(add_dll_directory) and sys.platform.startswith("win"):
-        try:
-            add_dll_directory(directory)
-            ok = True
-        except OSError as exc:
-            log_dbg(f"preload_gpu_dlls: add_dll_directory failed ({exc!r})")
-
     preload = getattr(ort_mod, "preload_dlls", None) if ort_mod is not None else None
-    if callable(preload):
+    if not callable(preload):
+        return False
+
+    if gpu_runtime_ready(base_dir, ort_module=ort_mod):
+        directory = str(gpu_runtime_dir(base_dir))
+        add_dll_directory = getattr(os, "add_dll_directory", None)
+        if callable(add_dll_directory) and sys.platform.startswith("win"):
+            try:
+                add_dll_directory(directory)
+            except OSError as exc:
+                log_dbg(f"preload_gpu_dlls: add_dll_directory failed ({exc!r})")
         try:
             preload(cuda=True, cudnn=True, directory=directory)
-            ok = True
+            log_dbg(f"preload_gpu_dlls: loaded GPU runtime DLLs from {directory}")
+            return True
         except Exception as exc:  # noqa: BLE001 - ORT raises assorted types here
-            log_dbg(f"preload_gpu_dlls: ort.preload_dlls failed ({exc!r})")
+            log_dbg(f"preload_gpu_dlls: ort.preload_dlls(directory=...) failed ({exc!r})")
+            return False
 
-    if ok:
-        log_dbg(f"preload_gpu_dlls: loaded GPU runtime DLLs from {directory}")
-    return ok
+    # Only fall through to the default search when the pip nvidia-* wheels are
+    # actually present (they create the `nvidia` namespace package). Otherwise
+    # ort.preload_dlls() prints a wall of "Failed to load cudnn64_9.dll ... Please
+    # follow ... install CUDA" to stderr on every launch of a plain
+    # `pip install onnxruntime-gpu` env, which is just CPU-mode noise.
+    if importlib.util.find_spec("nvidia") is None:
+        return False
+    try:
+        preload(cuda=True, cudnn=True)
+        log_dbg("preload_gpu_dlls: preloaded CUDA/cuDNN from the default search (pip nvidia-* wheels)")
+        return True
+    except Exception as exc:  # noqa: BLE001
+        log_dbg(f"preload_gpu_dlls: default ort.preload_dlls() failed ({exc!r})")
+        return False

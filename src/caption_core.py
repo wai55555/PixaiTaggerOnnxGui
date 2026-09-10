@@ -13,7 +13,6 @@ from tagging_core import (
     _normalize_np_chw, BASE_DIR, ExistingFileMode, FileChange, OverwriteDecision,
     make_cpu_session_options, parse_existing_file_mode,
 )
-from onnx_providers import CPU_ONLY, resolve_providers
 
 if TYPE_CHECKING:
     import numpy as np
@@ -126,25 +125,19 @@ class Florence2Captioner:
         log_dbg(self.get_string("CaptionCore", "Info_Sessions_Loaded"))
 
     def _load_sessions(self, paths: list[Path], sess_options, onnx_device: str) -> list:
-        """4 つの ONNX セッションを全部同じ EP で開く。
+        """Florence-2 の 4 セッションは CPU 固定（onnx_device は現状無視）。
 
-        デコード中はテンソルが 4 セッション間を流れるので、一部だけ GPU にすると
-        CPU<->GPU コピーが増えて逆に遅くなる。よって「CUDA を要求 → 1 つでも失敗 →
-        4 つとも CPU で開き直す」。onnx_device が CPU に解決される場合は最初から
-        CPU 4 本（この機能が入る前とバイト等価）。
+        Phase 4 実測（RTX 4070 / onnxruntime-gpu 1.23.2 / 2026-09-10）で、量子化(int8)の
+        Florence-2 を CUDA EP に載せると **CPU より約4倍遅い**（CPU 1.7s / CUDA 6.9s、
+        1キャプション）。原因は (1) int8 グラフに CUDA が対応できず大量の Memcpy ノードが
+        挿入される（ORT 警告 "455 Memcpy nodes are added ..."）、(2) greedy 自己回帰
+        デコードは 1 トークンごとの小さなカーネル起動で、GPU の起動オーバーヘッドが支配的。
+        タガー（単発の重い畳み込み）は逆に CUDA で ~28倍速いので、そちらだけ GPU にする。
+        非量子化(fp16)の Florence エクスポートを採用したら onnx_device を効かせる余地あり。
         """
-        providers = resolve_providers(onnx_device)
-        if providers != list(CPU_ONLY):
-            try:
-                sessions = [ort.InferenceSession(str(p), sess_options=sess_options, providers=providers)
-                            for p in paths]
-                active = sessions[0].get_providers()[0] if sessions else "?"
-                log_dbg(f"Florence2Captioner: 4 sessions on {active}")
-                return sessions
-            except Exception as exc:  # noqa: BLE001 - ORT raises assorted types
-                log_dbg(f"Florence2Captioner: {providers} session load failed ({exc!r}); retrying all on CPU")
-        return [ort.InferenceSession(str(p), sess_options=sess_options, providers=list(CPU_ONLY))
-                for p in paths]
+        del onnx_device  # 明示的に未使用（fp16 エクスポート採用時に復活させる）
+        return [ort.InferenceSession(str(p), sess_options=sess_options,
+                                     providers=["CPUExecutionProvider"]) for p in paths]
 
     def _preprocess_image(self, image: "Image.Image") -> "NDArray[np.float32]":
         size = self.config.image_size

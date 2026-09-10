@@ -109,6 +109,16 @@ def test_cuda_prefer_happy_path_no_warning(tmp_path, caplog_dbg):
     assert not any("onnx_device=cuda" in m for m in caplog_dbg)
 
 
+def test_cuda_prefer_bypasses_gpu_runtime_gate(tmp_path, caplog_dbg):
+    # onnx_device=cuda = "I set up CUDA myself"; use it even without the app's
+    # own downloaded gpu_runtime/ (make_session still falls back if it can't init).
+    ort = _FakeOrt(available=("CUDAExecutionProvider", "CPUExecutionProvider"))
+    assert OP.resolve_providers("cuda", ort_module=ort, base_dir=tmp_path) == OP.CUDA_THEN_CPU
+    assert not any("onnx_device=cuda" in m for m in caplog_dbg)
+    # "auto" without gpu_runtime still stays on CPU
+    assert OP.resolve_providers("auto", ort_module=ort, base_dir=tmp_path) == OP.CPU_ONLY
+
+
 def test_invalid_prefer_is_auto(tmp_path):
     _make_gpu_runtime(tmp_path)
     ort = _FakeOrt(available=("CUDAExecutionProvider", "CPUExecutionProvider"))
@@ -188,6 +198,36 @@ def test_make_session_without_ort_raises(tmp_path):
 
 def test_preload_noop_without_runtime(tmp_path):
     assert OP.preload_gpu_dlls(base_dir=tmp_path, ort_module=None) is False
+
+
+def test_preload_falls_back_to_default_search_when_nvidia_wheels_present(tmp_path, monkeypatch):
+    """No gpu_runtime/ but pip nvidia-* wheels installed -> preload from default search."""
+    seen = {}
+
+    class _Ort:
+        def preload_dlls(self, cuda=False, cudnn=False, directory=None):
+            seen.update(cuda=cuda, cudnn=cudnn, directory=directory)
+
+    monkeypatch.setattr(OP, "log_dbg", lambda *a, **k: None)
+    monkeypatch.setattr("importlib.util.find_spec",
+                        lambda name, *a, **k: object() if name == "nvidia" else None)
+    assert OP.preload_gpu_dlls(base_dir=tmp_path, ort_module=_Ort()) is True
+    assert seen == {"cuda": True, "cudnn": True, "directory": None}
+
+
+def test_preload_stays_quiet_without_gpu_runtime_or_nvidia_wheels(tmp_path, monkeypatch):
+    """Plain `pip install onnxruntime-gpu` env: no gpu_runtime/, no nvidia wheels ->
+    do NOT call ort.preload_dlls() (it would spew "install CUDA" noise to stderr)."""
+    called = []
+
+    class _Ort:
+        def preload_dlls(self, **kw):
+            called.append(kw)
+
+    monkeypatch.setattr(OP, "log_dbg", lambda *a, **k: None)
+    monkeypatch.setattr("importlib.util.find_spec", lambda name, *a, **k: None)
+    assert OP.preload_gpu_dlls(base_dir=tmp_path, ort_module=_Ort()) is False
+    assert called == []
 
 
 def test_preload_invokes_ort_preload_when_ready(tmp_path, monkeypatch):

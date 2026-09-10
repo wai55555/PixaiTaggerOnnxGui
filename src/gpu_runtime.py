@@ -256,12 +256,15 @@ class GpuRuntimeInstaller:
                     raise GpuRuntimeError("wheel member needs arcname")
                 if "/" in out_name or "\\" in out_name or out_name in ("", ".", ".."):
                     raise GpuRuntimeError(f"unsafe member name {out_name!r}")
+                location = member.get("location", "gpu_runtime")
+                if location not in ("gpu_runtime", "capi"):
+                    raise GpuRuntimeError(f"unknown member location {location!r}")
                 if arcname not in names:
                     raise GpuRuntimeError(f"{whl.name} has no member {arcname}")
                 staged = self._staging / out_name
                 with zf.open(arcname) as src, open(staged, "wb") as dst:
                     shutil.copyfileobj(src, dst, length=1024 * 1024)
-                out.append(_Planned(name=out_name, staged=staged, location="gpu_runtime",
+                out.append(_Planned(name=out_name, staged=staged, location=location,
                                     sha256=calculate_sha256(staged)))
         whl.unlink(missing_ok=True)
         return out
