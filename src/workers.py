@@ -435,12 +435,23 @@ class GpuRuntimeDownloadWorker(QObject):
 
     def _run(self) -> bool:
         import gpu_runtime
+        import onnx_providers
 
         spec = gpu_runtime.load_component_spec()
         if spec is None:
             self._on_log(self.get_string("Gpu", "Worker_NoSpec"), "error")
             return False
         installer = gpu_runtime.GpuRuntimeInstaller()
+        # This worker only runs when gpu_runtime_ready() is False (the prompt gates on
+        # that). If a stale/partial gpu_runtime/ is sitting there - a cancelled run, or a
+        # previous release whose manifest listed differently named DLLs - clear it first
+        # so install() starts clean (install() overwrites by name but won't delete
+        # files only the old manifest knew about).
+        try:
+            if onnx_providers.gpu_runtime_dir().exists():
+                installer.uninstall()
+        except Exception as exc:  # noqa: BLE001
+            write_debug_log(f"GpuRuntimeDownloadWorker: uninstall-before-reinstall skipped ({exc!r})")
         try:
             ok = installer.install(spec, progress_cb=self._on_progress,
                                    log_cb=self._on_log, stop_cb=self.is_stopped)
@@ -517,6 +528,18 @@ class TaggerThreadWorker(QObject):
                 return
 
             self.log_message.emit(self.get_string("Workers", "TaggerThreadWorker_Loading_Model"), "black")
+
+            # Surface which execution provider the tagger session actually got, so the
+            # user can see GPU acceleration is (or isn't) active without opening the log
+            # file. onnx_providers already handled any fallback; this is just a report.
+            try:
+                on_gpu = tagger.session.get_providers()[0] == "CUDAExecutionProvider"
+            except Exception:
+                on_gpu = False
+            self.log_message.emit(
+                self.get_string("Workers", "TaggerThreadWorker_Provider_Gpu" if on_gpu
+                                else "TaggerThreadWorker_Provider_Cpu"),
+                "green" if on_gpu else "black")
 
             # Whichever model is tagging, tag translations are looked up against PixAI's
             # selected_tags.csv - grab it here if a previous run never pulled it in.

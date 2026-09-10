@@ -268,14 +268,15 @@ class MainWindow(QMainWindow):
         self._maybe_prompt_gpu_setup()
 
     def _maybe_prompt_gpu_setup(self):
-        """初回のみ、NVIDIA GPU が使えるビルドで GPU コンポーネント未整備なら、
-        「約1GB をダウンロードして GPU 推論を有効化しますか」を尋ねる。
+        """NVIDIA GPU が使えるビルドで GPU コンポーネント未整備なら、ダウンロードを尋ねる。
 
         3 択: ダウンロードする / 今はしない（次回また尋ねる）/ 使わない（次回から聞かない）。
-        後から気が変わった人は config.ini [Behavior] gpu_setup_prompt = ask で復活できる。
+        「使わない」を選んだ後に気が変わった人は config.ini [Behavior] gpu_setup_prompt = ask
+        で復活できる。ただし gpu_runtime/ が中途半端に壊れている場合は、dismissed でも
+        修復のために 1 度だけ尋ねる。
         """
         beh = self.settings.behavior
-        if beh.gpu_setup_prompt != "ask" or beh.onnx_device == "cpu":
+        if beh.onnx_device == "cpu":
             return
         if self._gpu_dl_thread and self._gpu_dl_thread.isRunning():
             return
@@ -287,6 +288,11 @@ class MainWindow(QMainWindow):
                 return  # this build has no CUDA support -> nothing to offer
             if onnx_providers.gpu_runtime_ready():
                 return  # components already installed
+            # dismissed suppresses the prompt, except when a partly-installed gpu_runtime/
+            # is sitting there broken (crashed download etc.) - offer to repair it once.
+            partial = onnx_providers.gpu_runtime_dir().exists()
+            if beh.gpu_setup_prompt != "ask" and not partial:
+                return
             spec = gpu_runtime.load_component_spec()
         except Exception:
             return
