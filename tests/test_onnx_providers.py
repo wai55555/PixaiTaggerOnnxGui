@@ -200,19 +200,44 @@ def test_preload_noop_without_runtime(tmp_path):
     assert OP.preload_gpu_dlls(base_dir=tmp_path, ort_module=None) is False
 
 
-def test_preload_falls_back_to_default_search_when_nvidia_wheels_present(tmp_path, monkeypatch):
-    """No gpu_runtime/ but pip nvidia-* wheels installed -> preload from default search."""
+def _fake_nvidia_pkg(tmp_path, monkeypatch):
+    """Lay out site-packages/nvidia/<lib>/bin dirs and point find_spec('nvidia') at them."""
+    import types
+    root = tmp_path / "nvidia"
+    for lib in ("cudnn", "cublas", "cuda_runtime"):
+        (root / lib / "bin").mkdir(parents=True)
+    monkeypatch.setattr("importlib.util.find_spec", lambda name, *a, **k:
+                        types.SimpleNamespace(submodule_search_locations=[str(root)])
+                        if name == "nvidia" else None)
+    return [str(root / lib / "bin") for lib in ("cublas", "cuda_runtime", "cudnn")]
+
+
+def test_pip_nvidia_bin_dirs(tmp_path, monkeypatch):
+    expected = _fake_nvidia_pkg(tmp_path, monkeypatch)
+    assert sorted(OP._pip_nvidia_bin_dirs()) == sorted(expected)
+
+
+def test_pip_nvidia_bin_dirs_empty_without_wheels(monkeypatch):
+    monkeypatch.setattr("importlib.util.find_spec", lambda name, *a, **k: None)
+    assert OP._pip_nvidia_bin_dirs() == []
+
+
+def test_preload_falls_back_to_pip_nvidia_wheels(tmp_path, monkeypatch):
+    """No gpu_runtime/ but pip nvidia-* wheels installed -> add their bin dirs to the
+    DLL search path AND preload."""
     seen = {}
+    added = []
 
     class _Ort:
         def preload_dlls(self, cuda=False, cudnn=False, directory=None):
             seen.update(cuda=cuda, cudnn=cudnn, directory=directory)
 
+    _fake_nvidia_pkg(tmp_path, monkeypatch)
     monkeypatch.setattr(OP, "log_dbg", lambda *a, **k: None)
-    monkeypatch.setattr("importlib.util.find_spec",
-                        lambda name, *a, **k: object() if name == "nvidia" else None)
+    monkeypatch.setattr(OP.os, "add_dll_directory", lambda d: added.append(d), raising=False)
     assert OP.preload_gpu_dlls(base_dir=tmp_path, ort_module=_Ort()) is True
     assert seen == {"cuda": True, "cudnn": True, "directory": None}
+    assert any("cudnn" in d and d.endswith("bin") for d in added)
 
 
 def test_preload_stays_quiet_without_gpu_runtime_or_nvidia_wheels(tmp_path, monkeypatch):

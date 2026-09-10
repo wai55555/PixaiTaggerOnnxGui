@@ -277,12 +277,46 @@ def preload_gpu_dlls(base_dir: Path | None = None, ort_module: Any = _ORT_DEFAUL
     # ort.preload_dlls() prints a wall of "Failed to load cudnn64_9.dll ... Please
     # follow ... install CUDA" to stderr on every launch of a plain
     # `pip install onnxruntime-gpu` env, which is just CPU-mode noise.
-    if importlib.util.find_spec("nvidia") is None:
+    nvidia_bin_dirs = _pip_nvidia_bin_dirs()
+    if not nvidia_bin_dirs:
         return False
+    # Put every nvidia-*/bin on the DLL search path. ort.preload_dlls() only
+    # preloads a fixed list of cuDNN DLLs by absolute path; cuDNN 9 then does its
+    # own LoadLibrary of sublibraries it doesn't know about (cudnn_engines_tensor_ir
+    # 64_9.dll, cudnn_ext64_9.dll, added in 9.13+), which fails with
+    # CUDNN_STATUS_SUBLIBRARY_LOADING_FAILED unless their directory is searchable.
+    add_dll_directory = getattr(os, "add_dll_directory", None)
+    if callable(add_dll_directory):
+        for d in nvidia_bin_dirs:
+            try:
+                add_dll_directory(d)
+            except OSError:
+                pass
     try:
         preload(cuda=True, cudnn=True)
-        log_dbg("preload_gpu_dlls: preloaded CUDA/cuDNN from the default search (pip nvidia-* wheels)")
+        log_dbg("preload_gpu_dlls: preloaded CUDA/cuDNN from the pip nvidia-* wheels")
         return True
     except Exception as exc:  # noqa: BLE001
         log_dbg(f"preload_gpu_dlls: default ort.preload_dlls() failed ({exc!r})")
         return False
+
+
+def _pip_nvidia_bin_dirs() -> list[str]:
+    """Directories of the shared libs shipped by the pip `nvidia-*-cu12` wheels, if
+    installed: `nvidia/<lib>/bin` on Windows, `nvidia/<lib>/lib` on Linux.
+
+    Empty list when no such wheel is present (plain `pip install onnxruntime-gpu`).
+    """
+    try:
+        spec = importlib.util.find_spec("nvidia")
+    except (ImportError, ValueError):
+        return []
+    roots = list(getattr(spec, "submodule_search_locations", None) or []) if spec else []
+    out: list[str] = []
+    for root in roots:
+        for pat in ("*/bin", "*/lib"):
+            try:
+                out.extend(str(sub) for sub in Path(root).glob(pat) if sub.is_dir())
+            except OSError:
+                continue
+    return out
