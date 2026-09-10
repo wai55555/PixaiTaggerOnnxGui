@@ -6,6 +6,7 @@ Run:  rtk pytest tests/test_onnx_providers.py -q
 """
 import configparser
 import json
+import os
 import sys
 import tempfile
 from pathlib import Path
@@ -220,6 +221,29 @@ def test_pip_nvidia_bin_dirs(tmp_path, monkeypatch):
 def test_pip_nvidia_bin_dirs_empty_without_wheels(monkeypatch):
     monkeypatch.setattr("importlib.util.find_spec", lambda name, *a, **k: None)
     assert OP._pip_nvidia_bin_dirs() == []
+
+
+def test_prepend_dll_search_updates_path_on_windows(monkeypatch):
+    # path separators kept OS-neutral so os.pathsep (':' on the test host) round-trips.
+    added = []
+    monkeypatch.setattr(OP.sys, "platform", "win32")
+    monkeypatch.setattr(OP.os, "add_dll_directory", lambda d: added.append(d), raising=False)
+    monkeypatch.setenv("PATH", "orig")
+    OP._prepend_dll_search(["cudnn_bin", "cublas_bin"])
+    assert added == ["cudnn_bin", "cublas_bin"]
+    parts = OP.os.environ["PATH"].split(os.pathsep)
+    assert parts[:3] == ["cudnn_bin", "cublas_bin", "orig"]
+    # re-adding the same dirs does not duplicate them
+    OP._prepend_dll_search(["cudnn_bin"])
+    assert OP.os.environ["PATH"].split(os.pathsep).count("cudnn_bin") == 1
+
+
+def test_prepend_dll_search_noop_off_windows(monkeypatch):
+    monkeypatch.setattr(OP.sys, "platform", "linux")
+    monkeypatch.setenv("PATH", "orig")
+    monkeypatch.setattr(OP.os, "add_dll_directory", None, raising=False)
+    OP._prepend_dll_search(["/x/nvidia/cudnn/lib"])
+    assert OP.os.environ["PATH"] == "orig"  # PATH untouched on non-Windows
 
 
 def test_preload_falls_back_to_pip_nvidia_wheels(tmp_path, monkeypatch):

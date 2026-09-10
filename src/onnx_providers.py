@@ -258,12 +258,7 @@ def preload_gpu_dlls(base_dir: Path | None = None, ort_module: Any = _ORT_DEFAUL
 
     if gpu_runtime_ready(base_dir, ort_module=ort_mod):
         directory = str(gpu_runtime_dir(base_dir))
-        add_dll_directory = getattr(os, "add_dll_directory", None)
-        if callable(add_dll_directory) and sys.platform.startswith("win"):
-            try:
-                add_dll_directory(directory)
-            except OSError as exc:
-                log_dbg(f"preload_gpu_dlls: add_dll_directory failed ({exc!r})")
+        _prepend_dll_search([directory])
         try:
             preload(cuda=True, cudnn=True, directory=directory)
             log_dbg(f"preload_gpu_dlls: loaded GPU runtime DLLs from {directory}")
@@ -280,18 +275,7 @@ def preload_gpu_dlls(base_dir: Path | None = None, ort_module: Any = _ORT_DEFAUL
     nvidia_bin_dirs = _pip_nvidia_bin_dirs()
     if not nvidia_bin_dirs:
         return False
-    # Put every nvidia-*/bin on the DLL search path. ort.preload_dlls() only
-    # preloads a fixed list of cuDNN DLLs by absolute path; cuDNN 9 then does its
-    # own LoadLibrary of sublibraries it doesn't know about (cudnn_engines_tensor_ir
-    # 64_9.dll, cudnn_ext64_9.dll, added in 9.13+), which fails with
-    # CUDNN_STATUS_SUBLIBRARY_LOADING_FAILED unless their directory is searchable.
-    add_dll_directory = getattr(os, "add_dll_directory", None)
-    if callable(add_dll_directory):
-        for d in nvidia_bin_dirs:
-            try:
-                add_dll_directory(d)
-            except OSError:
-                pass
+    _prepend_dll_search(nvidia_bin_dirs)
     try:
         preload(cuda=True, cudnn=True)
         log_dbg("preload_gpu_dlls: preloaded CUDA/cuDNN from the pip nvidia-* wheels")
@@ -299,6 +283,32 @@ def preload_gpu_dlls(base_dir: Path | None = None, ort_module: Any = _ORT_DEFAUL
     except Exception as exc:  # noqa: BLE001
         log_dbg(f"preload_gpu_dlls: default ort.preload_dlls() failed ({exc!r})")
         return False
+
+
+def _prepend_dll_search(dirs: list[str]) -> None:
+    """Make `dirs` searchable for DLL loads, including cuDNN 9's own runtime
+    LoadLibrary of engine sublibraries (cudnn_engines_tensor_ir64_9.dll,
+    cudnn_ext64_9.dll - added in 9.13+, not in ort.preload_dlls()'s fixed list).
+
+    `os.add_dll_directory` alone is not enough on Windows: cuDNN loads those with
+    the legacy search order, which only consults PATH / the app dir / system32.
+    So prepend to `PATH` as well.
+    """
+    if not dirs:
+        return
+    add_dll_directory = getattr(os, "add_dll_directory", None)
+    if callable(add_dll_directory):
+        for d in dirs:
+            try:
+                add_dll_directory(d)
+            except OSError:
+                pass
+    if sys.platform.startswith("win"):
+        current = os.environ.get("PATH", "")
+        have = current.split(os.pathsep)
+        new = [d for d in dirs if d not in have]
+        if new:
+            os.environ["PATH"] = os.pathsep.join(new + ([current] if current else []))
 
 
 def _pip_nvidia_bin_dirs() -> list[str]:
